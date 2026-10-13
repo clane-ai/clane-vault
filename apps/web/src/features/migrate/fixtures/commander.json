@@ -1,0 +1,121 @@
+{
+  "shared_folders": [
+    {
+      "uid": "kGq3xT0bQpCqLm2vYwE7aA",
+      "path": "Engineering\\Infra",
+      "manage_users": false,
+      "manage_records": false,
+      "can_edit": true,
+      "can_share": false,
+      "permissions": [
+        { "uid": "aW5mcmEtYWRtaW4tdWlk", "name": "admin@acme.test", "manage_users": true, "manage_records": true },
+        { "uid": "Ym9iLXVpZA", "name": "Bob@Acme.test", "manage_users": true, "manage_records": true },
+        { "uid": "Y2Fyb2wtdWlk", "name": "carol@acme.test", "manage_users": false, "manage_records": false },
+        { "uid": "dGVhbS11aWQ", "name": "Platform Team", "manage_users": false, "manage_records": true }
+      ]
+    },
+    {
+      "uid": "c2FsZXMtZm9sZGVy",
+      "path": "Sales",
+      "manage_users": false,
+      "manage_records": true,
+      "can_edit": true,
+      "can_share": true,
+      "permissions": [
+        { "uid": "ZGF2ZS11aWQ", "name": "dave@acme.test", "manage_users": false, "manage_records": false },
+        { "uid": "ZXZlLXVpZA", "name": "eve@acme.test", "manage_users": false, "manage_records": true }
+      ]
+    }
+  ],
+  "records": [
+    {
+      "uid": "cmVjLWF3cw",
+      "title": "AWS root",
+      "$type": "login",
+      "login": "ops@acme.test",
+      "password": "Tg7#qL2v!Rm9zW4x",
+      "login_url": "https://console.aws.amazon.com",
+      "notes": "Break-glass only.",
+      "custom_fields": {
+        "$oneTimeCode::1": "otpauth://totp/AWS:ops?secret=JBSWY3DPEHPK3PXP&issuer=AWS",
+        "$url::2": "https://signin.aws.amazon.com",
+        "$text:Account ID::1": "123456789012"
+      },
+      "folders": [{ "shared_folder": "Engineering\\Infra", "can_edit": true, "can_share": false }]
+    },
+    {
+      "uid": "cmVjLWRiLXByb2Q",
+      "title": "Postgres prod",
+      "$type": "databaseCredentials",
+      "login": "app",
+      "password": "pg-s3cret-pass",
+      "custom_fields": {
+        "$host::1": { "hostName": "db.acme.internal", "port": "5432" },
+        "$text:type::1": "postgres"
+      },
+      "folders": [{ "shared_folder": "Engineering\\Infra", "folder": "Databases", "can_edit": true, "can_share": false }]
+    },
+    {
+      "uid": "cmVjLXNzaA",
+      "title": "Bastion key",
+      "$type": "sshKeys",
+      "login": "deploy",
+      "password": "key-passphrase",
+      "custom_fields": {
+        "$keyPair::1": { "publicKey": "ssh-ed25519 AAAAC3Nza deploy@bastion", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----" },
+        "$host::1": { "hostName": "bastion.acme.test", "port": "22" }
+      },
+      "attachments": [{ "file_uid": "ZmlsZTE", "name": "bastion-ca.pub", "size": 410 }],
+      "folders": [{ "shared_folder": "Engineering\\Infra", "can_edit": true, "can_share": false }]
+    },
+    {
+      "uid": "cmVjLWNyZWQtY2FyZA",
+      "title": "Company Visa",
+      "$type": "bankCard",
+      "custom_fields": {
+        "$paymentCard::1": { "cardNumber": "4111111111111111", "cardExpirationDate": "12/2030", "cardSecurityCode": "123" },
+        "$text:cardholderName::1": "Acme Ltd",
+        "$pinCode::1": "4321"
+      },
+      "notes": "Monthly limit 10k.",
+      "folders": [{ "shared_folder": "Sales" }]
+    },
+    {
+      "uid": "cmVjLWNybQ",
+      "title": "Salesforce",
+      "login": "sales@acme.test",
+      "password": "sf-pass-123",
+      "login_url": "https://acme.my.salesforce.com",
+      "custom_fields": { "TFC:Keeper": "otpauth://totp/Salesforce?secret=KRSXG5CTMVRXEZLU" },
+      "folders": [{ "shared_folder": "Sales" }, { "folder": "Personal\\Work" }]
+    },
+    {
+      "uid": "cmVjLWNybS1kdXA",
+      "title": "Salesforce",
+      "login": "sales@acme.test",
+      "password": "sf-pass-old",
+      "login_url": "https://acme.my.salesforce.com",
+      "folders": [{ "shared_folder": "Sales" }]
+    },
+    {
+      "uid": "cmVjLWFkZHI",
+      "title": "HQ address",
+      "$type": "address",
+      "custom_fields": { "$address::1": { "street1": "1 Main St", "city": "Dublin", "zip": "D01", "country": "IE" } },
+      "folders": [{ "folder": "Personal" }]
+    },
+    {
+      "uid": "cmVjLW5ldGZsaXg",
+      "title": "Netflix",
+      "login": "me@home.test",
+      "password": "netflix-pw",
+      "login_url": "https://netflix.com",
+      "custom_fields": { "Security question": "First pet: Rex" }
+    },
+    {
+      "uid": "cmVjLWVtcHR5",
+      "title": "",
+      "login": ""
+    }
+  ]
+}

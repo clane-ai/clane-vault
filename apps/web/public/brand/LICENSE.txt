@@ -1,0 +1,7 @@
+© 2026 Clane AI. All rights reserved. Trademark assets — not open source.
+
+The CLANE name, wordmark, marks (Neural C, Pixel neuron, Matrix C, Block C,
+CL lockup, Prompt sigil), lockups and the files in this repository are
+trademarks and proprietary assets of Clane AI. No licence is granted to copy,
+modify, distribute or use them except by Clane AI or with its written
+permission.

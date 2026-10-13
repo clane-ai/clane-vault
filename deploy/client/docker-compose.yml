@@ -1,0 +1,32 @@
+name: clane-vault
+services:
+  clane-vault:
+    image: ${CLANE_VAULT_IMAGE:-ghcr.io/clane-ai/clane-vault}:${CLANE_VAULT_VERSION:-1.6.2}
+    env_file: .env
+    ports: ["${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:3001"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false # ignored when you use your own Postgres (bundled-db profile off)
+
+  # Optional bundled database. Only started when the bundled-db profile is enabled
+  # (install.sh sets COMPOSE_PROFILES=bundled-db in .env, or run: docker compose --profile bundled-db up -d).
+  # If you use your own Postgres, set DATABASE_URL in .env and do not enable this profile.
+  postgres:
+    profiles: ["bundled-db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vault
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: vault
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault -d vault"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:

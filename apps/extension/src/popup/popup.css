@@ -1,0 +1,55 @@
+@import "tailwindcss";
+@import "@fontsource/space-grotesk/latin-600.css";
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-ext-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-ext-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+@import "../../../web/src/styles/clane-tokens.css";
+/* The brand mark component comes from the web app; its utility classes must be generated here too. */
+@source "../../../web/src/components/brand";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --color-app: var(--bg-app);
+  --color-card: var(--surface-card);
+  --color-well: var(--bg-well);
+  --color-navy-900: var(--navy-900);
+  --color-blue-500: var(--blue-500);
+  --color-blue-tint: var(--blue-tint);
+  --color-orange-500: var(--orange-500);
+  --color-orange-tint: var(--orange-tint);
+  --color-orange-ink: var(--orange-ink);
+  --color-green-600: var(--green-600);
+  --color-green-tint: var(--green-tint);
+  --color-amber-500: var(--amber-500);
+  --color-red-500: var(--red-500);
+  --color-red-tint: var(--red-tint);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-border-default: var(--border-default);
+  --color-border-mid: var(--border-mid);
+  --color-border-strong: var(--border-strong);
+  --radius-md: var(--radius-btn);
+  --radius-lg: var(--radius-input);
+  --radius-xl: var(--radius-card);
+}
+
+@layer base {
+  * { border-color: var(--border-default); }
+  html, body { margin: 0; }
+  body { width: 360px; min-height: 480px; max-height: 600px; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased; }
+  /* Opened as a page (pop-out or tests): centre the popup-sized column. */
+  body.as-page { margin: 0 auto; }
+  h1, h2 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.02em; }
+  ::selection { background: var(--selection-bg); color: var(--selection-text); }
+  :focus-visible { outline: 2px solid var(--blue-500); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+}

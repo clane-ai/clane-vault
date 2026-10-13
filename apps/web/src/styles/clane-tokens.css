@@ -1,0 +1,148 @@
+:root {
+  /* Ink / navy ramp (brand base) */
+  --navy-950: #070E1C; /* footer */
+  --navy-900: #0A1224; /* primary dark surface, CTA text */
+  --navy-850: #0C1A35; /* hero gradient mid */
+  --navy-800: #122B57; /* hero gradient end */
+  --navy-700: #1C3563; /* user-bubble gradient end */
+  --ink:      #14233D; /* primary text on light */
+
+  /* Accents */
+  --blue-500: #3E7BFA;  /* agent / system blue */
+  --blue-tint: #EEF3FE;
+  --blue-tint-border: #DCE7FD;
+  --blue-selected-border: #E0E9FC;
+  --blue-ink: #2F66E0;   /* blue text under 18 px: 5.1:1 on white, 4.6:1 on blue-tint */
+  --orange-500: #FF6A3D; /* CTA / attention orange */
+  --orange-tint: #FFF7F3;
+  --orange-tint-border: #FBE2D6;
+  --orange-ink: #7A4A35;
+
+  /* Functional */
+  --green-600: #1A8F6A;  /* success / done */
+  --green-tint: #EAF6F1;
+  --green-code: #7FD1A8; /* strings in code blocks */
+  --amber-500: #F5A623;  /* running / upcoming */
+  --red-500:   #E5484D;  /* failed / overdue */
+
+  /* Light surfaces */
+  --bg-page: #F7F9FC;   /* marketing light sections */
+  --bg-app:  #F4F6FA;   /* app canvas */
+  --surface-card: #FFFFFF;
+
+  /* Borders (light) */
+  --border-subtle:  #EDF1F8;
+  --border-default: #E4EAF3;
+  --border-app:     #E7ECF4;
+  --border-mid:     #DEE6F2;
+  --border-strong:  #C9D4E5;
+  --scrollbar-thumb:#D5DEEC;
+
+  /* Text on light */
+  --text-primary:  #14233D;
+  --text-secondary:#5A6B86;
+  --text-tertiary: #8A9BB8;
+  --text-faint:    #9AA9C2;
+
+  /* Text on dark */
+  --text-on-dark:       #F7F9FC;
+  --text-dark-secondary:#A9B6CE;
+  --text-dark-mono:     #C7D2E6;
+  --text-dark-tertiary: #8A9BB8;
+  --text-dark-faint:    #7E8FAC;
+  --text-dark-dim:      #6E7F9C;
+
+  /* Borders / raised surfaces on dark */
+  --border-dark-1: rgba(222,230,242,.08);
+  --border-dark-2: rgba(222,230,242,.12);
+  --border-dark-3: rgba(222,230,242,.18);
+  --surface-dark-raised: rgba(255,255,255,.04);
+
+  /* Semantic aliases */
+  --cta: var(--orange-500);
+  --cta-text: var(--navy-900);
+  --link: var(--blue-500);
+  --selection-bg: var(--orange-500);
+  --selection-text: var(--navy-900);
+
+  /* Extra tints (semantic) */
+  --bg-well: #F2F5FA;          /* segmented wells, trigger chips */
+  --red-tint: #FDECEA;
+  --red-tint-border: #F6CFCC;
+  --purple-tint: #F1ECFB;
+  --purple-ink: #7B5BD6;
+  --green-tint-border: #D7EAE1;
+  --surface-overlay: rgba(255,255,255,.92); /* floating paddles, sticky drawer headers */
+
+  /* Signature gradients */
+  --grad-hero: radial-gradient(1100px 540px at 80% -10%, rgba(62,123,250,.20), transparent 58%), linear-gradient(162deg, #0A1224 0%, #0C1A35 55%, #122B57 150%);
+  --grad-user-bubble: linear-gradient(150deg, #14233D 0%, #1C3563 150%);
+  --grad-status-strip: linear-gradient(180deg, #FFF7F3, #FFFDFC);
+}
+
+/* ===== Dark mode =====
+   Set data-theme="dark" on <html> (or any ancestor). All components read tokens,
+   so the remap below restyles the entire library. Navy surfaces from the brand ramp. */
+[data-theme="dark"] {
+  --bg-page: #0A1224;
+  --bg-app: #070E1C;
+  --surface-card: #101B31;
+  --ink: #F7F9FC;
+
+  --text-primary: #F7F9FC;
+  --text-secondary: #A9B6CE;
+  --text-tertiary: #8A9BB8;
+  --text-faint: #6E7F9C;
+
+  --border-subtle: rgba(222,230,242,.07);
+  --border-default: rgba(222,230,242,.11);
+  --border-app: rgba(222,230,242,.11);
+  --border-mid: rgba(222,230,242,.16);
+  --border-strong: rgba(222,230,242,.24);
+  --scrollbar-thumb: #2A3A57;
+
+  --blue-tint: rgba(62,123,250,.15);
+  --blue-tint-border: rgba(62,123,250,.34);
+  --blue-selected-border: rgba(62,123,250,.36);
+  --blue-ink: #8FB3FF;   /* 8.9:1 on the dark card */
+  --orange-tint: rgba(255,106,61,.10);
+  --orange-tint-border: rgba(255,106,61,.30);
+  --orange-ink: #FFB59A;
+  --green-tint: rgba(26,143,106,.16);
+  --green-tint-border: rgba(26,143,106,.34);
+  --red-tint: rgba(229,72,77,.14);
+  --red-tint-border: rgba(229,72,77,.34);
+  --purple-tint: rgba(123,91,214,.16);
+  --purple-ink: #A98FF0;
+  --bg-well: #16233C;
+  --surface-overlay: rgba(16,27,49,.92);
+
+  --cta-text: #0A1224; /* orange stays orange; ink on it stays navy */
+  --shadow-card: 0 1px 2px rgba(0,0,0,.4);
+  --grad-status-strip: linear-gradient(180deg, rgba(255,106,61,.10), rgba(255,106,61,.04));
+}
+:root {
+  /* Corner radii — softly rounded, never fully round except pills/dots */
+  --radius-chip: 6px;    /* inline file/code chips */
+  --radius-sm:   8px;    /* small list rows, governance chips */
+  --radius-btn:  9px;    /* nav buttons, quick replies, icon buttons */
+  --radius-btn-lg: 11px; /* hero + pricing CTAs */
+  --radius-input:10px;   /* inputs, sidebar primary button */
+  --radius-card: 14px;   /* standard cards */
+  --radius-card-lg: 16px;/* pricing cards */
+  --radius-panel:12px;   /* code blocks, status strips */
+  --radius-pill: 999px;  /* status pills */
+
+  /* Layout */
+  --page-max: 1180px;
+  --page-gutter: 40px;
+  --section-pad-y: 96px;
+  --card-pad: 28px 26px;
+
+  /* Elevation — nearly flat; borders carry structure */
+  --shadow-card: 0 1px 2px rgba(10,18,36,.04);
+
+  /* Motion */
+  --ease-ui: .2s ease;
+  --hover-lift: translateY(-2px);
+}

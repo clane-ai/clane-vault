@@ -1,0 +1,904 @@
+generator client {
+  provider      = "prisma-client-js"
+  // native: this machine; debian-openssl-3.0.x: the Docker image (Debian 13 with OpenSSL 3, see the Dockerfile).
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgRole {
+  owner
+  admin
+  member
+}
+enum MembershipStatus {
+  invited
+  active
+  disabled
+}
+enum UserStatus {
+  pending_2fa
+  active
+  disabled
+}
+enum FolderKind {
+  private
+  team
+}
+enum Permission {
+  owner
+  edit
+  view
+  use
+}
+enum HolderType {
+  user
+  folder
+}
+enum AccessState {
+  pending
+  active
+}
+
+model User {
+  id                String     @id @default(uuid()) @db.Uuid
+  email             String     @unique
+  name              String
+  status            UserStatus @default(pending_2fa)
+  kdfSalt           String
+  kdfParams         Json
+  authHash          String
+  wrappedUserKey    String
+  publicKey         String
+  wrappedPrivateKey String
+  totpSecretEnc     String?
+  failedLogins      Int        @default(0)
+  lockedUntil       DateTime?
+  /// Recovery kit (docs/recovery.md): the user key wrapped under a key derived from the recovery key, and a
+  /// SHA-256 of the kit's auth value. Both null when the user has no kit (never made one, or it was used).
+  recoveryWrap      String?
+  recoveryAuthHash  String?
+  recoveryCreatedAt DateTime?
+  /// Last accepted TOTP time step (30 s): a code is accepted once (replay protection).
+  totpLastStep      Int?
+  /// When the current authenticator was set up.
+  totpEnabledAt     DateTime?
+  /// The admin who last reset this account's 2FA, and when (admin recovery's two-person rule and waiting period).
+  totpResetBy       String?    @db.Uuid
+  totpResetAt       DateTime?
+  /// Instance admin (Backups): set by the bootstrap invite or the instance-admin CLI only, never by email matching.
+  instanceAdmin     Boolean    @default(false)
+  createdAt         DateTime   @default(now())
+  sessions          Session[]
+  /// Account key generation: a scoped admin recovery replaces the user key and account key pair and bumps it
+  /// (docs/design/2026-10-08-per-org-keypairs.md); the old material goes to AccountKeyArchive.
+  userKeyGen        Int        @default(1)
+  escrows           MembershipEscrow[] @relation("EscrowUser")
+  escrowsHeld       MembershipEscrow[] @relation("EscrowAdmin")
+  membershipKeys    MembershipKey[]
+  keyArchives       AccountKeyArchive[]
+  groupAccessDeclines GroupAccessDecline[]
+  recoveryRequests  RecoveryRequest[]
+  folders           Folder[]
+  records           Record[]
+  folderMemberships FolderMember[]
+  memberships       Membership[]
+  ssoIdentities     SsoIdentity[]
+  groupMemberships  GroupMember[]
+  healthReports     HealthReport[]
+}
+
+/// A tenant. Users are global; everything shared (team folders, shares, invites, admin power, recovery) is per organisation.
+model Organization {
+  id                     String       @id @default(uuid()) @db.Uuid
+  /// Empty only for the default organisation created by the multi-org migration until the API names it on start.
+  name                   String
+  slug                   String       @unique
+  createdAt              DateTime     @default(now())
+  /// Admin account recovery (docs/recovery.md). Off by default.
+  adminRecoveryEnabled   Boolean      @default(false)
+  adminRecoveryChangedBy String?      @db.Uuid
+  adminRecoveryChangedAt DateTime?
+  memberships            Membership[]
+  invites                Invite[]
+  folders                Folder[]
+  escrows                MembershipEscrow[]
+  membershipKeys         MembershipKey[]
+  recoveryRequests       RecoveryRequest[]
+  shares                 RecordAccess[]
+  links                  ShareLink[]
+  events                 Event[]
+  inviteCooldowns        InviteCooldown[]
+  emailSettings          EmailSettings?
+  sso                    OrgSso?
+  ssoDomains             SsoDomain[]
+  ssoIdentities          SsoIdentity[]
+  ssoLogins              SsoLogin[]
+  m365Connects           M365Connect[]
+  ssoProofs              SsoProof[]
+  /// Org policies (docs/policies.md), validated by lib/policies.ts; `{}` means every default.
+  policies               Json         @default("{}")
+  policiesChangedBy      String?      @db.Uuid
+  policiesChangedAt      DateTime?
+  groups                 Group[]
+  healthReports          HealthReport[]
+  logo                   OrgLogo?
+  /// The onboarding checklist on the admin's People page was dismissed (docs/provisioning.md).
+  onboardingDismissedAt  DateTime?
+  pendingGroupMembers    PendingGroupMember[]
+  domainJoin             OrgDomainJoin?
+}
+
+/// An organisation's logo (docs/branding.md): PNG, JPEG or WebP only (never SVG), at most 256 KB and 1024×1024, its
+/// type and size read from the bytes. Served to the org's members only, at /api/v1/orgs/:id/logo?v=<version>.
+model OrgLogo {
+  orgId       String       @id @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  mime        String
+  data        Bytes
+  width       Int
+  height      Int
+  /// SHA-256 of `data` (hex): the cache-busting version and ETag.
+  sha256      String
+  updatedById String?      @db.Uuid
+  updatedAt   DateTime     @updatedAt
+}
+
+/// Runtime branding of the whole instance (docs/branding.md), set by instance admins: overrides the build-time product
+/// name (PRODUCT_NAME / VITE_PRODUCT_NAME). One row, id "instance"; null fields mean "use the default".
+model InstanceBrand {
+  id          String    @id @default("instance")
+  productName String?
+  shortName   String?
+  logoMime    String?
+  logoData    Bytes?
+  logoWidth   Int?
+  logoHeight  Int?
+  logoSha256  String?
+  updatedById String?   @db.Uuid
+  updatedAt   DateTime  @updatedAt
+}
+
+model Membership {
+  id                 String           @id @default(uuid()) @db.Uuid
+  orgId              String           @db.Uuid
+  org                Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId             String           @db.Uuid
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role               OrgRole          @default(member)
+  status             MembershipStatus @default(active)
+  /// When this membership became an active admin or owner (admin recovery: an approver must have been admin for a while).
+  adminSince         DateTime?
+  /// When this user acknowledged that this organisation's admin recovery is on.
+  adminRecoveryAckAt DateTime?
+  /// The account key generation this membership's own records were last checked against: lower than the user's
+  /// userKeyGen after a scoped reset, until the client has rebuilt its owner rows in the org's team folders.
+  keysRepairedGen    Int              @default(1)
+  invitedById        String?          @db.Uuid
+  createdAt          DateTime         @default(now())
+  joinedAt           DateTime?
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+model Invite {
+  id          String    @id @default(uuid()) @db.Uuid
+  orgId       String    @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email       String
+  /// admin or member; owner only for the first owner of an organisation (bootstrap).
+  role        OrgRole   @default(member)
+  tokenHash   String    @unique
+  invitedById String?   @db.Uuid
+  /// Bootstrap invite: the account it creates is an instance admin.
+  instanceAdmin Boolean @default(false)
+  /// HOSTED_MODE: the emailed sign-up code (HMAC), its expiry and wrong attempts.
+  emailCodeHash     String?
+  emailCodeExpiresAt DateTime?
+  emailCodeAttempts Int      @default(0)
+  /// Wrong codes over every code issued for this invite; at the cap the invite is burned.
+  emailCodeTotalAttempts Int @default(0)
+  /// Codes issued for this invite (capped).
+  emailCodeIssues   Int      @default(0)
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  /// Where the invite came from (docs/provisioning.md): "admin" (an admin invited them, one by one or in bulk) or
+  /// "domain" (email domain auto-join: they asked, with an address in a domain this org verified).
+  source      String    @default("admin")
+  /// The name from a bulk import (a hint for the sign-up form only).
+  nameHint    String?
+  /// When the invite was last (re)sent, and how many times it was resent.
+  lastSentAt  DateTime?
+  resendCount Int       @default(0)
+
+  @@index([orgId, email])
+}
+
+/// After someone declines an invitation (or an admin cancels it), the same org can't invite that address again for a while.
+model InviteCooldown {
+  id     String   @id @default(uuid()) @db.Uuid
+  orgId  String   @db.Uuid
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email  String
+  until  DateTime
+
+  @@unique([orgId, email])
+}
+
+model Session {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash String    @unique
+  prevRefreshHash String?
+  rotatedAt   DateTime?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  lastSeen    DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  /// Organisations whose single sign-on established this session ("Require SSO for members", docs/sso.md).
+  ssoOrgIds   String[]  @default([]) @db.Uuid
+  /// Set when this session skipped the authenticator code because that org trusts its IdP's MFA: the session may only
+  /// use that org until a TOTP step-up (POST /auth/totp/step-up).
+  totpSkippedForOrg String? @db.Uuid
+}
+
+model Folder {
+  id        String     @id @db.Uuid
+  kind      FolderKind @default(private)
+  /// Team folders belong to an organisation; private folders to their owner only (null).
+  orgId     String?    @db.Uuid
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  ownerId   String     @db.Uuid
+  owner     User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  encName   String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  deletedAt DateTime?
+  records   Record[]
+  members   FolderMember[]
+  pendingMembers PendingFolderMember[]
+  groups    FolderGroup[]
+  groupAccessDeclines GroupAccessDecline[]
+
+  @@index([orgId])
+}
+
+/// Someone to add to a team folder once they have an active account (bulk migration: shares need an active user's
+/// public key). Only the folder's owner completes it, by sealing the folder key to the new user.
+model PendingFolderMember {
+  id         String     @id @default(uuid()) @db.Uuid
+  folderId   String     @db.Uuid
+  folder     Folder     @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  email      String
+  permission Permission
+  createdBy  String     @db.Uuid
+  createdAt  DateTime   @default(now())
+
+  @@unique([folderId, email])
+  @@index([email])
+}
+
+model FolderMember {
+  id               String     @id @default(uuid()) @db.Uuid
+  folderId         String     @db.Uuid
+  folder           Folder     @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  userId           String     @db.Uuid
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Effective permission: the highest of the direct grant and every group grant (docs/groups.md).
+  permission       Permission
+  /// The direct grant (null: access only through groups). The folder owner's is "owner".
+  directPermission Permission?
+  wrappedFolderKey String
+  /// The key wrappedFolderKey is sealed to: null for the member's current account key (before their membership key
+  /// existed), a membership public key (base64url), or "acct:<old account public key>" after a scoped reset.
+  sealedTo         String?
+  createdAt        DateTime   @default(now())
+
+  @@unique([folderId, userId])
+  @@index([userId])
+  @@index([sealedTo])
+}
+
+model Record {
+  id        String         @id @db.Uuid
+  folderId  String?        @db.Uuid
+  folder    Folder?        @relation(fields: [folderId], references: [id])
+  ownerId   String         @db.Uuid
+  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  /// Coarse, by design (docs/record-types.md): "login" (the extension may fill it) or "item"; the real record type is
+  /// inside encBody. A CHECK constraint (migration 20261020000000_record_item_type) keeps it to those two.
+  type      String
+  encBody   String
+  revision  Int            @default(1)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  deletedAt DateTime?
+  access    RecordAccess[]
+  links     ShareLink[]
+  attachments Attachment[]
+}
+
+model RecordAccess {
+  id               String      @id @default(uuid()) @db.Uuid
+  recordId         String      @db.Uuid
+  record           Record      @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  holderType       HolderType
+  holderId         String      @db.Uuid
+  permission       Permission
+  wrappedRecordKey String?
+  /// Direct user shares: the key wrappedRecordKey is sealed to (as FolderMember.sealedTo). Null on owner and folder rows.
+  sealedTo         String?
+  /// Direct user shares: the organisation the share was made in (it only counts there). Null on owner and folder rows.
+  orgId            String?     @db.Uuid
+  org              Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  state            AccessState @default(active)
+  createdAt        DateTime    @default(now())
+
+  @@unique([recordId, holderType, holderId])
+  @@index([holderType, holderId])
+}
+
+model Event {
+  id           BigInt   @id @default(autoincrement())
+  at           DateTime @default(now())
+  orgId        String?  @db.Uuid
+  org          Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  actorId      String?  @db.Uuid
+  action       String
+  recordId     String?  @db.Uuid
+  folderId     String?  @db.Uuid
+  targetUserId String?  @db.Uuid
+  ip           String?
+  userAgent    String?
+  /// Small, non-secret details (e.g. counts).
+  meta         Json?
+
+  @@index([recordId])
+  @@index([actorId])
+  @@index([orgId])
+  @@index([orgId, at])
+}
+
+model ShareLink {
+  id           String    @id @db.Uuid
+  recordId     String    @db.Uuid
+  record       Record    @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  createdBy    String    @db.Uuid
+  /// The organisation the link belongs to (team record, or a share held in that org); null for the creator's own private records.
+  orgId        String?   @db.Uuid
+  org          Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  encPayload   String?
+  passwordSalt String?
+  accessHash   String?
+  expiresAt    DateTime
+  maxOpens     Int?
+  opens        Int       @default(0)
+  revokedAt    DateTime?
+  labelEnc     String?
+  createdAt    DateTime  @default(now())
+  /// Files this link carries (their keys are inside encPayload): docs/design/2026-10-12-attachments.md §5.1.
+  attachments  ShareLinkAttachment[]
+
+  @@index([createdBy])
+  @@index([recordId])
+}
+
+enum BackupStatus {
+  running
+  success
+  failed
+}
+enum BackupTrigger {
+  schedule
+  manual
+}
+
+model BackupRun {
+  id           String        @id @default(uuid()) @db.Uuid
+  startedAt    DateTime      @default(now())
+  finishedAt   DateTime?
+  status       BackupStatus  @default(running)
+  trigger      BackupTrigger
+  bytes        BigInt?
+  /// [{ type: "s3", bucket, prefix } | { type: "local", dir }]; never credentials.
+  destinations Json
+  objectKey    String?
+  /// Short message, no secrets.
+  error        String?
+  /// Attachment ciphertext bytes (ready and uploading) when the run started: the attachments' share of the dump.
+  attachmentBytes BigInt?
+
+  @@index([startedAt])
+}
+
+/// Per-organisation membership key pairs (docs/design/2026-10-08-per-org-keypairs.md). The private key is
+/// wrapped under the account user key of generation `userKeyGen` (AAD membership-private-key:<org>:<user>:<pub>).
+/// current: the one to seal to (one per org and user); retiring: still referenced by rows during a rotation;
+/// archived: wrapped under a user key replaced by a scoped reset (restorable with the old password or kit, or an
+/// admin link of that organisation).
+model MembershipKey {
+  id                String             @id @default(uuid()) @db.Uuid
+  orgId             String             @db.Uuid
+  org               Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId            String             @db.Uuid
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey         String             @unique
+  wrappedPrivateKey String
+  userKeyGen        Int
+  state             MembershipKeyState @default(current)
+  /// An admin's client received an escrow of this key: the member's client rotates it.
+  escrowOpenedAt    DateTime?
+  createdAt         DateTime           @default(now())
+  retiredAt         DateTime?
+
+  @@index([orgId, userId])
+}
+
+enum MembershipKeyState {
+  current
+  retiring
+  archived
+}
+
+/// A member's membership private key sealed to one admin's membership public key in the same organisation
+/// (AAD escrow-membership-key:<org>:<user>:<admin>:<memberPublicKey>). Only while that organisation's admin recovery is on.
+model MembershipEscrow {
+  id              String       @id @default(uuid()) @db.Uuid
+  orgId           String       @db.Uuid
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId          String       @db.Uuid
+  user            User         @relation("EscrowUser", fields: [userId], references: [id], onDelete: Cascade)
+  adminId         String       @db.Uuid
+  admin           User         @relation("EscrowAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  memberPublicKey String
+  adminPublicKey  String
+  sealedKey       String
+  createdAt       DateTime     @default(now())
+
+  @@unique([orgId, userId, adminId])
+  @@index([adminId])
+  @@index([userId])
+}
+
+/// Account material replaced by a scoped admin recovery: the old master password or the old recovery kit still opens
+/// it, so the user can restore their private items and other organisations later. Kept until the user deletes it.
+model AccountKeyArchive {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @db.Uuid
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userKeyGen        Int
+  kdfSalt           String
+  kdfParams         Json
+  wrappedUserKey    String
+  publicKey         String
+  wrappedPrivateKey String
+  /// The recovery kit as it was (it wraps this generation's user key).
+  recoveryWrap      String?
+  /// The old master password's auth hash and the old kit's auth hash: the archive opens only for one of them (never
+  /// for a session and a 2FA code alone, which would let whoever completed the reset guess the old password offline).
+  authHash          String?
+  recoveryAuthHash  String?
+  /// What the reset left behind: own private items and organisations whose membership key was archived.
+  privateItems      Int       @default(0)
+  otherOrgs         Int       @default(0)
+  archivedAt        DateTime  @default(now())
+  restoredAt        DateTime?
+
+  @@index([userId])
+}
+
+enum RecoveryRequestStatus {
+  pending
+  approved
+  used
+  denied
+  expired
+}
+
+/// "Ask an admin to reset my password", per organisation. Once approved it carries the membership key wrapped under a one-time secret
+/// that only the link fragment has, plus a hash of a proof derived from it; both are burned when it ends.
+model RecoveryRequest {
+  id             String                @id @default(uuid()) @db.Uuid
+  /// The organisation whose admins handle this request.
+  orgId          String                @db.Uuid
+  org            Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId         String                @db.Uuid
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         RecoveryRequestStatus @default(pending)
+  createdAt      DateTime              @default(now())
+  approvedBy     String?               @db.Uuid
+  approvedAt     DateTime?
+  expiresAt      DateTime?
+  usedAt         DateTime?
+  /// The membership key whose escrow the approving admin opened, and that key wrapped under the link secret.
+  memberPublicKey      String?
+  wrappedMembershipKey String?
+  proofHash      String?
+  /// Wrong proofs against this request; it is burned after a few.
+  attempts       Int                   @default(0)
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum EmailProvider {
+  resend
+  smtp
+  /// Microsoft 365 through Microsoft Graph (client credentials + Mail.Send); the sender mailbox is fromAddress.
+  m365
+}
+
+/// How the Microsoft 365 provider signs in: app-only (client credentials, Mail.Send application permission) or delegated
+/// (an admin signs in once with the authorization code flow; the server keeps the sealed refresh token).
+enum M365AuthMode {
+  app
+  delegated
+}
+enum SmtpSecurity {
+  none
+  starttls
+  tls
+}
+
+/// Email delivery settings (docs/email.md): one instance-wide row (scope "instance", no org) and optional
+/// per-organisation overrides (scope "org:<id>"). The secret (Resend API key, SMTP password or Microsoft 365 client secret) is sealed with a key
+/// derived from SERVER_SECRET and bound to this row's id; the API never returns it (only whether it is set, and the
+/// last four characters of an API key). RESEND_API_KEY / EMAIL_FROM remain the fallback.
+model EmailSettings {
+  id           String        @id @db.Uuid
+  scope        String        @unique
+  orgId        String?       @unique @db.Uuid
+  org          Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  provider     EmailProvider
+  fromName     String?
+  fromAddress  String
+  smtpHost     String?
+  smtpPort     Int?
+  smtpSecurity SmtpSecurity?
+  smtpUsername String?
+  /// Microsoft 365: Entra directory (tenant) ID or verified domain, and the app registration's application (client) ID.
+  /// The client secret is the sealed secret below.
+  m365TenantId String?
+  m365ClientId String?
+  /// null: app (rows from before delegated sign-in).
+  m365AuthMode        M365AuthMode?
+  /// Delegated: the refresh token, sealed with settingsBox (bound to this row) and never returned. Rotated on every
+  /// refresh; m365RefreshVersion is the compare-and-swap counter for that.
+  m365RefreshEnc      String?
+  m365RefreshVersion  Int           @default(0)
+  /// Delegated: the signed-in account (UPN), when, by whom, and the scopes Microsoft granted.
+  m365Account         String?
+  m365ConnectedAt     DateTime?
+  m365ConnectedById   String?       @db.Uuid
+  m365GrantedScope    String?
+  /// Delegated: Microsoft refused the refresh token (revoked, password reset, consent removed, 90 days unused).
+  m365ReconnectAt     DateTime?
+  m365ReconnectReason String?
+  secretEnc    String?
+  secretLast4  String?
+  updatedById  String?       @db.Uuid
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+/// Single sign-on for one organisation through OpenID Connect (docs/sso.md). The client secret is sealed like email
+/// secrets (key from SERVER_SECRET, bound to this row's id) and never returned.
+model OrgSso {
+  id                String       @id @db.Uuid
+  orgId             String       @unique @db.Uuid
+  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  issuer            String
+  clientId          String
+  clientSecretEnc   String?
+  clientSecretLast4 String?
+  /// Members with an address in a verified domain reach the org only from a session signed in through this SSO.
+  requireSso        Boolean      @default(false)
+  /// Skip the authenticator code after SSO (verified-domain members of this org only): the identity provider's MFA counts.
+  trustIdpMfa       Boolean      @default(false)
+  /// Just-in-time: people with an address in a verified domain join (or sign up to) the org on their first SSO sign-in.
+  autoJoin          Boolean      @default(false)
+  updatedById       String?      @db.Uuid
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+}
+
+/// An email domain an organisation's SSO is for. Verified by a DNS TXT record `clane-vault-verify=<token>` on the domain.
+model SsoDomain {
+  id         String       @id @default(uuid()) @db.Uuid
+  orgId      String       @db.Uuid
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  domain     String
+  token      String
+  verifiedAt DateTime?
+  /// Last time the TXT record was seen (re-checked at most every 24 h before just-in-time joins and sign-ups).
+  checkedAt  DateTime?
+  createdAt  DateTime     @default(now())
+
+  @@unique([orgId, domain])
+  @@index([domain])
+}
+
+/// The identity-provider account (issuer + subject) linked to a user in an org after their first SSO sign-in. Later
+/// sign-ins map by subject, so an email address changed at the identity provider can't take over another account.
+model SsoIdentity {
+  id          String       @id @default(uuid()) @db.Uuid
+  orgId       String       @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId      String       @db.Uuid
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issuer      String
+  subject     String
+  /// The email the identity provider asserted when the link was made.
+  email       String
+  createdAt   DateTime     @default(now())
+  lastLoginAt DateTime     @default(now())
+
+  @@unique([orgId, issuer, subject])
+  @@unique([orgId, userId])
+}
+
+/// One authorization request in flight: state (hashed), nonce and PKCE verifier, bound to the browser's cv_sso cookie.
+model SsoLogin {
+  id           String       @id @default(uuid()) @db.Uuid
+  stateHash    String       @unique
+  bindingHash  String
+  orgId        String       @db.Uuid
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  nonce        String
+  codeVerifier String
+  returnTo     String
+  createdAt    DateTime     @default(now())
+  expiresAt    DateTime
+  usedAt       DateTime?
+
+  @@index([expiresAt])
+}
+
+/// A Microsoft 365 delegated sign-in in progress (docs/email.md): state, nonce and PKCE verifier for one authorization
+/// request, made by `actorId` for one email settings scope. Single use, 10 minutes, bound to an httpOnly cookie.
+model M365Connect {
+  id             String        @id @default(uuid()) @db.Uuid
+  stateHash      String        @unique
+  bindingHash    String
+  /// "instance" or "org:<id>" (EmailSettings.scope).
+  scope          String
+  orgId          String?       @db.Uuid
+  org            Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  settingsId     String        @db.Uuid
+  /// sha256 of tenant, client ID and auth mode when the request started: a changed app invalidates it.
+  settingsFp     String
+  actorId        String        @db.Uuid
+  sessionId      String        @db.Uuid
+  nonce          String
+  codeVerifier   String
+  requestedScope String
+  createdAt      DateTime      @default(now())
+  expiresAt      DateTime
+  usedAt         DateTime?
+
+  @@index([expiresAt])
+}
+
+/// What a successful SSO callback proves (an IdP-verified email for this org), until the master password completes the
+/// sign-in or sign-up. Single use, 5 minutes, bound to the same browser cookie.
+model SsoProof {
+  id          String       @id @default(uuid()) @db.Uuid
+  tokenHash   String       @unique
+  bindingHash String
+  orgId       String       @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  /// login: an existing account; register: a new account (just-in-time or an open invite).
+  mode        String
+  userId      String?      @db.Uuid
+  email       String
+  issuer      String
+  subject     String
+  nameHint    String?
+  jit         Boolean      @default(false)
+  /// The IdP's `amr` claim, when sent, named an MFA method (or no `amr` was sent).
+  idpMfa      Boolean      @default(true)
+  inviteId    String?      @db.Uuid
+  returnTo    String
+  attempts    Int          @default(0)
+  createdAt   DateTime     @default(now())
+  expiresAt   DateTime
+  usedAt      DateTime?
+
+  @@index([expiresAt])
+}
+
+/// A group of people in one organisation (docs/groups.md). Admins manage groups; folder owners share team folders with them.
+model Group {
+  id        String        @id @default(uuid()) @db.Uuid
+  orgId     String        @db.Uuid
+  org       Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime      @default(now())
+  members   GroupMember[]
+  folders   FolderGroup[]
+  pending   PendingGroupMember[]
+
+  @@unique([orgId, name])
+}
+
+/// A group membership waiting for someone who was invited but hasn't joined yet (docs/provisioning.md): it becomes a
+/// GroupMember when they join the organisation. Folder keys still need a key holder's explicit approval after that.
+model PendingGroupMember {
+  id        String       @id @default(uuid()) @db.Uuid
+  orgId     String       @db.Uuid
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  groupId   String       @db.Uuid
+  group     Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  email     String
+  /// The admin who invited them into the group (null: email domain auto-join).
+  addedBy   String?      @db.Uuid
+  createdAt DateTime     @default(now())
+
+  @@unique([groupId, email])
+  @@index([orgId, email])
+}
+
+/// Email domain auto-join (docs/provisioning.md): people with an address in a domain this organisation verified may ask
+/// to join; the invitation is emailed to them. Off by default; the owner turns it on.
+model OrgDomainJoin {
+  orgId       String       @id @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  enabled     Boolean      @default(false)
+  /// member or admin (never owner).
+  role        OrgRole      @default(member)
+  groupIds    String[]     @default([]) @db.Uuid
+  updatedById String?      @db.Uuid
+  updatedAt   DateTime     @updatedAt
+}
+
+model GroupMember {
+  id        String   @id @default(uuid()) @db.Uuid
+  groupId   String   @db.Uuid
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addedBy   String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+/// A team folder shared with a group. Members get the folder key sealed to them by a client that holds it.
+model FolderGroup {
+  id         String     @id @default(uuid()) @db.Uuid
+  folderId   String     @db.Uuid
+  folder     Folder     @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  groupId    String     @db.Uuid
+  group      Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  /// edit, view or use (never owner).
+  permission Permission
+  createdBy  String     @db.Uuid
+  createdAt  DateTime   @default(now())
+
+  @@unique([folderId, groupId])
+  @@index([groupId])
+}
+
+/// A folder owner or editor declined to give a group member the folder key (docs/groups.md): the request is hidden
+/// from the approval prompt until the person is added to a group again.
+model GroupAccessDecline {
+  id         String   @id @default(uuid()) @db.Uuid
+  folderId   String   @db.Uuid
+  folder     Folder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  userId     String   @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  declinedBy String   @db.Uuid
+  createdAt  DateTime @default(now())
+
+  @@unique([folderId, userId])
+}
+
+/// Password health summary a member's client computed (docs/password-health.md): counts and a score only, never secrets.
+model HealthReport {
+  id         String       @id @default(uuid()) @db.Uuid
+  orgId      String       @db.Uuid
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId     String       @db.Uuid
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  score      Int
+  total      Int
+  weak       Int
+  reused     Int
+  old        Int
+  /// Null when the member hasn't turned on the breach check.
+  breached   Int?
+  reportedAt DateTime     @default(now())
+
+  @@unique([orgId, userId])
+}
+
+enum AttachmentState {
+  uploading
+  ready
+  deleted
+}
+enum AttachmentStorage {
+  db
+  s3
+}
+
+/// A file on a record (docs/design/2026-10-12-attachments.md). Everything about the file is ciphertext:
+/// encMeta (name, type, size, hash) and wrappedFileKey are v1. envelopes under the record key; the chunks are
+/// AES-GCM under the file key. The server knows sizes, counts, who and when.
+model Attachment {
+  id             String            @id @db.Uuid
+  recordId       String            @db.Uuid
+  record         Record            @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  createdBy      String            @db.Uuid
+  state          AttachmentState   @default(uploading)
+  /// Where the chunks are (a half-migrated instance keeps working: each row says).
+  storage        AttachmentStorage @default(db)
+  /// v1. under the record key, AAD attachment-meta:<recordId>:<id>.
+  encMeta        String
+  /// v1. under the record key, AAD attachment-key:<recordId>:<id>.
+  wrappedFileKey String
+  /// 8 random bytes (base64url); the chunk nonce is nonceBase || BE32(index).
+  nonceBase      String
+  chunkSize      Int
+  chunkCount     Int
+  /// Ciphertext bytes in total (declared at create, verified at complete). Int is enough: files are far below 2 GiB.
+  size           Int
+  createdAt      DateTime          @default(now())
+  readyAt        DateTime?
+  deletedAt      DateTime?
+  chunks         AttachmentChunk[]
+  links          ShareLinkAttachment[]
+
+  @@index([recordId])
+  @@index([state, createdAt])
+  @@index([createdBy, createdAt])
+}
+
+/// One ciphertext chunk (db storage). The migration sets STORAGE EXTERNAL on data (no TOAST compression attempt).
+model AttachmentChunk {
+  attachmentId String     @db.Uuid
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  index        Int
+  length       Int
+  /// SHA-256 (hex) of data: makes PUT idempotent and detects bit rot.
+  sha256       String
+  /// Empty for s3 storage (the bytes are in the bucket; this row only records that the chunk arrived).
+  data         Bytes
+
+  @@id([attachmentId, index])
+}
+
+/// A file a one-time link carries (its key is inside the link's encrypted payload).
+model ShareLinkAttachment {
+  linkId       String     @db.Uuid
+  link         ShareLink  @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  attachmentId String     @db.Uuid
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@id([linkId, attachmentId])
+  @@index([attachmentId])
+}
+
+/// S3 objects to delete after a purge or cascade (db storage needs none: chunks cascade).
+model AttachmentTombstone {
+  attachmentId String            @id @db.Uuid
+  storage      AttachmentStorage
+  chunkCount   Int
+  createdAt    DateTime          @default(now())
+}
+
+/// One row: a known value sealed under SERVER_SECRET, checked at startup so a changed secret stops the server with a
+/// clear message instead of failing every sign-in (lib/serverSecretCheck.ts).
+model ServerSecretCheck {
+  id        Int      @id @default(1)
+  sealed    String
+  createdAt DateTime @default(now())
+}

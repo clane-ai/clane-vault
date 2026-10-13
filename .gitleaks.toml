@@ -1,0 +1,12 @@
+# gitleaks: tests and fixtures hold made-up keys, TOTP secrets and passwords on purpose.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test data"
+paths = [
+  '''(^|/)test/''',
+  '''\.test\.(ts|tsx)$''',
+  '''(^|/)fixtures/''',
+  '''(^|/)e2e/''',
+]

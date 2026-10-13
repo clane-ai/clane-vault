@@ -1,0 +1,16 @@
+name: clane-vault-dev
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vault
+      POSTGRES_PASSWORD: vault
+      POSTGRES_DB: vault
+    ports: ["127.0.0.1:5434:5432"]
+    volumes: [db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault"]
+      interval: 3s
+      retries: 20
+volumes:
+  db-data:

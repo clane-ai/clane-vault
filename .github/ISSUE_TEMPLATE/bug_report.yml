@@ -1,0 +1,44 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Don't include passwords, secrets, `.env` contents or real customer data. Security issues go to hello@clane.ai.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag (e.g. 1.6.2) or commit.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [Web app, Installable app, Browser extension, API or server, Install or upgrade, Import]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from `docker compose logs clane-vault` or the browser console, with secrets removed.
+      render: text
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: Browser, reverse proxy, Postgres version, root or BASE_PATH.

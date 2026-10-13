@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/clane-ai/clane-vault/blob/main/SECURITY.md
+    about: Please email hello@clane.ai instead of opening a public issue.
+  - name: Ask a question
+    url: https://github.com/clane-ai/clane-vault/discussions
+    about: Questions about installing or using Clane Vault.

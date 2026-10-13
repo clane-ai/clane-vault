@@ -1,0 +1,15 @@
+{
+  "name": "e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:extension": "playwright test -c playwright.extension.config.ts",
+    "showcase": "node showcase/run.mjs",
+    "showcase:flyer": "node showcase/run.mjs --flyer"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "otplib": "^12.0.1"
+  }
+}

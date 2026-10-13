@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Secrets and local configuration
+.env
+apps/api/.env
+deploy/.env
+deploy/.secrets/
+*.age-key
+*.key.txt
+
+# Local instance and customer folders (secrets; never committed)
+deploy/*/
+!deploy/client/
+!deploy/scripts/
+
+# Marketing screenshots (npm run showcase:flyer -w e2e)
+e2e/showcase/out/

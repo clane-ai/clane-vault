@@ -1,0 +1,14 @@
+{
+  "name": "clane-vault",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*", "e2e"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "npm run test -w packages/crypto -w apps/api -w apps/web -w apps/extension --if-present",
+    "e2e": "npm run test -w e2e",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "overrides": { "deepmerge-ts": "^8.0.2" }
+}

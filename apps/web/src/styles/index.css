@@ -1,0 +1,126 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "./clane-tokens.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant data-checked (&:where([data-state="checked"]));
+@custom-variant data-unchecked (&:where([data-state="unchecked"]));
+@custom-variant data-open (&:where([data-state="open"]));
+@custom-variant data-closed (&:where([data-state="closed"]));
+@custom-variant data-active (&:where([data-state="active"]));
+
+/* shadcn semantic variables, mapped to Clane tokens (light + dark follow the token remap) */
+:root {
+  --background: var(--bg-app);
+  --foreground: var(--text-primary);
+  --card: var(--surface-card);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--blue-500);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg-well);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-well);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--blue-tint);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--red-500);
+  --border: var(--border-default);
+  --input: var(--border-mid);
+  --ring: var(--blue-500);
+  --radius: 10px;
+  --sidebar: var(--navy-900);
+  --sidebar-foreground: var(--text-dark-secondary);
+}
+[data-theme="dark"] { --primary-foreground: #ffffff; --sidebar: var(--navy-950); }
+
+@theme inline {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-display);
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+
+  --color-navy-950: var(--navy-950);
+  --color-navy-900: var(--navy-900);
+  --color-blue-500: var(--blue-500);
+  --color-blue-tint: var(--blue-tint);
+  --color-blue-ink: var(--blue-ink);
+  --color-navy-700: var(--navy-700);
+  --color-border-mid: var(--border-mid);
+  --color-border-subtle: var(--border-subtle);
+  --color-orange-500: var(--orange-500);
+  --color-orange-tint: var(--orange-tint);
+  --color-orange-ink: var(--orange-ink);
+  --color-green-600: var(--green-600);
+  --color-green-tint: var(--green-tint);
+  --color-amber-500: var(--amber-500);
+  --color-red-500: var(--red-500);
+  --color-red-tint: var(--red-tint);
+  --color-purple-ink: var(--purple-ink);
+  --color-purple-tint: var(--purple-tint);
+  --color-app: var(--bg-app);
+  --color-well: var(--bg-well);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-btn);
+  --radius-lg: var(--radius-input);
+  --radius-xl: var(--radius-card);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html, body, #root { height: 100%; }
+  body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: var(--text-ui, 14px); -webkit-font-smoothing: antialiased; }
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.02em; }
+  ::selection { background: var(--selection-bg); color: var(--selection-text); }
+  :focus-visible { outline: 2px solid var(--blue-500); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+}
+
+/* Phone drawer (Sidebar drawer mode): the narrow-window icon-rail classes of its children (e.g. the organisation
+   switcher) don't apply there. Unlayered, so it beats the utilities. */
+@media (max-width: 760px) {
+  [data-drawer] .max-\[760px\]\:hidden { display: revert; }
+  [data-drawer] .max-\[760px\]\:justify-center { justify-content: flex-start; }
+  [data-drawer] .max-\[760px\]\:px-0 { padding-inline: 0.625rem; }
+  [data-drawer] .max-\[760px\]\:absolute { position: static; }
+}

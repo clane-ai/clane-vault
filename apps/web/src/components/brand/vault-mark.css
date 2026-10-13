@@ -1,0 +1,94 @@
+/*
+ * VaultMark: the CLANE 2b "Pixel neuron" with pixel-step vault motion. Colours are the icon kit's themes ("every cell is
+ * the same geometry, only fill and ground change"): dark #FF6A3D / deep #D84D2D, light #C4441F / deep #E9A08A.
+ * Motion is pixel art: whole cells change fill/opacity on stepped timing (step-end), so every frame is crisp.
+ * Nothing is rotated, scaled or blurred. The lights layer repeats the ring cells in clockwise order (RING_ORDER) above
+ * the ring; --i is a cell's place on that path.
+ */
+.vault-mark {
+  --vm-fill: #C4441F;
+  --vm-deep: #E9A08A;
+  --vm-pointer: #E9A08A;
+  --vm-word: #C4441F;
+  --vm-text: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.vault-mark[data-variant="dark"],
+[data-theme="dark"] .vault-mark[data-variant="auto"] {
+  --vm-fill: #FF6A3D;
+  --vm-deep: #D84D2D;
+  --vm-pointer: #FFB59A;
+  --vm-word: #EEF1F8;
+  --vm-text: var(--text-dark-tertiary);
+}
+/* A name without the CLANE wordmark is set in full strength. */
+.vault-mark[data-name="text"] { --vm-text: var(--text-primary); }
+.vault-mark[data-name="text"][data-variant="dark"],
+[data-theme="dark"] .vault-mark[data-name="text"][data-variant="auto"] { --vm-text: var(--text-on-dark); }
+.vault-mark__svg { display: block; flex-shrink: 0; }
+.vault-mark__ring { fill: var(--vm-fill); }
+.vault-mark__core { fill: var(--vm-fill); }
+.vault-mark__light { fill: var(--vm-fill); opacity: 0; }
+.vault-mark__word { display: block; flex-shrink: 0; fill: var(--vm-word); }
+
+/* idle: a dial pointer, one ring cell in a pale accent tint, steps clockwise one cell per 250 ms (a lap in 3 s). */
+.vault-mark[data-state="idle"] .vault-mark__light {
+  fill: var(--vm-pointer);
+  animation: vm-pointer 3s step-end calc(var(--i) * 250ms) infinite;
+}
+
+/* working: dialling a code; a lit cell chases round the dimmed ring every 80 ms with a 3-cell stepped tail. */
+.vault-mark:not(.vault-mark--static)[data-state="working"] .vault-mark__ring { opacity: .3; }
+.vault-mark[data-state="working"] .vault-mark__light { animation: vm-chase 960ms step-end calc(var(--i) * 80ms) infinite; }
+.vault-mark[data-state="working"] .vault-mark__core { fill: var(--vm-deep); opacity: .5; }
+
+/* unlocked (plays once, 640 ms): the dimmed ring fills cell by cell clockwise (40 ms each), the centre cell switches
+   to full accent and stays, then the ring settles to the normal mark. */
+.vault-mark:not(.vault-mark--static)[data-state="unlocked"] .vault-mark__ring { animation: vm-unlock-ring 640ms step-end 1 both; }
+.vault-mark[data-state="unlocked"] .vault-mark__light { animation: vm-on 40ms step-end calc(var(--i) * 40ms) 1 forwards; }
+.vault-mark:not(.vault-mark--static)[data-state="unlocked"] .vault-mark__core { animation: vm-unlock-core 520ms step-end 1 both; }
+
+/* Reduced motion (or animated={false}): a still mark, no lights. */
+.vault-mark--static .vault-mark__ring,
+.vault-mark--static .vault-mark__core { animation: none !important; }
+.vault-mark--static .vault-mark__lights { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .vault-mark .vault-mark__ring, .vault-mark .vault-mark__core, .vault-mark .vault-mark__light { animation: none !important; }
+  .vault-mark .vault-mark__ring { opacity: 1 !important; }
+  .vault-mark .vault-mark__lights { display: none; }
+}
+
+/* Each keyframe holds its value until the next (step-end): 1/12 of a lap is one ring cell. */
+@keyframes vm-pointer {
+  0% { opacity: 1; }
+  8.3334%, 100% { opacity: 0; }
+}
+@keyframes vm-chase {
+  0% { opacity: 1; }
+  8.3334% { opacity: .6; }
+  16.6667% { opacity: .35; }
+  25% { opacity: .15; }
+  33.3334%, 100% { opacity: 0; }
+}
+@keyframes vm-on {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes vm-unlock-ring {
+  0% { opacity: .3; }
+  100% { opacity: 1; }
+}
+@keyframes vm-unlock-core {
+  0% { fill: var(--vm-deep); opacity: .5; }
+  100% { fill: var(--vm-fill); opacity: 1; }
+}
+
+/* The unlocked beat over the opening vault: holds, then fades away. */
+.vault-unlock-overlay { animation: vm-overlay 950ms ease-in 1 both; }
+@keyframes vm-overlay {
+  0%, 72% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .vault-unlock-overlay { display: none; } }
