@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RECORD_TYPE_DEFS, RECORD_TYPES, normalizeRecordBody, type RecordBody } from "@clane-vault/crypto";
@@ -66,7 +66,8 @@ describe("record types in the panel", () => {
     expect(screen.getByLabelText("Hostname or IP")).toHaveTextContent("10.20.0.5");
     expect(screen.getByLabelText("Protocol")).toHaveTextContent("SSH");
     expect(screen.getByText("Strong")).toBeInTheDocument();
-    expect(await screen.findByLabelText("Console OTP")).toHaveTextContent(/^\d{3} \d{3}$/);
+    // The code is computed asynchronously (WebCrypto); "—" is shown until then.
+    await waitFor(() => expect(screen.getByLabelText("Console OTP")).toHaveTextContent(/^\d{3} \d{3}$/));
     expect(screen.queryByText(server.fields![0]!.value)).not.toBeInTheDocument();
   });
 

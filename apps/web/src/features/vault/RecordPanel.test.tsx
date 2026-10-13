@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RecordPanel } from "./RecordPanel";
@@ -20,7 +20,8 @@ describe("RecordPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy password" }));
     expect(copySecret).toHaveBeenCalledWith("Tg7#qL2v!Rm9zW4x");
     expect(screen.getByText("Strong")).toBeInTheDocument();
-    expect(await screen.findByLabelText("2FA code")).toHaveTextContent(/^\d{3} \d{3}$/);
+    // The code is computed asynchronously (WebCrypto); "—" is shown until then.
+    await waitFor(() => expect(screen.getByLabelText("2FA code")).toHaveTextContent(/^\d{3} \d{3}$/));
   });
 
   it("shows a clear state for a record that can't be opened", () => {
