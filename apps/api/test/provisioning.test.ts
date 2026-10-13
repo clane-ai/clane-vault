@@ -267,8 +267,8 @@ describe("email domain auto-join", () => {
     expect(on.statusCode, on.body).toBe(200);
     expect(on.json()).toMatchObject({ enabled: true, groups: [{ id: g, name: "Everyone" }], domains: [{ domain: "acme.test", verified: true }, { domain: "unverified.test", verified: false }], joinUrl: "http://localhost:5173/join" });
     expect(await t.prisma.event.count({ where: { action: "org.domain_join_enabled", actorId: owner.id } })).toBe(1);
-    // Owners and admins are told.
-    expect(sent().filter((m) => m.subject.includes("auto-join")).map((m) => m.to[0]).sort()).toEqual([owner.email, admin.email].sort());
+    // Owners and admins are told (in the background: the reply doesn't wait for the emails).
+    await vi.waitFor(() => expect(sent().filter((m) => m.subject.includes("auto-join")).map((m) => m.to[0]).sort()).toEqual([owner.email, admin.email].sort()));
     // Public mail domains can't even be added.
     expect((await call(owner, "POST", "/admin/settings/sso/domains", { domain: "gmail.com" })).json()).toEqual({ error: "public_domain" });
   });

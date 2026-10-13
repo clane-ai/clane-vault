@@ -203,8 +203,8 @@ describe("recovery with the kit", () => {
       const ok = (await pub("POST", "/auth/recovery/kit", { email: u.email, recoveryAuth: kit.recoveryAuth, code: await totp(u) })).json();
       const next = await newPasswordFor(ok.material, u.keys.userKey);
       await pub("POST", "/auth/recovery/finish", { authKey: next.authKey, material: next.material }, { authorization: `Bearer ${ok.recoveryToken}` });
-      const sent = fetchSpy.mock.calls.find(([url]) => String(url).includes("resend.com"));
-      expect(sent).toBeTruthy();
+      // The email is sent in the background (the reply doesn't wait for it).
+      const sent = await vi.waitFor(() => { const c = fetchSpy.mock.calls.find(([url]) => String(url).includes("resend.com")); expect(c).toBeTruthy(); return c; });
       const payload = JSON.parse(String((sent![1] as RequestInit).body));
       expect(payload.to).toEqual([u.email]);
       expect(payload.subject).toMatch(/master password was reset/);
@@ -563,8 +563,9 @@ describe("0.5.1 hardening", () => {
     Object.assign(t.config, { resendApiKey: "re_test", emailFrom: "vault@clane.ai" });
     try {
       await enablePolicy(a);
-      const to = fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)).to[0]);
-      expect(to).toEqual([m.email]);
+      // The emails are sent in the background (the reply doesn't wait for them).
+      const to = () => fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)).to[0]);
+      await vi.waitFor(() => expect(to()).toEqual([m.email]));
     } finally { fetchSpy.mockRestore(); Object.assign(t.config, { resendApiKey: undefined, emailFrom: undefined }); }
   });
 
@@ -743,8 +744,10 @@ describe("0.5.3: approver age (no sock-puppet admin)", () => {
     try {
       const b = await createActiveUser(t, { role: "admin" });
       await createActiveUser(t); // a member: no email
-      const mails = fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)));
-      expect(mails.map((x) => x.to[0])).toEqual([a.email]);
+      // The email is sent in the background (activation doesn't wait for it).
+      const read = () => fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+      await vi.waitFor(() => expect(read().map((x) => x.to[0])).toEqual([a.email]));
+      const mails = read();
       expect(mails[0].subject).toContain(b.email);
       expect((await t.prisma.membership.findFirstOrThrow({ where: { userId: b.id } })).adminSince).toBeInstanceOf(Date);
       expect(await events("admin.added")).toHaveLength(2);
@@ -757,7 +760,10 @@ describe("0.5.3: approver age (no sock-puppet admin)", () => {
     Object.assign(t.config, { resendApiKey: "re_test", emailFrom: "vault@clane.ai" });
     try {
       await call(a, "POST", `/admin/users/${m.id}/reset-2fa`);
-      const mail = fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)))[0];
+      // The email is sent in the background (the reply doesn't wait for it).
+      const mails = () => fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+      await vi.waitFor(() => expect(mails()).toHaveLength(1));
+      const mail = mails()[0];
       expect(mail.to).toEqual([m.email]);
       expect(mail.text).toMatch(/reset the two-step sign-in/);
       expect(mail.text).toMatch(/If this wasn't expected, contact another/);
