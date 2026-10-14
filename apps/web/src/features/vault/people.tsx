@@ -5,9 +5,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { PERMISSION_LABEL, type Grant } from "./types";
 
+/**
+ * Up to two characters for an avatar: the first letter or digit of the first and last words. Words in brackets are
+ * skipped ("Northwind (demo)" is N), and so is punctuation ("Acme & Co." is AC).
+ */
 export function initials(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1]![0] : "")).toUpperCase() || "?";
+  const firsts = (s: string) => s.split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0]).filter((c): c is string => !!c);
+  const outside = firsts(name.replace(/\([^)]*\)|\[[^\]]*\]/g, " "));
+  const parts = outside.length ? outside : firsts(name);
+  return ((parts[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1] : "")).toUpperCase() || "?";
 }
 
 const TINTS = ["bg-blue-tint text-blue-500", "bg-orange-tint text-orange-ink", "bg-green-tint text-green-600", "bg-purple-tint text-purple-ink"] as const;

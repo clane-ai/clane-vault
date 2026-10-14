@@ -1,3 +1,4 @@
+import { clockTime } from "@/lib/time";
 import { afterEach, describe, expect, it } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
@@ -53,7 +54,8 @@ describe("the demo's screens", () => {
   it("the banner says when the sandbox goes and links to the code", () => {
     render(<DemoBanner expiresAt="2026-10-14T15:07:00.000Z" />);
     expect(screen.getByRole("status", { name: "Demo sandbox" })).toHaveTextContent(`Demo sandbox. Deleted at ${deletedAt("2026-10-14T15:07:00.000Z")}. Don't enter real passwords.`);
-    expect(deletedAt("2026-10-14T15:07:00.000Z")).toMatch(/^\d{2}:\d{2}$/);
+    // The same format as the status bar's "Synced" time.
+    expect(deletedAt("2026-10-14T15:07:00.000Z")).toBe(clockTime("2026-10-14T15:07:00.000Z"));
     expect(screen.getByRole("link", { name: "Self-host it" })).toHaveAttribute("href", "https://github.com/clane-ai/clane-vault");
   });
 

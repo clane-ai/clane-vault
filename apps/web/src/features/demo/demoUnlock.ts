@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { demoPassword } from "./startDemo";
+import { clockTime } from "@/lib/time";
 
-/** The sandbox's end, as HH:MM in the visitor's time zone. */
-export const deletedAt = (iso: string) => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+/** The sandbox's end, in the same time format as the rest of the app. */
+export const deletedAt = (iso: string) => clockTime(iso);
 
 /**
  * A demo sandbox locks like any vault (a reload, the idle timer), but its visitor never saw the master password: this tab

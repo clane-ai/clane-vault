@@ -2,6 +2,13 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## 1.7.1 — 2026-10-14
+
+Upgrading: no migration and no `.env` change.
+
+- Avatars skip words in brackets and punctuation: the demo organisation "Northwind (demo)" showed "N(" and now shows "N".
+- The demo banner's deletion time uses the same format as the status bar's "Synced" time (the browser's locale) instead of always 24-hour.
+
 ## 1.7.0 — 2026-10-14
 
 Upgrading: migration `20261023000000_demo_mode` runs on start (two nullable columns and their indexes). Nothing changes unless you set `DEMO_MODE=true`.
