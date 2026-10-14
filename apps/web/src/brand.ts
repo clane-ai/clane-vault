@@ -15,7 +15,9 @@ export { resolveBrand, splitProductName } from "./brand-core.ts";
  */
 export const buildBrand: Readonly<Brand> = resolveBrand(import.meta.env);
 
-export interface ServerBrand { productName: string | null; shortName: string | null; logoVersion: string | null }
+/** `demo`: the server is a public demo (docs/demo.md): sign-in offers "Try the demo", sandboxes last `ttlMinutes`. */
+export interface ServerBrand { productName: string | null; shortName: string | null; logoVersion: string | null; demo?: DemoInfo | null }
+export interface DemoInfo { ttlMinutes: number }
 
 export let brand: Brand = { ...buildBrand };
 export let productName = brand.productName;
@@ -25,8 +27,11 @@ export let nameParts = splitProductName(productName);
 /** The instance logo (public, shown on the sign-in page), or null for the built-in mark. */
 export let instanceLogoUrl: string | null = null;
 
-export interface BrandSnapshot { productName: string; shortName: string; nameParts: { clane: boolean; rest: string }; instanceLogoUrl: string | null; custom: boolean }
-let snapshot: BrandSnapshot = { productName, shortName, nameParts, instanceLogoUrl, custom: false };
+/** Whether the server is a public demo (null: no, or not known yet). Never cached: only the server's answer counts. */
+export let demo: DemoInfo | null = null;
+
+export interface BrandSnapshot { productName: string; shortName: string; nameParts: { clane: boolean; rest: string }; instanceLogoUrl: string | null; custom: boolean; demo: DemoInfo | null }
+let snapshot: BrandSnapshot = { productName, shortName, nameParts, instanceLogoUrl, custom: false, demo };
 const listeners = new Set<() => void>();
 
 const clean = (v: unknown, max = 40): string | null => {
@@ -44,7 +49,9 @@ export function applyBrand(b: Partial<ServerBrand> | null) {
   shortName = brand.shortName;
   nameParts = splitProductName(productName);
   instanceLogoUrl = version ? apiUrl(`/brand/logo?v=${version}`) : null;
-  snapshot = { productName, shortName, nameParts, instanceLogoUrl, custom: !!(name || short) };
+  const ttl = b?.demo && typeof b.demo === "object" ? Number(b.demo.ttlMinutes) : NaN;
+  demo = Number.isFinite(ttl) && ttl > 0 ? { ttlMinutes: ttl } : null;
+  snapshot = { productName, shortName, nameParts, instanceLogoUrl, custom: !!(name || short), demo };
   if (typeof document !== "undefined") document.title = productName;
   for (const l of listeners) l();
 }

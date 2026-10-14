@@ -15,6 +15,8 @@ import MigratePage from "@/features/migrate/MigratePage";
 import { AdminRecoverySection } from "@/features/settings/SettingsPage";
 import { SsoSettingsSection } from "@/features/settings/SsoSettings";
 import { EmailSettingsSection } from "@/features/settings/EmailSettings";
+import { DemoUnavailable } from "@/features/demo/Demo";
+import { useBrand } from "@/brand";
 import { BrandingSection } from "@/features/settings/BrandingSection";
 import PeoplePage from "./PeoplePage";
 import MemberPage from "./MemberPage";
@@ -76,6 +78,7 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
   folders: VaultFolder[]; records: VaultRecord[]; vaultLoading: boolean; pendingReady: number; recoveryPending: number;
 }) {
   const { org } = useSession();
+  const { demo } = useBrand();
   const navigate = useNavigate();
   const paths = useSpacePaths();
   // Org pages exist only inside an organisation's space; the server's pages anywhere (for instance admins).
@@ -97,9 +100,9 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
     : section === "migrate" ? <MigratePage folders={folders} records={records} vaultLoading={vaultLoading} />
     : section === "org/general" ? <SectionPage title="General" sub={org?.name}><OrgDetailsSection /></SectionPage>
     : section === "org/policies" ? <SectionPage title="Policies" sub={org?.name}><OrgPoliciesSection /></SectionPage>
-    : section === "org/sso" ? <SectionPage title="Single sign-on" sub={org?.name}><SsoSettingsSection /></SectionPage>
+    : section === "org/sso" ? <SectionPage title="Single sign-on" sub={org?.name}>{demo ? <DemoUnavailable what="Single sign-on" /> : <SsoSettingsSection />}</SectionPage>
     : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><AdminRecoverySection /></SectionPage>
-    : section === "org/email" ? <SectionPage title="Email" sub={org?.name}><EmailSettingsSection scope="org" /></SectionPage>
+    : section === "org/email" ? <SectionPage title="Email" sub={org?.name}>{demo ? <DemoUnavailable what="Email" /> : <EmailSettingsSection scope="org" />}</SectionPage>
     : section === "server/branding" ? <SectionPage title="Branding" sub="This server"><BrandingSection /></SectionPage>
     : section === "server/email" ? <SectionPage title="Email" sub="This server"><EmailSettingsSection scope="instance" /></SectionPage>
     : section === "org/storage" ? <SectionPage title="Storage" sub={org?.name} wide><OrgStorageSection records={records} folders={folders} /></SectionPage>

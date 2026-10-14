@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSession, type SignInResult } from "@/lib/session";
 import { api, ApiError } from "@/lib/api";
-import { productName } from "@/brand";
+import { productName, useBrand } from "@/brand";
+import { TryDemo } from "@/features/demo/Demo";
 import { AuthLayout } from "./AuthLayout";
 import { useReportBusy } from "./authBusy";
 import { discoverSso, SSO_ERRORS, startSso, type SsoOrg } from "./sso";
@@ -226,11 +227,14 @@ export default function SignIn() {
   const { signIn, beginTwoFactor, reason } = useSession();
   const nav = useNavigate();
   const [params] = useSearchParams();
+  const { demo } = useBrand();
   return (
     <AuthLayout title="Sign in" titleInHeader>
       {reason === "expired" && <p role="status" className="rounded-[10px] border border-border-default bg-well px-3.5 py-2.5 text-[13px] text-text-secondary">Your session ended. Sign in again.</p>}
       <SignInForm signIn={signIn} ssoError={params.get("sso_error")} onDone={() => nav("/")} onNeedsSetup={(setupToken, password) => { beginTwoFactor(setupToken, password); nav("/setup-2fa", { state: { setupToken } }); }} />
       <p className="text-[13px] text-text-secondary">New here? <Link to="/join" className="font-medium text-[var(--link)] hover:underline">Join your organisation with your work email</Link></p>
+      {/* Only on a public demo server (docs/demo.md), as the server's public brand answer says. */}
+      {demo && <TryDemo ttlMinutes={demo.ttlMinutes} />}
     </AuthLayout>
   );
 }

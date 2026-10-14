@@ -39,6 +39,7 @@ import { parseAppPath, spacePrefix } from "@/lib/paths";
 import { useSpacePaths } from "@/lib/space";
 import { useRecoveryRequests } from "@/features/admin/RecoveryRequests";
 import { KitBanner } from "@/features/recovery/KitBanner";
+import { DemoBanner } from "@/features/demo/Demo";
 import { AdminRecoveryNotice } from "@/features/recovery/AdminRecoveryNotice";
 import { useMembershipSync, useSecurity } from "@/features/recovery/recovery";
 import { ResetBanner } from "@/features/recovery/ResetBanner";
@@ -247,10 +248,12 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
         </Sheet>
       </>) : sidebar(false)}
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {user?.demoExpiresAt && <DemoBanner expiresAt={user.demoExpiresAt} />}
         {offline && <OfflineBanner savedAt={v.savedAt} />}
         {isInstanceAdmin && location.pathname !== "/server/backups" && <BackupBanner onOpen={() => navigate("/server/backups")} />}
         {isInstanceAdmin && location.pathname !== "/server/storage" && <StorageBanner onOpen={() => navigate("/server/storage")} />}
-        {area !== "settings" && !offline && <KitBanner />}
+        {/* A demo sandbox has no recovery kit to make: its password is random and it's deleted on schedule. */}
+        {area !== "settings" && !offline && !user?.demoExpiresAt && <KitBanner />}
         {!offline && <ResetBanner onOpen={() => navigate("/settings/security")} />}
         {!offline && <GroupAccessBanner folders={v.folders} />}
         <AdminRecoveryNotice />

@@ -13,7 +13,8 @@ export const IDLE_LOCK_MS = 15 * 60_000;
  * `recoveryKit`: whether the account has a recovery kit (docs/recovery.md). `role`: the role in the active organisation
  * (owners count as admins); `orgRole` tells owners apart.
  */
-export interface User { id: string; email: string; name: string; role: "admin" | "member"; orgRole?: OrgRole | null; recoveryKit?: boolean }
+export interface User { id: string; email: string; name: string; role: "admin" | "member"; orgRole?: OrgRole | null; recoveryKit?: boolean;
+  /** A public demo sandbox account (docs/demo.md): when it and everything in it is deleted (ISO time). */ demoExpiresAt?: string }
 export type OrgRole = "owner" | "admin" | "member";
 /** An organisation the user is an active member of (docs/design/2026-10-07-multi-org-design.md). */
 /** `policies`: the org's policies for clients (docs/policies.md); read them with useOrgPolicies() in lib/policies. */
@@ -76,6 +77,8 @@ const ORG_KEY = (userId: string) => storageKey(`cv.org.${userId}`);
 const PERSONAL_MARK = "-";
 const readOrg = (userId: string) => { try { return localStorage.getItem(ORG_KEY(userId)); } catch { return null; } };
 const writeOrg = (userId: string, id: string | null) => { try { localStorage.setItem(ORG_KEY(userId), id ?? PERSONAL_MARK); } catch { /* private mode */ } };
+/** Makes this org the space a new sign-in of `userId` on this device opens first (the demo opens its sandbox's org). */
+export const rememberSpace = (userId: string, orgId: string | null) => writeOrg(userId, orgId);
 /** Which space to open: an org id, null (Personal), or the one used last on this device ("remembered"; Personal when there is none). */
 export type SpaceChoice = string | null | "remembered";
 /** The org of that space, among the user's orgs; null (Personal) when it isn't one of them. */
@@ -94,7 +97,8 @@ const refused = (e: unknown) => e instanceof ApiError && e.status >= 400 && e.st
 
 const Ctx = createContext<SessionValue | null>(null);
 /** The account from a sign-in response; its role is filled in from the active org. */
-const toUser = (u: AuthResponse["user"]): User => ({ id: u.id, email: u.email, name: u.name, role: "member", ...(u.recoveryKit !== undefined ? { recoveryKit: u.recoveryKit } : {}) });
+const toUser = (u: AuthResponse["user"]): User => ({ id: u.id, email: u.email, name: u.name, role: "member", ...(u.recoveryKit !== undefined ? { recoveryKit: u.recoveryKit } : {}),
+  ...(u.demoExpiresAt ? { demoExpiresAt: u.demoExpiresAt } : {}) });
 const wipe = (k: UnlockedKeys | null) => { k?.userKey.fill(0); k?.privateKey.fill(0); };
 
 export function SessionProvider({ children }: { children: ReactNode }) {
