@@ -6,7 +6,8 @@
     "test": "playwright test",
     "test:extension": "playwright test -c playwright.extension.config.ts",
     "showcase": "node showcase/run.mjs",
-    "showcase:flyer": "node showcase/run.mjs --flyer"
+    "showcase:flyer": "node showcase/run.mjs --flyer",
+    "demo": "node demo/run.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
