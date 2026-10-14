@@ -1,9 +1,12 @@
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 import { newInvite, newSharedFolder, saveRecoveryKit, switchSpace, totp } from "../helpers";
+// The made-up company, shared with the public demo's sample data (docs/demo.md).
+import {
+  agreementPdf, AGREEMENT_PDF_NAME, BEA, CERT_NAME, CERT_PEM, LIAM, MAYA, NORTHWIND_FOLDERS, PRIYA, SARA, TOM, type NorthwindRecord,
+} from "../../apps/web/src/features/demo/northwind";
 
 // Marketing screenshots for the flyer and website: seeds a made-up company
 // (Northwind, example.com people, invented secrets) in its organisation space and captures the shots into
@@ -15,64 +18,9 @@ const PW = "showcase master password";
 const MAX_BYTES = 400 * 1024;
 const VIEWPORT = { width: 1440, height: 900 };
 
-const SARA = { name: "Sara Okafor", email: "sara@example.com" };
-const BEA = { name: "Bea Lindqvist", email: "bea@example.com" };
-const PRIYA = { name: "Priya Nair", email: "priya@example.com" };
-const TOM = { name: "Tom Reyes", email: "tom@example.com" };
-const LIAM = { name: "Liam Chen", email: "liam@example.com" };
-const MAYA = { name: "Maya Haddad", email: "maya@example.com" };
-
 function sql(query: string): string {
   const target = process.env.E2E_DB_CONTAINER ? `docker exec -i ${process.env.E2E_DB_CONTAINER}` : "docker compose -f deploy/docker-compose.dev.yml exec -T db";
   return execSync(`${target} psql -U vault -d vault -tAc "${query}"`, { cwd: "..", stdio: "pipe" }).toString().trim();
-}
-
-/** Deterministic made-up base64 (fake keys and certificates: they belong to nothing). */
-function fakeB64(seed: string, bytes: number): string {
-  let out = Buffer.alloc(0), h = seed;
-  while (out.length < bytes) { h = createHash("sha256").update(h).digest("hex"); out = Buffer.concat([out, Buffer.from(h, "hex")]); }
-  return out.subarray(0, bytes).toString("base64");
-}
-const wrap = (s: string, n = 64) => s.match(new RegExp(`.{1,${n}}`, "g"))!.join("\n");
-const PRIVATE_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----\n${wrap(fakeB64("northwind deploy key", 300), 70)}\n-----END OPENSSH PRIVATE KEY-----`;
-const PUBLIC_KEY = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${fakeB64("northwind deploy pub", 32).replace(/=+$/, "")} deploy@northwind`;
-const CERT = Buffer.from(`-----BEGIN CERTIFICATE-----\n${wrap(fakeB64("northwind wildcard cert", 900))}\n-----END CERTIFICATE-----\n`);
-
-/** A one-page A4 PDF: a made-up maintenance agreement. */
-function agreementPdf(): Buffer {
-  const esc = (s: string) => s.replace(/[\\()]/g, (c) => `\\${c}`);
-  const lines: [number, number, string][] = [
-    [20, 790, "Server maintenance agreement"],
-    [11, 762, "Northwind Ltd  and  Harbour Hosting Ltd (example.com)"],
-    [10, 720, "1. Scope"],
-    [10, 702, "Harbour Hosting maintains the production web server (deploy@10.20.0.5) and its"],
-    [10, 688, "backups. Patches are applied in the Sunday window, 02:00-04:00 UTC."],
-    [10, 656, "2. Response times"],
-    [10, 638, "Critical: 1 hour, around the clock.   High: 4 hours.   Normal: next business day."],
-    [10, 606, "3. Access"],
-    [10, 588, "Credentials are shared through Clane Vault only. No passwords by email or chat."],
-    [10, 574, "Engineers get Use only access; nothing is copied out of the vault."],
-    [10, 542, "4. Term"],
-    [10, 524, "Twelve months from 1 October 2026, renewing yearly unless either side gives notice."],
-    [10, 460, "Signed for Northwind Ltd: Sara Okafor          Signed for Harbour Hosting: Tom Reyes"],
-  ];
-  const stream = lines.map(([size, y, t]) => `BT /F${size >= 20 ? 2 : 1} ${size} Tf 56 ${y} Td (${esc(t)}) Tj ET`).join("\n")
-    + "\n0.85 0.86 0.9 RG 56 740 m 539 740 l S 56 476 m 539 476 l S";
-  const objs = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>",
-    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
-  ];
-  let out = "%PDF-1.4\n";
-  const offsets: number[] = [];
-  objs.forEach((o, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
-  const xref = out.length;
-  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
-  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(out, "latin1");
 }
 
 /** A small rack diagram drawn on a canvas in the page (PNG bytes). */
@@ -141,7 +89,7 @@ async function choose(page: Page, label: string, option: string) {
   await page.getByRole("option", { name: option, exact: true }).click();
 }
 
-type Rec = { type: string; title: string; fields?: Record<string, string>; options?: Record<string, string>; notes?: string };
+type Rec = NorthwindRecord;
 
 /** + New → Record of any type in a shared folder; fills the editor by field label and saves. */
 async function addRecord(page: Page, folder: string, r: Rec) {
@@ -167,37 +115,7 @@ async function addRecord(page: Page, folder: string, r: Rec) {
   await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
 }
 
-const FOLDERS: { name: string; people: [typeof BEA, "Can edit" | "Can view" | "Use only"][]; records: Rec[] }[] = [
-  { name: "Infrastructure", people: [[BEA, "Can edit"], [TOM, "Can edit"], [LIAM, "Use only"]], records: [
-    { type: "Server credentials", title: "Production web server", options: { Protocol: "SSH" },
-      fields: { "Hostname or IP": "10.20.0.5", Port: "22", Username: "deploy", Password: "Qm7#vT2x!Rk9pL4w" },
-      notes: "web-01 in rack A3. Harbour Hosting patches it on Sundays." },
-    { type: "Login", title: "AWS root account", fields: { Username: "ops@example.com", Password: "vR8#tQ2m!Lx6pZ9w", Website: "console.aws.amazon.com" },
-      notes: "Root user. Billing and break-glass only." },
-    { type: "SSH key", title: "Deploy key", fields: { Username: "deploy", Host: "git.example.com", "Private key": PRIVATE_KEY, "Public key": PUBLIC_KEY } },
-    { type: "Database credentials", title: "Orders database", options: { Type: "PostgreSQL" },
-      fields: { Host: "db-01.example.com", Port: "5432", Database: "orders", Username: "app_rw", Password: "Hn4$kW8z@Pc3tF6q" } },
-    { type: "API key / secret", title: "Cloudflare API token", fields: { Service: "Cloudflare", "Key ID": "nw-dns-edit", Secret: "cf_9fXq2LmZ7tR4vK8wN3bH6yD1sJ5pG0aE", Endpoint: "https://api.example.com" } },
-    { type: "Login", title: "GitHub org owner", fields: { Username: "northwind-bot", Password: "pF6&zR1x#Mv8sJ3k", Website: "github.com" } },
-  ] },
-  { name: "Finance", people: [[PRIYA, "Can edit"], [BEA, "Can view"]], records: [
-    { type: "Payment card", title: "Company Visa", fields: { Cardholder: "Sara Okafor", "Card number": "4242 4242 4242 4242", Expiry: "08/29",
-      "Security code": "737", PIN: "4821", "Billing address": "12 Harbour Street\nDublin D02 XY45\nIreland" } },
-    { type: "Bank account", title: "Operating account", fields: { "Account name": "Northwind Ltd", Bank: "Example Bank", "IBAN / account number": "IE29 EXMP 9311 5212 3456 78",
-      "BIC / sort code / routing": "EXMPIE2D", "Online banking login": "northwind-fin", Password: "Bx9!rJ4w@Tn7qK2h" } },
-    { type: "Login", title: "Stripe dashboard", fields: { Username: "finance@example.com", Password: "Lm2^gS6t#Pk9vE4r", Website: "dashboard.stripe.com" } },
-  ] },
-  { name: "Office", people: [[BEA, "Can view"], [PRIYA, "Can view"], [TOM, "Can view"], [MAYA, "Can view"]], records: [
-    { type: "Wi-Fi", title: "Office Wi-Fi", options: { Security: "WPA3" }, fields: { "Network name (SSID)": "Northwind-Staff", Password: "harbour-lantern-42" } },
-    { type: "Wi-Fi", title: "Guest Wi-Fi", options: { Security: "WPA2" }, fields: { "Network name (SSID)": "Northwind-Guest", Password: "welcome-tide-17" } },
-    { type: "Software licence", title: "Adobe Creative Cloud", fields: { Product: "Creative Cloud Teams", "Licence key": "NW7Q-4KXP-9TZM-2RBC", "Licensed to": "Northwind Ltd", Version: "2026" } },
-  ] },
-  { name: "Clients", people: [[MAYA, "Can edit"], [PRIYA, "Can view"]], records: [
-    { type: "Login", title: "Acme customer portal", fields: { Username: "northwind-support", Password: "Tg7#qL2v!Rm9zW4x", Website: "portal.example.com" },
-      notes: "Support login for Acme Ltd's portal. Tickets go to support@example.com." },
-    { type: "Contact", title: "Acme IT contact", fields: { Name: "Jordan Blake", Company: "Acme Ltd", Email: "jordan@example.com", Phone: "+353 1 555 0142" } },
-  ] },
-];
+const FOLDERS = NORTHWIND_FOLDERS;
 
 async function expandFolder(page: Page, name: string, open = true) {
   const folder = page.getByRole("button", { name: new RegExp(`^${name}`) }).first();
@@ -295,11 +213,11 @@ test("flyer screenshots", async ({ browser }, testInfo) => {
   await page.getByTestId("record-row").getByRole("button", { name: /Production web server/ }).first().click();
   const files = page.getByRole("region", { name: "Files" });
   await files.getByTestId("attach-input").setInputFiles([
-    { name: "maintenance-agreement.pdf", mimeType: "application/pdf", buffer: agreementPdf() },
+    { name: AGREEMENT_PDF_NAME, mimeType: "application/pdf", buffer: Buffer.from(agreementPdf()) },
     { name: "rack-a3.png", mimeType: "image/png", buffer: await rackPng(page) },
-    { name: "wildcard-example-com.pem", mimeType: "application/x-pem-file", buffer: CERT },
+    { name: CERT_NAME, mimeType: "application/x-pem-file", buffer: Buffer.from(CERT_PEM) },
   ]);
-  for (const n of ["maintenance-agreement.pdf", "rack-a3.png", "wildcard-example-com.pem"])
+  for (const n of [AGREEMENT_PDF_NAME, "rack-a3.png", CERT_NAME])
     await expect(files.getByTestId("file-row").getByText(n)).toBeVisible({ timeout: 60_000 });
 
   // Groups, with members.
