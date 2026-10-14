@@ -18,6 +18,7 @@ import { eventAdminRoutes } from "./events.js";
 import { provisioningAdminRoutes } from "./provisioning.js";
 import { riskAdminRoutes } from "./risk.js";
 import { instanceStorageRoutes, storageAdminRoutes } from "./storage.js";
+import { notInDemo, readOnlyInDemo } from "../lib/demo.js";
 
 const idParam = z.object({ id: z.string().uuid() });
 const userParam = z.object({ userId: z.string().uuid() });
@@ -30,6 +31,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", app.requireAuth);
 
   await app.register(async (instance) => {
+    // A demo instance has no instance admins (only sandbox accounts); its server pages are closed regardless.
+    instance.addHook("preHandler", notInDemo(app));
     instance.addHook("preHandler", async (req, reply) => {
       if (reply.sent) return;
       if (!(await isInstanceAdmin(app.prisma, app.config, req.auth.userId))) await reply.code(403).send({ error: "forbidden" });
@@ -44,8 +47,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     org.addHook("preHandler", app.orgAdmin);
     await org.register(adminRecoveryRoutes);
     await org.register(orgAdminRoutes);
-    await org.register(orgEmailRoutes, { prefix: "/settings/email" });
-    await org.register(ssoSettingsRoutes, { prefix: "/settings/sso" });
+    // Demo mode (docs/demo.md): email and single sign-on settings can be looked at, never changed or tested.
+    await org.register(async (settings) => {
+      settings.addHook("preHandler", readOnlyInDemo(app));
+      await settings.register(orgEmailRoutes, { prefix: "/settings/email" });
+      await settings.register(ssoSettingsRoutes, { prefix: "/settings/sso" });
+    });
     await org.register(groupAdminRoutes, { prefix: "/groups" });
     await org.register(policyAdminRoutes, { prefix: "/settings/policies" });
     await org.register(healthAdminRoutes, { prefix: "/health" });

@@ -15,6 +15,7 @@ import { consumeTotp } from "../lib/totp.js";
 import { signSetup, splitRefresh } from "../lib/tokens.js";
 import { authView, convertOtherInvites, createSession, materialSchema } from "./auth.js";
 import { applyPendingGroups } from "../lib/invites.js";
+import { notInDemo } from "../lib/demo.js";
 
 const email = z.string().trim().toLowerCase().email().max(254);
 const b64 = z.string().regex(/^[A-Za-z0-9_-]+$/).max(4096);
@@ -34,6 +35,8 @@ type SsoError = "sso_state" | "sso_denied" | "sso_failed" | "sso_email_unverifie
  * `/proof` (what it is for) → `/login` (master password, maybe TOTP) or `/register` (new account).
  */
 export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
+  // Demo mode (docs/demo.md): no single sign-on.
+  app.addHook("preHandler", notInDemo(app));
   const box = secretBox(app.config.serverSecret);
   const material = materialSchema(app.config.kdfMinMemoryKiB);
   const meta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });

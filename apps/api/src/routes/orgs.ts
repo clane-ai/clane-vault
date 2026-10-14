@@ -39,7 +39,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
           passwordPolicy: { minLength: p.minPasswordLength, minScore: p.minPasswordScore } };
       }),
       // Instance admins (the operator) can always create organisations, e.g. one per customer.
-      allowOrgCreation: app.config.allowOrgCreation === true || instanceAdmin, hostedMode: !!app.config.hostedMode,
+      allowOrgCreation: !app.config.demo && (app.config.allowOrgCreation === true || instanceAdmin), hostedMode: !!app.config.hostedMode,
       instanceAdmin,
     };
   });
@@ -47,6 +47,8 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
   /** Joins the org. Admin recovery is per membership key, so other orgs' recovery is unaffected. */
   app.post("/me/invitations/:orgId/accept", async (req, reply) => {
     const { orgId } = orgParam.parse(req.params);
+    // Demo mode (docs/demo.md): a sandbox account belongs to its own sandbox only.
+    if (app.config.demo) return reply.code(404).send({ error: "not_found" });
     const me = req.auth.userId;
     const u = await app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { id: true, name: true, email: true } });
     const ended = await app.prisma.$transaction(async (tx) => {
@@ -72,6 +74,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
    */
   app.post("/me/join", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { token } = z.object({ token: z.string().min(10).max(200) }).parse(req.body);
+    if (app.config.demo) return reply.code(404).send({ error: "not_found" });
     const me = await app.prisma.user.findUniqueOrThrow({ where: { id: req.auth.userId }, select: { id: true, email: true } });
     const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(token) }, select: { id: true, orgId: true, email: true, role: true, invitedById: true, source: true, acceptedAt: true, expiresAt: true, org: { select: { name: true } } } });
     if (!inv || inv.acceptedAt || inv.expiresAt < new Date() || inv.email !== me.email) return reply.code(404).send({ error: "not_found" });
@@ -126,7 +129,8 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
   app.post("/orgs", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const me = req.auth.userId;
     const operator = await isInstanceAdmin(app.prisma, app.config, me);
-    if (app.config.allowOrgCreation !== true && !operator) return reply.code(403).send({ error: "org_creation_disabled" });
+    // Demo mode (docs/demo.md): each visitor has their one sandbox organisation.
+    if (app.config.demo || (app.config.allowOrgCreation !== true && !operator)) return reply.code(403).send({ error: "org_creation_disabled" });
     const { name } = z.object({ name: orgName }).parse(req.body);
     // MAX_OWNED_ORGS limits self-service sign-ups, not the operator setting up customers.
     if (!operator && (await app.prisma.membership.count({ where: { userId: me, role: "owner" } })) >= (app.config.maxOwnedOrgs ?? 5)) return reply.code(409).send({ error: "org_limit" });

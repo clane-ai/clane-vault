@@ -11,6 +11,7 @@ import { signRecovery, signSetup, verifyToken } from "../lib/tokens.js";
 import { authView, createSession, kdfView, materialView } from "./auth.js";
 import { lockUser } from "../lib/orgs.js";
 import { ACCT_PREFIX, currentKey, recoverableKey } from "../lib/membershipKeys.js";
+import { readOnlyInDemo } from "../lib/demo.js";
 
 /** A 256-bit value in base64url (43 chars): recovery-kit auth values and admin-link proofs. */
 const secret256 = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
@@ -31,6 +32,9 @@ class WrongKey extends Error {}
  * the account's sign-in lockout.
  */
 export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
+  // Demo mode (docs/demo.md): sandbox accounts have no authenticator and a password nobody knows, so recovery (the only
+  // way to change a master password) is closed; GET /options still answers.
+  app.addHook("preHandler", readOnlyInDemo(app));
   const box = secretBox(app.config.serverSecret);
   const material = z.object({
     kdfSalt: b64, kdfParams: z.object({ alg: z.literal("argon2id"), m: z.number().int().min(app.config.kdfMinMemoryKiB).max(1048576), t: z.number().int().min(1).max(10), p: z.number().int().min(1).max(4) }),

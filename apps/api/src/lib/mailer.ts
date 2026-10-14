@@ -198,8 +198,9 @@ Open ${where} and choose Reconnect (Sign in with Microsoft). Until then, emails 
     return c.resendApiKey && c.emailFrom ? { source: "env", provider: "resend", from: c.emailFrom, apiKey: c.resendApiKey } : null;
   }
 
-  /** The transport for an email about `orgId` (null: an account or instance email). */
+  /** The transport for an email about `orgId` (null: an account or instance email). None at all in demo mode (docs/demo.md). */
   async resolve(orgId?: string | null): Promise<Transport | null> {
+    if (this.deps.config.demo) return null;
     const rows = await this.deps.prisma.emailSettings.findMany({ where: { scope: { in: [scopeOf(null), ...(orgId ? [scopeOf(orgId)] : [])] } } });
     const org = orgId ? rows.find((r) => r.orgId === orgId) : undefined;
     const inst = rows.find((r) => r.scope === "instance");

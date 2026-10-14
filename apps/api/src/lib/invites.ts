@@ -85,6 +85,9 @@ export async function sendNewInvite(app: FastifyInstance, o: {
   const hosted = !!app.config.hostedMode;
   const existing = await app.prisma.user.findUnique({ where: { email: o.email }, select: { id: true, memberships: { where: { orgId: o.org.id }, select: { status: true } } } });
   const already = !!existing?.memberships.length;
+  // Demo mode (docs/demo.md): sandboxes never reach each other. An address with an account elsewhere (another visitor's)
+  // gets nothing: no invitation in their app, no link. The answer looks like any other invite's.
+  if (app.config.demo && existing && !already) return { already: false, emailed: false, inviteUrl: null };
   const makeLink = !hosted || !existing;
   const token = makeLink ? randomBytes(24).toString("base64url") : null;
   const now = new Date();
@@ -136,6 +139,8 @@ export async function resendInvite(app: FastifyInstance, orgId: string, inviteId
   const existing = await app.prisma.user.findUnique({ where: { email }, select: { id: true, memberships: { where: { orgId }, select: { status: true } } } });
   // Joined (or disabled) since: nothing to resend.
   if (existing?.memberships.some((x) => x.status !== "invited")) return { ok: false, error: "not_found" };
+  // Demo mode: never an invitation to another sandbox's account (as sendNewInvite).
+  if (app.config.demo && existing) return { ok: false, error: "not_found" };
   const makeLink = !hosted || !existing;
   const token = makeLink ? randomBytes(24).toString("base64url") : null;
   const now = new Date();
