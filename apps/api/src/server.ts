@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { createPrisma } from "./db.js";
 import { ensureDefaultOrg } from "./lib/orgs.js";
 import { checkServerSecret, ServerSecretMismatch } from "./lib/serverSecretCheck.js";
+import { checkDemoStartup, DemoStartupRefused } from "./lib/demo.js";
 
 const config = loadConfig();
 // Default matches the repo/image layout: apps/api/dist/src/server.js -> apps/web/dist
@@ -19,6 +20,15 @@ try {
   console.error(JSON.stringify({ level: 60, event: "server_secret_mismatch", msg: e.message }));
   process.exit(1);
 }
+// Demo mode (docs/demo.md) only on a database of demo sandboxes: a real account anywhere stops the start.
+try {
+  await checkDemoStartup(prisma, config);
+} catch (e) {
+  if (!(e instanceof DemoStartupRefused)) throw e;
+  console.error(JSON.stringify({ level: 60, event: "demo_mode_refused", msg: e.message }));
+  process.exit(1);
+}
+if (config.demo) console.warn(JSON.stringify({ level: 40, event: "demo_mode", msg: `DEMO_MODE is on: anyone can create a throwaway sandbox that is deleted after ${config.demo.ttlMinutes} minutes, without an authenticator. No email is sent; SSO, organisation creation, backups and server settings are off. Never use this instance for real data.` }));
 // A fresh install gets its default organisation; the one the multi-org migration made gets its name.
 await ensureDefaultOrg(prisma, config);
 const app = await buildApp({ config, prisma, logger: true, ...(existsSync(webDist) ? { webDist } : {}) });

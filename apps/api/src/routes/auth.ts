@@ -17,6 +17,8 @@ import { linkAndJoin } from "../lib/ssoLink.js";
 import type { Db } from "../lib/access.js";
 import { applyPendingGroups } from "../lib/invites.js";
 import { domainJoinPublicRoutes } from "./provisioning.js";
+import { demoExpired, demoOn, demoSkipsTotp, sessionEnd } from "../lib/demo.js";
+import { demoRoutes } from "./demo.js";
 
 const DEFAULT_KDF = { alg: "argon2id", m: 65536, t: 3, p: 1 };
 const REFRESH_TTL_MS = 12 * 60 * 60 * 1000;
@@ -32,9 +34,12 @@ const email = z.string().trim().toLowerCase().email().max(254);
 const code = z.string().regex(/^\d{6}$/);
 
 export const kdfView = (k: unknown) => { const o = k as { alg: string; m: number; t: number; p: number }; return { alg: o.alg, m: o.m, t: o.t, p: o.p }; };
-/** `recoveryKit`: whether the user has a recovery kit (the app asks those without one to create it). */
-export const userView = (u: { id: string; email: string; name: string; recoveryCreatedAt?: Date | null }) =>
-  ({ id: u.id, email: u.email, name: u.name, recoveryKit: !!u.recoveryCreatedAt });
+/**
+ * `recoveryKit`: whether the user has a recovery kit (the app asks those without one to create it). `demoExpiresAt`: only
+ * for a demo sandbox account (docs/demo.md), when it and everything in it is deleted.
+ */
+export const userView = (u: { id: string; email: string; name: string; recoveryCreatedAt?: Date | null; demoExpiresAt?: Date | null }) =>
+  ({ id: u.id, email: u.email, name: u.name, recoveryKit: !!u.recoveryCreatedAt, ...(u.demoExpiresAt ? { demoExpiresAt: u.demoExpiresAt.toISOString() } : {}) });
 export const materialView = (u: { kdfSalt: string; kdfParams: unknown; wrappedUserKey: string; publicKey: string; wrappedPrivateKey: string }) =>
   ({ kdfSalt: u.kdfSalt, kdfParams: kdfView(u.kdfParams), wrappedUserKey: u.wrappedUserKey, publicKey: u.publicKey, wrappedPrivateKey: u.wrappedPrivateKey });
 
@@ -67,10 +72,13 @@ export const clientSchema = z.enum(["web", "extension"]).optional();
 /** `client: "extension"`: no cookie; the refresh token is returned for the extension to keep (docs/extension.md). */
 export async function createSession(app: FastifyInstance, reply: FastifyReply, user: { id: string }, userAgent?: string, opts: { ssoOrgIds?: string[]; totpSkippedForOrg?: string; client?: "web" | "extension" } = {}) {
   const ext = opts.client === "extension";
-  const session = await app.prisma.session.create({ data: { userId: user.id, refreshHash: `pending-${crypto.randomUUID()}`, userAgent: ext ? EXTENSION_LABEL : userAgent, expiresAt: new Date(Date.now() + REFRESH_TTL_MS), ssoOrgIds: opts.ssoOrgIds ?? [], totpSkippedForOrg: opts.totpSkippedForOrg ?? null } });
+  // A demo sandbox account's session ends with its sandbox (docs/demo.md).
+  const u = await app.prisma.user.findUnique({ where: { id: user.id }, select: { demoExpiresAt: true } });
+  const expiresAt = sessionEnd({ demoExpiresAt: u?.demoExpiresAt ?? null }, REFRESH_TTL_MS);
+  const session = await app.prisma.session.create({ data: { userId: user.id, refreshHash: `pending-${crypto.randomUUID()}`, userAgent: ext ? EXTENSION_LABEL : userAgent, expiresAt, ssoOrgIds: opts.ssoOrgIds ?? [], totpSkippedForOrg: opts.totpSkippedForOrg ?? null } });
   const refresh = newRefreshToken(session.id);
   await app.prisma.session.update({ where: { id: session.id }, data: { refreshHash: refresh.hash } });
-  if (!ext) reply.setCookie("cv_refresh", refresh.token, { httpOnly: true, secure: app.config.cookieSecure, sameSite: "strict", path: `${apiPrefix(app.config)}/auth`, maxAge: REFRESH_TTL_MS / 1000 });
+  if (!ext) reply.setCookie("cv_refresh", refresh.token, { httpOnly: true, secure: app.config.cookieSecure, sameSite: "strict", path: `${apiPrefix(app.config)}/auth`, maxAge: Math.max(1, Math.floor((expiresAt.getTime() - Date.now()) / 1000)) });
   return { accessToken: await signAccess(app.config, { userId: user.id, sessionId: session.id }), ...(ext ? { refreshToken: refresh.token } : {}) };
 }
 
@@ -94,6 +102,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   // Email domain auto-join: POST /auth/domain-join (docs/provisioning.md).
   await app.register(domainJoinPublicRoutes);
+  // Public demo sandboxes (docs/demo.md): only on a DEMO_MODE=true instance; elsewhere the paths don't exist (404).
+  if (demoOn(app.config)) await app.register(demoRoutes);
 
   app.post("/prelogin", async (req) => {
     const { email: e } = z.object({ email }).parse(req.body);
@@ -140,8 +150,11 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   // 10 per minute per address at the default RATE_LIMIT_PER_MINUTE (300); scales with it like the other sensitive routes.
   app.post("/register", { config: { rateLimit: { max: Math.max(10, Math.floor((app.config.rateLimitPerMinute ?? 300) / 30)), timeWindow: "1 minute" } } }, async (req, reply) => {
     const body = z.object({ inviteToken: z.string().min(10).max(200), name: displayName, authKey: b64, material, emailCode: z.string().regex(/^\d{6}$/).optional() }).parse(req.body);
-    const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(body.inviteToken) } });
+    const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(body.inviteToken) }, include: { org: { select: { demoExpiresAt: true } } } });
     if (!inv || inv.acceptedAt || inv.expiresAt < new Date()) return reply.code(400).send({ error: "invite_invalid" });
+    // A demo instance holds demo sandboxes only (docs/demo.md): an invite to anything else (a bootstrap invite to the
+    // default organisation, say) never makes an account there, and a sandbox past its time takes no one new.
+    if (demoOn(app.config) && !(inv.org.demoExpiresAt && inv.org.demoExpiresAt > new Date())) return reply.code(400).send({ error: "invite_invalid" });
     if (app.config.hostedMode) {
       // The code proves the person registering reads the invited mailbox. Every try is counted first, atomically and
       // only while the code is live and under both caps (5 per code, 15 per invite), then compared.
@@ -165,7 +178,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       const now = new Date();
       await tx.invite.update({ where: { id: inv.id }, data: { acceptedAt: now, emailCodeHash: null } });
       const u = await tx.user.create({ data: {
-        email: inviteEmail, name: body.name, status: "pending_2fa", authHash, instanceAdmin: inv.instanceAdmin,
+        email: inviteEmail, name: body.name, status: "pending_2fa", authHash, instanceAdmin: inv.instanceAdmin && !inv.org.demoExpiresAt,
+        // Joining a demo sandbox makes a demo account: it goes when the sandbox does.
+        demoExpiresAt: inv.org.demoExpiresAt,
         kdfSalt: body.material.kdfSalt, kdfParams: body.material.kdfParams, wrappedUserKey: body.material.wrappedUserKey,
         publicKey: body.material.publicKey, wrappedPrivateKey: body.material.wrappedPrivateKey,
       } });
@@ -231,7 +246,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/login", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const body = z.object({ email, authKey: z.string().max(4096), code: z.string().max(10).optional(), client: clientSchema }).parse(req.body);
     const user = await app.prisma.user.findUnique({ where: { email: body.email } });
-    if (!user || user.status === "disabled") {
+    if (!user || user.status === "disabled" || demoExpired(user)) {
       await argon2.verify(dummyHash, body.authKey).catch(() => false);
       return reply.code(401).send({ error: "invalid_credentials" });
     }
@@ -245,6 +260,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     };
 
     if (!(await argon2.verify(user.authHash, body.authKey).catch(() => false))) return fail("invalid_credentials");
+    // Demo sandbox accounts on a demo instance (both checked by demoSkipsTotp) have no authenticator: no setup, no code.
+    if (demoSkipsTotp(app.config, user)) {
+      const active = await app.prisma.user.update({ where: { id: user.id }, data: { status: "active", failedLogins: 0, lockedUntil: null } });
+      await logEvent(app.prisma, { actorId: user.id, action: "auth.login", ...meta(req), meta: { demo: true } });
+      const { accessToken, refreshToken } = await createSession(app, reply, active, meta(req).userAgent, { client: body.client });
+      return { ...(await authView(app.prisma, accessToken, active)), ...(refreshToken ? { refreshToken } : {}) };
+    }
     if (user.status === "pending_2fa") return { needsTotpSetup: true, setupToken: await signSetup(app.config, user.id) };
     if (!body.code) return reply.code(401).send({ error: "totp_required" });
     if (!(await consumeTotp(app.prisma, box, user, body.code))) return fail("totp_invalid");
@@ -272,7 +294,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed) return deny();
     const load = () => app.prisma.session.findUnique({ where: { id: parsed.sessionId }, include: { user: true } });
     // A body token is only good for an extension session: a cookie session's token never works outside its cookie.
-    const valid = (x: Awaited<ReturnType<typeof load>>) => !!x && !x.revokedAt && x.expiresAt >= new Date() && x.user.status === "active" && (!fromBody || x.userAgent === EXTENSION_LABEL);
+    const valid = (x: Awaited<ReturnType<typeof load>>) => !!x && !x.revokedAt && x.expiresAt >= new Date() && x.user.status === "active" && !demoExpired(x.user) && (!fromBody || x.userAgent === EXTENSION_LABEL);
     let session = await load();
     if (!session || !valid(session)) return deny();
     const h = hashToken(parsed.secret);

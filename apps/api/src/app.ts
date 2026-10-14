@@ -40,6 +40,7 @@ import { DbChunkStore, type ChunkStores } from "./lib/attachments/store.js";
 import { S3ChunkStore } from "./lib/attachments/s3Store.js";
 import { AttachmentSweeper } from "./lib/attachments/sweep.js";
 import { attachmentConfig, instanceUsage, MIB } from "./lib/attachments/quota.js";
+import { DEMO_SWEEP_INTERVAL_MS, sweepExpiredDemos } from "./lib/demo.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -165,6 +166,16 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       const quota = att.instanceQuotaMb * MIB;
       if (quota > 0 && used > 0.8 * quota) app.log.warn({ event: "attachments.instance_usage_high", usedBytes: used, quotaBytes: quota }, "Attachments use over 80 % of ATTACHMENT_INSTANCE_QUOTA_MB; consider ATTACHMENT_STORAGE=s3 (docs/attachments.md)");
     }).catch(() => undefined);
+  }
+  // Demo mode (docs/demo.md): expired sandboxes are hard-deleted, each in one transaction. Their sessions stopped working at
+  // expiry already (plugins/auth.ts); this removes the data.
+  if (opts.config.demo) {
+    const demoSweep = setInterval(() => {
+      sweepExpiredDemos(opts.prisma, new Date(), app.log).then((r) => { if (r.sandboxes || r.users) app.log.info({ event: "demo.swept", ...r }, "expired demo sandboxes deleted"); })
+        .catch((e: unknown) => app.log.error(e));
+    }, DEMO_SWEEP_INTERVAL_MS);
+    demoSweep.unref();
+    app.addHook("onClose", async () => { clearInterval(demoSweep); });
   }
   backups.startScheduler();
   app.addHook("onClose", () => backups.stop());

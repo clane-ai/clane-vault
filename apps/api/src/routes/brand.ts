@@ -39,7 +39,8 @@ const view = (b: { productName: string | null; shortName: string | null; logoSha
  * and whether there's an instance logo. Read before sign-in, so no authentication.
  */
 export const publicBrandRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/brand", async () => view(await app.brand.get()));
+  // `demo`: this is a public demo instance (docs/demo.md): the sign-in page offers "Try the demo". Null otherwise.
+  app.get("/brand", async () => ({ ...view(await app.brand.get()), demo: app.config.demo ? { ttlMinutes: app.config.demo.ttlMinutes } : null }));
 
   /** The instance logo: public, it is shown on the sign-in page. */
   app.get("/brand/logo", async (req, reply) => {

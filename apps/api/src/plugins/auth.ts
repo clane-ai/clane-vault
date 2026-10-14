@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { verifyToken } from "../lib/tokens.js";
+import { demoExpired } from "../lib/demo.js";
 
 declare module "fastify" {
   interface FastifyRequest { auth: { userId: string; sessionId: string;
@@ -22,8 +23,9 @@ export function registerAuth(app: FastifyInstance) {
   app.decorate("requireAuth", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const t = await verifyToken(app.config, bearer(req), "access");
-      const session = await app.prisma.session.findUnique({ where: { id: t.sid! }, include: { user: { select: { status: true } } } });
-      if (!session || session.revokedAt || session.expiresAt < new Date() || session.user.status !== "active") throw new Error("session ended");
+      const session = await app.prisma.session.findUnique({ where: { id: t.sid! }, include: { user: { select: { status: true, demoExpiresAt: true } } } });
+      // A demo sandbox stops working the moment it expires, before the sweep deletes it (docs/demo.md).
+      if (!session || session.revokedAt || session.expiresAt < new Date() || session.user.status !== "active" || demoExpired(session.user)) throw new Error("session ended");
       req.auth = { userId: t.sub, sessionId: t.sid!, totpSkippedForOrg: session.totpSkippedForOrg };
     } catch {
       await reply.code(401).send({ error: "unauthorized" });

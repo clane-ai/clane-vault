@@ -139,7 +139,7 @@ describe("instance branding", () => {
   it("GET /brand is public and has nulls until an instance admin sets names", async () => {
     const r = await t.app.inject({ method: "GET", url: "/api/v1/brand" });
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual({ productName: null, shortName: null, logoVersion: null });
+    expect(r.json()).toEqual({ productName: null, shortName: null, logoVersion: null, demo: null });
     expect((await t.app.inject({ method: "GET", url: "/api/v1/brand/logo" })).statusCode).toBe(404);
   });
 
@@ -153,7 +153,7 @@ describe("instance branding", () => {
 
     const ok = await put(admin, { productName: "  Acme   Keys ", shortName: "Keys" });
     expect(ok.json()).toEqual({ productName: "Acme Keys", shortName: "Keys", logoVersion: null });
-    expect((await t.app.inject({ method: "GET", url: "/api/v1/brand" })).json()).toEqual({ productName: "Acme Keys", shortName: "Keys", logoVersion: null });
+    expect((await t.app.inject({ method: "GET", url: "/api/v1/brand" })).json()).toEqual({ productName: "Acme Keys", shortName: "Keys", logoVersion: null, demo: null });
     expect(await t.app.brand.productName()).toBe("Acme Keys");
     expect(totpKeyUri(await t.app.brand.productName(), "a@b.test", "JBSWY3DPEHPK3PXP")).toMatch(/^otpauth:\/\/totp\/Acme%20Keys:/);
     const ev = await t.prisma.event.findFirstOrThrow({ where: { action: "instance.brand_change" } });
