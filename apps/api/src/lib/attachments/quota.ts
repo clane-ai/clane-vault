@@ -1,4 +1,4 @@
-import { DEFAULT_ATTACHMENTS, type AttachmentConfig, type Config } from "../../config.js";
+import { DEFAULT_ATTACHMENTS, demoAttachments, type AttachmentConfig, type Config } from "../../config.js";
 import type { Db } from "../access.js";
 
 /**
@@ -11,7 +11,11 @@ export const MIB = 1024 * 1024;
 /** pg_advisory_xact_lock key for attachment reservations (backups use 7341 with a second key). */
 export const QUOTA_LOCK = 7342;
 
-export const attachmentConfig = (c: Pick<Config, "attachments">): AttachmentConfig => c.attachments ?? DEFAULT_ATTACHMENTS;
+/** The attachment settings in force: a demo instance's are capped small (docs/demo.md). */
+export const attachmentConfig = (c: Pick<Config, "attachments" | "demo">): AttachmentConfig => {
+  const a = c.attachments ?? DEFAULT_ATTACHMENTS;
+  return c.demo ? demoAttachments(a) : a;
+};
 
 export type Charge = { kind: "org"; orgId: string } | { kind: "user"; userId: string };
 export type QuotaScope = "org" | "user" | "instance";

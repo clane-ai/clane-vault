@@ -71,6 +71,9 @@ model User {
   totpResetAt       DateTime?
   /// Instance admin (Backups): set by the bootstrap invite or the instance-admin CLI only, never by email matching.
   instanceAdmin     Boolean    @default(false)
+  /// Demo mode (docs/demo.md): a throwaway sandbox account, hard-deleted with everything it holds at this time. Null for
+  /// every real account. Only DEMO_MODE=true instances make them, and those refuse to start with any account without it.
+  demoExpiresAt     DateTime?
   createdAt         DateTime   @default(now())
   sessions          Session[]
   /// Account key generation: a scoped admin recovery replaces the user key and account key pair and bumps it
@@ -89,6 +92,8 @@ model User {
   ssoIdentities     SsoIdentity[]
   groupMemberships  GroupMember[]
   healthReports     HealthReport[]
+
+  @@index([demoExpiresAt])
 }
 
 /// A tenant. Users are global; everything shared (team folders, shares, invites, admin power, recovery) is per organisation.
@@ -130,6 +135,10 @@ model Organization {
   onboardingDismissedAt  DateTime?
   pendingGroupMembers    PendingGroupMember[]
   domainJoin             OrgDomainJoin?
+  /// Demo mode (docs/demo.md): a visitor's sandbox organisation, deleted with its people and data at this time.
+  demoExpiresAt          DateTime?
+
+  @@index([demoExpiresAt])
 }
 
 /// An organisation's logo (docs/branding.md): PNG, JPEG or WebP only (never SVG), at most 256 KB and 1024×1024, its

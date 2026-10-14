@@ -59,6 +59,10 @@ const schema = z.object({
   ATTACHMENT_USER_QUOTA_MB: z.preprocess(blank, z.coerce.number().int().min(0).max(100_000_000).default(512)),
   ATTACHMENT_INSTANCE_QUOTA_MB: z.preprocess(blank, z.coerce.number().int().min(0).max(1_000_000_000).default(10240)),
   ATTACHMENT_DAILY_UPLOAD_MB: z.preprocess(blank, z.coerce.number().int().min(1).max(100_000_000).default(2048)),
+  // Public demo (docs/demo.md): throwaway sandboxes, deleted after DEMO_TTL_MINUTES.
+  DEMO_MODE: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
+  DEMO_TTL_MINUTES: z.preprocess(blank, z.coerce.number().int().min(5).max(7 * 24 * 60).default(120)),
+  DEMO_SANDBOXES_PER_IP_PER_HOUR: z.preprocess(blank, z.coerce.number().int().min(1).max(10000).default(5)),
 });
 
 export interface BackupConfig {
@@ -136,7 +140,19 @@ export interface Config {
   /** SSO_ALLOW_HTTP_ISSUER (default false): allow http:// OpenID Connect issuers. Development and tests only. */
   ssoAllowHttpIssuer?: boolean;
   /** File attachments; absent: the defaults (DEFAULT_ATTACHMENTS). */
-  attachments?: AttachmentConfig }
+  attachments?: AttachmentConfig;
+  /**
+   * Public demo (DEMO_MODE, default false; docs/demo.md): visitors get a throwaway sandbox without an authenticator, deleted
+   * after `ttlMinutes` (DEMO_TTL_MINUTES, default 120). No email is sent, SSO and organisation creation are off, file
+   * uploads are capped small. `sandboxesPerIpPerHour` (DEMO_SANDBOXES_PER_IP_PER_HOUR, default 5) limits sign-ups.
+   * Absent: off.
+   */
+  demo?: DemoConfig }
+
+export interface DemoConfig { ttlMinutes: number; sandboxesPerIpPerHour: number }
+
+/** Attachment caps a demo instance never goes above, in MiB: per file, and for one sandbox (its quotas and its day). */
+export const DEMO_ATTACHMENT_CAPS = { maxFileMb: 5, sandboxMb: 20 } as const;
 
 /** One path segment of BASE_PATH: unreserved URL characters only (no dot-segments). */
 const SEGMENT = /^[A-Za-z0-9._~-]+$/;
@@ -220,8 +236,18 @@ function attachmentConfig(e: z.infer<typeof schema>): AttachmentConfig {
   return a;
 }
 
+/** A demo instance's attachment limits: the configured ones, but never above DEMO_ATTACHMENT_CAPS (lib/attachments/quota.ts applies it). */
+export function demoAttachments(a: AttachmentConfig): AttachmentConfig {
+  const { maxFileMb, sandboxMb } = DEMO_ATTACHMENT_CAPS;
+  return { ...a, maxFileMb: Math.min(a.maxFileMb, maxFileMb), maxRecordMb: Math.min(a.maxRecordMb, sandboxMb), orgQuotaMb: Math.min(a.orgQuotaMb, sandboxMb),
+    userQuotaMb: Math.min(a.userQuotaMb, sandboxMb),
+    // A sandbox's visitor is its only account that can upload, and it lives for hours: this caps the sandbox as a whole.
+    dailyUploadMb: Math.min(a.dailyUploadMb, sandboxMb) };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const e = schema.parse(env);
+  if (e.DEMO_MODE === "true" && e.HOSTED_MODE === "true") throw new Error("DEMO_MODE=true can't be combined with HOSTED_MODE=true: a demo instance holds throwaway sandboxes only");
   if (e.SSO_ALLOW_HTTP_ISSUER === "true" && (e.HOSTED_MODE === "true" || env.NODE_ENV === "production"))
     throw new Error("SSO_ALLOW_HTTP_ISSUER=true is for development only: not with HOSTED_MODE=true or NODE_ENV=production");
   if (env.NODE_ENV === "production") {
@@ -234,5 +260,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(e.RESEND_API_KEY && e.EMAIL_FROM ? { resendApiKey: e.RESEND_API_KEY, emailFrom: e.EMAIL_FROM } : {}), backup: backupConfig(e),
     ...(e.DEFAULT_ORG_NAME ? { defaultOrgName: e.DEFAULT_ORG_NAME } : {}), allowOrgCreation: e.ALLOW_ORG_CREATION === "true", acceptNewServerSecret: e.ACCEPT_NEW_SERVER_SECRET === "true",
     hostedMode: e.HOSTED_MODE === "true", invitesPerOrgPerDay: e.INVITES_PER_ORG_PER_DAY, maxOwnedOrgs: e.MAX_OWNED_ORGS,
-    ssoAllowHttpIssuer: e.SSO_ALLOW_HTTP_ISSUER === "true", attachments: attachmentConfig(e) };
+    ssoAllowHttpIssuer: e.SSO_ALLOW_HTTP_ISSUER === "true",
+    attachments: attachmentConfig(e),
+    ...(e.DEMO_MODE === "true" ? { demo: { ttlMinutes: e.DEMO_TTL_MINUTES, sandboxesPerIpPerHour: e.DEMO_SANDBOXES_PER_IP_PER_HOUR } } : {}) };
 }
