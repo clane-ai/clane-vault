@@ -37,6 +37,7 @@ const ERRORS: Record<string, string> = {
   owner_only: "Only the organisation's owner can set up single sign-on, change the identity provider, \"Require SSO\" or trusting the provider's MFA.",
   public_domain: "Public email providers (Gmail, Outlook…) can't be SSO domains.",
   domain_taken: "Another organisation on this server has already verified this domain.",
+  owner_only_last_domain: "Only the organisation's owner can remove the last verified domain while \"Require SSO\" or email domain auto-join is on: removing it switches them off.",
 };
 const errorText = (e: unknown) => (e instanceof ApiError ? (e.body as { detail?: string } | null)?.detail ?? ERRORS[e.code] ?? "Couldn't save. Try again." : "Couldn't reach the server.");
 const CHECK_LABEL: Record<string, string> = { discovery: "Discovery", metadata: "Provider settings", client: "Client ID and secret" };
@@ -109,7 +110,8 @@ export function SsoSettingsSection() {
     onSuccess: (v, domain) => { apply(v); setDomainMsg({ domain, ok: true, text: `${domain} is verified.` }); },
     onError: (e, domain) => setDomainMsg({ domain, ok: false, text: errorText(e) }),
   });
-  const dropDomain = useMutation({ mutationFn: (domain: string) => oapi.del(`/admin/settings/sso/domains/${encodeURIComponent(domain)}`), onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }) });
+  const dropDomain = useMutation({ mutationFn: (domain: string) => oapi.del(`/admin/settings/sso/domains/${encodeURIComponent(domain)}`), onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }),
+    onError: (e, domain) => setDomainMsg({ domain, ok: false, text: errorText(e) }) });
 
   function submit(e: FormEvent) {
     e.preventDefault(); setError(null);

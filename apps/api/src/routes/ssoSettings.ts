@@ -144,11 +144,28 @@ export const ssoSettingsRoutes: FastifyPluginAsync = async (app) => {
     const d = normalizeDomain(domainParam.parse(req.params).domain);
     const orgId = orgOf(req);
     if (!d) return reply.code(404).send({ error: "not_found" });
-    const n = await app.prisma.ssoDomain.deleteMany({ where: { orgId, domain: d } });
-    if (!n.count) return reply.code(404).send({ error: "not_found" });
-    // Without a verified domain, "Require SSO", just-in-time joining and email domain auto-join can't apply: switch them off.
-    if (!(await app.prisma.ssoDomain.count({ where: { orgId, verifiedAt: { not: null } } }))) await app.prisma.orgSso.updateMany({ where: { orgId }, data: { requireSso: false, autoJoin: false } });
-    await disableDomainJoinIfNoDomain(app.prisma, orgId);
+    const r = await app.prisma.$transaction(async (tx) => {
+      // One removal at a time per org: two admins removing the last two verified domains at once can't both pass the check.
+      await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+      const row = await tx.ssoDomain.findUnique({ where: { orgId_domain: { orgId, domain: d } }, select: { id: true } });
+      if (!row) return "not_found" as const;
+      const lastVerified = !(await tx.ssoDomain.count({ where: { orgId, verifiedAt: { not: null }, id: { not: row.id } } }));
+      // Without a verified domain, "Require SSO", just-in-time joining and email domain auto-join can't apply, so removing
+      // the last one switches them off. "Require SSO" and domain auto-join are the owner's to change: an admin can't
+      // switch them off this way (403 owner_only_last_domain); domains that leave a verified one behind stay theirs to remove.
+      if (lastVerified && req.org!.role !== "owner") {
+        const sso = await tx.orgSso.findUnique({ where: { orgId }, select: { requireSso: true } });
+        const join = await tx.orgDomainJoin.findUnique({ where: { orgId }, select: { enabled: true } });
+        const blocking = [...(sso?.requireSso ? ["requireSso"] : []), ...(join?.enabled ? ["domainJoin"] : [])];
+        if (blocking.length) return { blocking };
+      }
+      await tx.ssoDomain.delete({ where: { id: row.id } });
+      if (lastVerified) await tx.orgSso.updateMany({ where: { orgId }, data: { requireSso: false, autoJoin: false } });
+      await disableDomainJoinIfNoDomain(tx, orgId);
+      return "ok" as const;
+    });
+    if (r === "not_found") return reply.code(404).send({ error: "not_found" });
+    if (r !== "ok") return reply.code(403).send({ error: "owner_only_last_domain", settings: r.blocking });
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "sso.domain_removed", meta: { domain: d }, ...meta(req) });
     return view(orgId);
   });

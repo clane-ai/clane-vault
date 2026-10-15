@@ -64,7 +64,10 @@ The stored secret is only ever sent to the stored issuer and client ID; testing 
 Error details are generic (no raw network errors).
 
 Changing the issuer removes all identity links of the organisation (subjects of another provider mean nothing).
-Removing the last verified domain switches "Require SSO" and auto-join off. A domain whose TXT record disappears is
+Removing the last verified domain switches "Require SSO" and auto-join off. "Require SSO" and email domain auto-join are
+the owner's settings, so while either is on only the owner can remove the last verified domain; an admin gets
+`403 owner_only_last_domain` (with `settings`: which ones would switch off). Admins can still remove any other domain,
+and the last one when neither is on. A domain whose TXT record disappears is
 un-verified the next time it would grant something new (re-checked at most daily); remove the domain in the app to
 revoke it at once.
 

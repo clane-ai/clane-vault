@@ -97,4 +97,19 @@ describe("owner-only SSO options", () => {
     expect(within(sec).getByRole("switch", { name: "Trust the identity provider's MFA" })).toBeDisabled();
     expect(within(sec).getByRole("switch", { name: "Auto-join verified domain users" })).toBeEnabled();
   });
+
+  it("explains why an admin can't remove the last verified domain while Require SSO is on", async () => {
+    vi.spyOn(sessionModule, "useSession").mockReturnValue({ user: { id: "u2", name: "Adam", email: "adam@acme.test", role: "admin" }, org: { ...ORG, role: "admin" } } as never);
+    server.use(
+      http.get("/api/v1/admin/settings/sso", () => HttpResponse.json({ ...base,
+        config: { issuer: "https://idp", clientId: "c", clientSecret: { set: true, last4: null }, requireSso: true, trustIdpMfa: false, autoJoin: false, updatedAt: new Date().toISOString(), updatedBy: null },
+        domains: [{ domain: "acme.test", verified: true, verifiedAt: new Date().toISOString(), txtRecord: { name: "acme.test", value: "x" } }] })),
+      http.delete("/api/v1/admin/settings/sso/domains/:d", () => HttpResponse.json({ error: "owner_only_last_domain", settings: ["requireSso"] }, { status: 403 })),
+    );
+    wrap(<SsoSettingsSection />);
+    const sec = await screen.findByRole("region", { name: "Single sign-on" });
+    const item = await within(sec).findByRole("listitem", { name: "acme.test" });
+    await userEvent.click(within(item).getByRole("button", { name: "Remove acme.test" }));
+    expect(await within(item).findByRole("alert")).toHaveTextContent("Only the organisation's owner can remove the last verified domain while \"Require SSO\" or email domain auto-join is on");
+  });
 });
