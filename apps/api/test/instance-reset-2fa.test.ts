@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveLoginKeys } from "@clane-vault/crypto";
-import { makeTestApp, resetDb, createActiveUser } from "./helpers.js";
+import { makeTestApp, resetDb, createActiveUser, freshTotp, wrongTotp } from "./helpers.js";
+import { LOCK_AFTER } from "../src/lib/lockout.js";
 import { resetTwoFactorByEmail } from "../src/lib/twoFactor.js";
 
 // The instance-level authenticator reset by email address, which reaches organisation owners (docs/recovery.md), and
@@ -34,6 +35,9 @@ async function instanceAdmin(): Promise<U> {
   return a;
 }
 
+/** The instance admin's reset, with their own fresh authenticator code unless `code` is given. */
+const reset = async (ia: U, email: string, code?: string) => call(ia, "POST", "/admin/instance/users/reset-2fa", { email, code: code ?? await freshTotp(ia.totpSecret) }, null);
+
 /** An account that owns its own organisation (not the default one). */
 async function ownerOfNewOrg(name = "Customer"): Promise<U> {
   const org = await t.prisma.organization.create({ data: { name, slug: `${name.toLowerCase()}-${crypto.randomUUID().slice(0, 8)}` } });
@@ -45,7 +49,7 @@ describe("resetting someone's authenticator by email address (instance admins)",
     const ia = await instanceAdmin();
     const owner = await ownerOfNewOrg();
     const sent = mailbox();
-    const r = await call(ia, "POST", "/admin/instance/users/reset-2fa", { email: ` ${owner.email.toUpperCase()} ` }, null);
+    const r = await reset(ia, ` ${owner.email.toUpperCase()} `);
     expect(r.statusCode, r.body).toBe(200);
     expect(r.json()).toEqual({ ok: true, email: owner.email, emailed: true });
     const u = await t.prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
@@ -67,13 +71,36 @@ describe("resetting someone's authenticator by email address (instance admins)",
     // The default org's owner and admins aren't instance admins by role: only the flag counts.
     expect((await call(admin, "POST", "/admin/instance/users/reset-2fa", { email: owner.email }, null)).statusCode).toBe(403);
     expect((await call(owner, "POST", "/admin/instance/users/reset-2fa", { email: admin.email }, null)).statusCode).toBe(403);
-    expect((await call(ia, "POST", "/admin/instance/users/reset-2fa", { email: ia.email }, null)).json()).toEqual({ error: "self" });
-    expect((await call(ia, "POST", "/admin/instance/users/reset-2fa", { email: "nobody@clane.ai" }, null)).statusCode).toBe(404);
+    expect((await reset(ia, ia.email)).json()).toEqual({ error: "self" });
+    expect((await reset(ia, "nobody@clane.ai")).statusCode).toBe(404);
     // The organisation route still never touches an owner.
     expect((await call(admin, "POST", `/admin/users/${ia.id}/reset-2fa`)).json()).toEqual({ error: "owner" });
     await t.prisma.user.update({ where: { id: admin.id }, data: { status: "disabled" } });
-    expect((await call(ia, "POST", "/admin/instance/users/reset-2fa", { email: admin.email }, null)).json()).toEqual({ error: "disabled" });
+    expect((await reset(ia, admin.email)).json()).toEqual({ error: "disabled" });
     for (const id of [owner.id, ia.id]) expect((await t.prisma.user.findUniqueOrThrow({ where: { id } })).status).toBe("active");
+    expect(await t.prisma.event.count({ where: { action: "instance.reset_2fa" } })).toBe(0);
+  });
+
+  it("needs the instance admin's own fresh authenticator code, checked before the address and counted toward their lockout", async () => {
+    const ia = await instanceAdmin();
+    const owner = await ownerOfNewOrg();
+    // No code: refused before anything else.
+    expect((await call(ia, "POST", "/admin/instance/users/reset-2fa", { email: owner.email }, null)).statusCode).toBe(400);
+    // A wrong code gets the same answer for a real and an unknown address: no probing which addresses exist.
+    for (const email of [owner.email, "nobody@clane.ai"]) expect((await reset(ia, email, wrongTotp(ia.totpSecret))).json()).toEqual({ error: "totp_invalid" });
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { id: ia.id } })).failedLogins).toBe(2);
+    expect(await t.prisma.event.count({ where: { actorId: ia.id, action: "auth.reauth_failed" } })).toBe(2);
+    // A code used once doesn't work again (the target is untouched until a good code).
+    const code = await freshTotp(ia.totpSecret);
+    expect((await reset(ia, "nobody@clane.ai", code)).statusCode).toBe(404);
+    expect((await reset(ia, owner.email, code)).json()).toEqual({ error: "totp_invalid" });
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).status).toBe("active");
+    // Enough wrong codes lock the instance admin's account: then even a right code gets 423.
+    for (let i = 3; i < LOCK_AFTER; i++) await reset(ia, owner.email, wrongTotp(ia.totpSecret));
+    const locked = await reset(ia, owner.email);
+    expect(locked.statusCode).toBe(423);
+    expect(locked.json()).toMatchObject({ error: "locked" });
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).status).toBe("active");
     expect(await t.prisma.event.count({ where: { action: "instance.reset_2fa" } })).toBe(0);
   });
 

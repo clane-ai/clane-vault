@@ -18,25 +18,36 @@ const ERRORS: Record<string, string> = {
   disabled: "That account is disabled. Enable it before resetting its authenticator.",
   invalid_request: "Enter an email address.",
   rate_limited: "Too many resets in a minute. Wait a moment and try again.",
+  totp_invalid: "That code didn't work. Wait for the next code from your authenticator and try again.",
+  locked: "Too many failed attempts. Your account is locked for 15 minutes.",
 };
+/** Errors about the instance admin's own code: shown in the confirmation step, which stays open. */
+const CODE_ERRORS = new Set(["totp_invalid", "locked"]);
 const errorText = (e: unknown) => (e instanceof ApiError ? ERRORS[e.status === 429 ? "rate_limited" : e.code] ?? "Couldn't reset it. Try again." : "Couldn't reach the server.");
 
 /**
  * Server → Accounts: resets someone's authenticator by email address (POST /admin/instance/users/reset-2fa). The only
- * way to reset an organisation owner's; works without seeing into their organisations. A confirmation step first.
+ * way to reset an organisation owner's; works without seeing into their organisations. A confirmation step first, with
+ * the instance admin's own fresh authenticator code (the server checks it before anything else).
  */
 export function ResetAuthenticatorCard() {
   const [email, setEmail] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const close = () => { setConfirming(null); setCode(""); setCodeError(null); };
   const reset = useMutation({
-    mutationFn: (address: string) => sapi.post<{ ok: true; email: string; emailed: boolean }>("/admin/instance/users/reset-2fa", { email: address }),
+    mutationFn: (b: { email: string; code: string }) => sapi.post<{ ok: true; email: string; emailed: boolean }>("/admin/instance/users/reset-2fa", b),
     onSuccess: (r) => {
-      setEmail("");
+      close(); setEmail("");
       setResult({ ok: true, text: `${r.email} is signed out everywhere and will set up a new authenticator at their next sign-in. ${r.emailed ? "They were emailed about it." : "No email was sent (email isn't set up or failed): tell them yourself."}` });
     },
-    onError: (e) => setResult({ ok: false, text: errorText(e) }),
-    onSettled: () => setConfirming(null),
+    onError: (e) => {
+      setCode("");
+      if (e instanceof ApiError && CODE_ERRORS.has(e.code)) return setCodeError(errorText(e));
+      close(); setResult({ ok: false, text: errorText(e) });
+    },
   });
   function submit(e: FormEvent) {
     e.preventDefault(); setResult(null);
@@ -64,7 +75,7 @@ export function ResetAuthenticatorCard() {
         <Button type="submit" variant="outline" disabled={!email.trim() || reset.isPending}>Reset authenticator</Button>
       </form>
       {result && <p role={result.ok ? "status" : "alert"} className={cn("pl-12 text-[13px] max-[560px]:pl-0", result.ok ? "text-green-600" : "text-red-500")}>{result.text}</p>}
-      <Dialog open={confirming !== null} onOpenChange={(o) => !o && !reset.isPending && setConfirming(null)}>
+      <Dialog open={confirming !== null} onOpenChange={(o) => !o && !reset.isPending && close()}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Reset the authenticator of {confirming}?</DialogTitle>
@@ -72,10 +83,19 @@ export function ResetAuthenticatorCard() {
               They're signed out on every device and must set up a new authenticator app at their next sign-in. Their vault and organisations don't change. The reset is logged and they're emailed.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setConfirming(null)} disabled={reset.isPending}>Cancel</Button>
-            <Button type="button" variant="destructive" onClick={() => confirming && reset.mutate(confirming)} disabled={reset.isPending}>{reset.isPending ? "Resetting…" : "Reset authenticator"}</Button>
-          </div>
+          <form noValidate className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); setCodeError(null); if (confirming && code.length === 6) reset.mutate({ email: confirming, code }); }}>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="reset-2fa-code">Your authenticator code</Label>
+              <Input id="reset-2fa-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} className="w-[180px] font-mono tracking-[0.3em]" value={code}
+                onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); setCodeError(null); }} />
+              <p className="text-[12px] text-text-tertiary">The 6-digit code from your own authenticator app: resetting someone else's needs a fresh one each time.</p>
+            </div>
+            {codeError && <p role="alert" className="text-[13px] text-red-500">{codeError}</p>}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={close} disabled={reset.isPending}>Cancel</Button>
+              <Button type="submit" variant="destructive" disabled={reset.isPending || code.length !== 6}>{reset.isPending ? "Resetting…" : "Reset authenticator"}</Button>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
     </section>

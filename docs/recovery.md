@@ -245,13 +245,18 @@ they belong to (or an instance admin who is an admin there), and it never applie
 
 **Resetting an owner's 2FA.** No organisation's admin can reset its owner's authenticator. An instance admin can, by
 email address, without being a member of the owner's organisations: **Server → Accounts → Reset someone's
-authenticator** (a confirmation step first), or `POST /admin/instance/users/reset-2fa` with `{ "email": "…" }` (10 a
-minute; `404 not_found`, `409 disabled`). It works for any account, owners included, and does what **Reset 2FA** does:
+authenticator** (a confirmation step that asks for their own authenticator code), or
+`POST /admin/instance/users/reset-2fa` with `{ "email": "…", "code": "<their own 6-digit code>" }` (10 a minute;
+`404 not_found`, `409 disabled`). It works for any account, owners included, and does what **Reset 2FA** does:
 the account goes back to authenticator setup, every session is signed out, the person is emailed (through the server's
 email settings) and the instance admin is recorded as the resetter for admin recovery. The event is
-`instance.reset_2fa`, logged at instance level (no organisation). Like **Reset 2FA** on People, it asks for no
-re-authentication. An instance admin can never reset their own account this way (`400 self`): a signed-in session
-shouldn't be able to drop its own second factor.
+`instance.reset_2fa`, logged at instance level (no organisation). Because it reaches every account on the server, a
+signed-in session alone isn't enough: the instance admin's own fresh authenticator code is checked first, as for turning
+admin recovery on. A wrong or reused code answers `401 totp_invalid`, counts toward the instance admin's own lockout
+(10 failures lock the account for 15 minutes, `423 locked`) and logs `auth.reauth_failed`. The code is checked before
+the address is looked up, so without a valid code the route can't tell which addresses have accounts. An instance
+admin can never reset their own account this way (`400 self`): a signed-in session shouldn't be able to drop its own
+second factor.
 
 **The server operator's command.** When the instance admin is the one locked out, or on a self-hosted server without
 one to hand, whoever runs the server resets an account from the command line:
