@@ -2,7 +2,7 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
-## Unreleased
+## 1.7.2 — 2026-10-15
 
 Upgrading: migration `20261024000000_customer_orgs` runs on start (two nullable columns on `Organization` and an index). No `.env` change.
 
