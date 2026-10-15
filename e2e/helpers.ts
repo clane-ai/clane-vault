@@ -35,6 +35,11 @@ export function newOrg(name: string): string {
   return id;
 }
 
+/** Makes an existing account an instance admin in the dev DB (what the instance-admin CLI does). */
+export function makeInstanceAdmin(email: string): void {
+  psql(`UPDATE \\"User\\" SET \\"instanceAdmin\\"=true WHERE email='${email}'`);
+}
+
 /**
  * Marks an organisation's SSO domain verified in the dev DB (the real check is a DNS TXT lookup, which an e2e run can't
  * publish). The domain must have been added in Settings → Single sign-on first.
@@ -160,7 +165,7 @@ export async function settingsPage(page: Page, name: string | RegExp): Promise<v
 
 /**
  * Admin (/o/<org>/admin/*; from Personal, an organisation the user administers): People, Groups, Event log, Password health, Migrate from Keeper; the organisation's General,
- * Policies, Single sign-on, Admin recovery, Email; Server: Branding, Email, Backups (instance admins).
+ * Policies, Single sign-on, Admin recovery, Email; Server: Customer organisations, Accounts, Branding, Email, Backups (instance admins).
  */
 export async function adminPage(page: Page, name: string | RegExp): Promise<void> {
   await accountMenu(page, /^Admin/);

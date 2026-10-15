@@ -137,8 +137,13 @@ model Organization {
   domainJoin             OrgDomainJoin?
   /// Demo mode (docs/demo.md): a visitor's sandbox organisation, deleted with its people and data at this time.
   demoExpiresAt          DateTime?
+  /// Created by an instance admin for a customer (Server → Customer organisations, docs/provisioning.md): the address the
+  /// owner invitation went to, as the operator typed it, and who created it. Null for every other organisation.
+  customerOwnerEmail     String?
+  customerCreatedById    String?      @db.Uuid
 
   @@index([demoExpiresAt])
+  @@index([customerOwnerEmail])
 }
 
 /// An organisation's logo (docs/branding.md): PNG, JPEG or WebP only (never SVG), at most 256 KB and 1024×1024, its
@@ -199,7 +204,7 @@ model Invite {
   orgId       String    @db.Uuid
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   email       String
-  /// admin or member; owner only for the first owner of an organisation (bootstrap).
+  /// admin or member; owner only for the first owner of an organisation (bootstrap, or a customer organisation).
   role        OrgRole   @default(member)
   tokenHash   String    @unique
   invitedById String?   @db.Uuid
@@ -217,7 +222,8 @@ model Invite {
   acceptedAt  DateTime?
   createdAt   DateTime  @default(now())
   /// Where the invite came from (docs/provisioning.md): "admin" (an admin invited them, one by one or in bulk) or
-  /// "domain" (email domain auto-join: they asked, with an address in a domain this org verified).
+  /// "domain" (email domain auto-join: they asked, with an address in a domain this org verified) or "customer" (the
+  /// owner invitation of an organisation an instance admin created for a customer; it stays an owner invitation).
   source      String    @default("admin")
   /// The name from a bulk import (a hint for the sign-up form only).
   nameHint    String?

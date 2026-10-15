@@ -36,6 +36,14 @@ export async function coolingDown(db: Db, orgId: string, email: string): Promise
   return !!(await db.inviteCooldown.findFirst({ where: { orgId, email, until: { gt: new Date() } }, select: { id: true } }));
 }
 
+/**
+ * The role an invite link gives when it becomes an invitation to an existing account (claimed, or met at sign-up through
+ * another organisation's link). An owner link (bootstrap) becomes admin, except a customer organisation's owner
+ * invitation (lib/customerOrgs.ts): that one stays owner, and accepting it checks that the organisation still has no
+ * owner and MAX_OWNED_ORGS.
+ */
+export const invitedRole = (inv: { role: OrgRole; source: string }): OrgRole => (inv.role === "owner" && inv.source !== "customer" ? "admin" : inv.role);
+
 /** Invite and join links. `/join/<token>` is for someone who already has an account (they claim it signed in). */
 export const inviteUrlFor = (app: FastifyInstance, token: string) => `${app.config.publicUrl}/invite/${token}`;
 export const joinUrlFor = (app: FastifyInstance, token: string) => `${app.config.publicUrl}/join/${token}`;

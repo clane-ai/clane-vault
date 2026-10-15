@@ -10,6 +10,7 @@ import { adminRecoveryRoutes } from "./adminRecovery.js";
 import { startAdminAge } from "./auth.js";
 import { clearTwoFactor } from "../lib/twoFactor.js";
 import { instanceAdminRoutes } from "./instanceAdmin.js";
+import { customerOrgRoutes } from "./customerOrgs.js";
 import { instanceEmailRoutes, orgEmailRoutes } from "./emailSettings.js";
 import { instanceBrandRoutes } from "./brand.js";
 import { ssoSettingsRoutes } from "./ssoSettings.js";
@@ -43,8 +44,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     await instance.register(instanceEmailRoutes, { prefix: "/instance/email" });
     await instance.register(instanceBrandRoutes, { prefix: "/instance/brand" });
     await instance.register(instanceStorageRoutes, { prefix: "/instance/storage" });
-    // Account tools that work without seeing into any organisation.
+    // Account and customer-organisation tools that work without seeing into any organisation.
     await instance.register(instanceAdminRoutes, { prefix: "/instance" });
+    await instance.register(customerOrgRoutes, { prefix: "/instance/orgs" });
   });
 
   await app.register(async (org) => {

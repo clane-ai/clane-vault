@@ -3,7 +3,7 @@ import { z } from "zod";
 import { tombstoneAttachments } from "../lib/attachments/sweep.js";
 import { logEvent } from "../lib/events.js";
 import { BURN } from "../lib/links.js";
-import { applyPendingGroups, coolDown, dropPendingGroups, INVITE_TTL_MS } from "../lib/invites.js";
+import { applyPendingGroups, coolDown, dropPendingGroups, INVITE_TTL_MS, invitedRole } from "../lib/invites.js";
 import { displayName } from "../lib/names.js";
 import { defaultOrg, dropInstanceAdminIfGone, isInstanceAdmin, lockUser, offboard, orgsOf, slugFor } from "../lib/orgs.js";
 import { startAdminAge } from "./auth.js";
@@ -53,7 +53,16 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const u = await app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { id: true, name: true, email: true } });
     const ended = await app.prisma.$transaction(async (tx) => {
       await lockUser(tx, me);
-      const n = await tx.membership.updateMany({ where: { orgId, userId: me, status: "invited", ...liveInvitation() }, data: { status: "active", joinedAt: new Date() } });
+      const inv = await tx.membership.findFirst({ where: { orgId, userId: me, status: "invited", ...liveInvitation() }, select: { role: true } });
+      if (!inv) return null;
+      let role = inv.role;
+      if (role === "owner") {
+        // An owner invitation (a customer organisation, docs/provisioning.md): one owner per organisation, so it counts
+        // only while there is none, and owning it must fit MAX_OWNED_ORGS, as for a transfer.
+        if (await tx.membership.findFirst({ where: { orgId, role: "owner", status: { not: "invited" } }, select: { id: true } })) role = "admin";
+        else if ((await tx.membership.count({ where: { userId: me, role: "owner", status: { not: "invited" }, orgId: { not: orgId } } })) >= (app.config.maxOwnedOrgs ?? 5)) return "org_limit" as const;
+      }
+      const n = await tx.membership.updateMany({ where: { orgId, userId: me, status: "invited" }, data: { status: "active", joinedAt: new Date(), role } });
       if (n.count === 0) return null;
       await tx.invite.updateMany({ where: { orgId, email: u.email, acceptedAt: null }, data: { acceptedAt: new Date() } });
       // Groups the invitation put them in (docs/provisioning.md); folder keys still wait for a key holder's approval.
@@ -61,6 +70,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       return true;
     });
     if (ended === null) return reply.code(404).send({ error: "not_found" });
+    if (ended === "org_limit") return reply.code(409).send({ error: "org_limit" });
     await startAdminAge(app, u, req.log);
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "org.join" });
     return { orgs: await orgsOf(app.prisma, req.auth.userId) };
@@ -87,7 +97,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       const n = await tx.invite.updateMany({ where: { id: inv.id, acceptedAt: null }, data: { acceptedAt: now, emailCodeHash: null } });
       if (!n.count) return "gone" as const;
       if (m?.status === "active") return "member" as const;
-      if (!m) await tx.membership.create({ data: { orgId: inv.orgId, userId: me.id, role: inv.role === "owner" ? "admin" : inv.role, status: "invited", invitedById: inv.invitedById, createdAt: now } });
+      if (!m) await tx.membership.create({ data: { orgId: inv.orgId, userId: me.id, role: invitedRole(inv), status: "invited", invitedById: inv.invitedById, createdAt: now } });
       else await tx.membership.updateMany({ where: { orgId: inv.orgId, userId: me.id, status: "invited" }, data: { createdAt: now } });
       return "invited" as const;
     });

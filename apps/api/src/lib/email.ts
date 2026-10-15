@@ -85,6 +85,29 @@ export function orgInvitationEmail(productName: string, orgName: string, inviter
 }
 
 /**
+ * The owner invitation of an organisation an instance admin created for a customer (docs/provisioning.md).
+ * `existingAccount`: they sign in and accept from the organisation menu; otherwise the link creates their account.
+ */
+export function ownerInviteEmail(productName: string, orgName: string, url: string, existingAccount: boolean): { subject: string; text: string } {
+  return {
+    subject: `You're invited to own ${orgName} on ${productName}`,
+    text: existingAccount
+      ? `The organisation ${orgName} was set up for you on ${productName}, the team password manager. You'll be its owner.
+
+Sign in with your existing account and accept the invitation from the organisation menu at the top left (it works for 7 days):
+${url}
+
+If you weren't expecting this, decline it or ignore this email.`
+      : `The organisation ${orgName} was set up for you on ${productName}, the team password manager. You'll be its owner.
+
+Create your account (the link works for 7 days):
+${url}
+
+If you weren't expecting this, ignore this email.`,
+  };
+}
+
+/**
  * Sends one plain-text email (docs/email.md). Security notices never pass `orgId` (they go out with the instance's
  * settings, so an organisation's admins can't silence or read them through their own mail server); invites do: with
  * `orgId`, that organisation's email settings when it has its own,

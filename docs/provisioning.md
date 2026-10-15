@@ -95,10 +95,46 @@ Keeper's "email auto-provisioning": anyone with an address in the organisation's
   (`INVITES_PER_ORG_PER_DAY`). A repeated request within 5 minutes sends nothing new; a later one sends a new link.
 - At every request the domain must still be verified: its TXT record is looked up again when it wasn't seen in the
   last 24 hours, and a record that is gone un-verifies the domain and switches auto-join (and SSO's Require SSO and
-  auto-join) off. Removing the last verified domain switches it off too. DNS failures refuse (fail closed).
+  auto-join) off. Removing the last verified domain switches it off too, so while it's on only the owner can remove
+  that domain (`403 owner_only_last_domain` for an admin). DNS failures refuse (fail closed).
 - Owners and admins are emailed when it is turned on or off or its groups change. Events:
   `org.domain_join_enabled` / `_disabled` / `_updated`, `org.domain_join_request` (`meta.domain`), `org.domain_join`
   (`meta.via: "signup"`), `org.invite_claimed` (`meta.source`).
+
+## Organisations for customers
+
+On a hosted server the operator (an instance admin) sets up one organisation per customer without joining it:
+**Server → Customer organisations**, with the organisation's name and its owner's email address.
+
+- The organisation is created with **no members** and an **owner invitation** for that address. The instance admin
+  never becomes a member and sees nothing inside it: the list shows only the name, the date, the owner's address as
+  typed, and whether the invitation is **Pending**, **Expired** or **Accepted**.
+- **Someone without an account** gets an invite link (HOSTED_MODE: only by email, and sign-up needs the emailed code;
+  self-hosted, the link is also shown once to pass on). Signing up through it makes them the owner.
+- **Someone with an account** gets an invitation to accept from the organisation menu (self-hosted, also a link). An
+  invite link that meets an account made later (claimed at `/join/<token>`, or met when they sign up through another
+  organisation's invitation) stays an owner invitation.
+- Accepting makes them the organisation's only owner. It counts toward their `MAX_OWNED_ORGS` (`409 org_limit` when
+  accepting, as for a transfer). Creating one isn't limited by `ALLOW_ORG_CREATION` or `MAX_OWNED_ORGS`. The instance
+  admin can't invite their own address (`400 self`).
+- **Keys**: nothing is made on the server. As in any organisation, the owner's browser creates their membership key
+  pair the first time they unlock in it (`docs/design/2026-10-08-per-org-keypairs.md`, 6.1), and what they share there
+  is sealed to it. Admin recovery starts off.
+- **Resend invite**: a fresh 7 days and the email again (a link gets a new token), not more than every 5 minutes, and
+  not within a day of a decline. **Cancel** deletes the organisation, which nobody has joined, and its invitation. An
+  accepted one can't be cancelled here (`409 accepted`): its owner can delete it.
+- Events: `org.create` (with `for: "customer"`), `admin.invite` and `admin.invite_resend` in the new organisation's
+  log, so its owner sees who set it up; `instance.customer_org_create`, `instance.customer_org_resend` and
+  `instance.customer_org_cancel` at instance level.
+
+This replaces creating the organisation yourself, inviting the customer as an admin, transferring ownership and leaving.
+
+| Method and path (instance admins; no `X-Org-Id`) | Body | Answer |
+|---|---|---|
+| `GET /admin/instance/orgs` | — | `{ orgs: [{ id, name, ownerEmail, createdAt, status, expiresAt }], hostedMode, emailConfigured }` |
+| `POST /admin/instance/orgs` | `{ name, ownerEmail }` | `201 { org, emailed, inviteUrl? }`; `400 self`, `409 email_required` (10 a minute) |
+| `POST /admin/instance/orgs/:orgId/resend` | — | `{ org, emailed, inviteUrl? }`; `404 not_found`, `409 accepted`, `409 invite_cooldown`, `409 email_required`, `429 too_soon` |
+| `DELETE /admin/instance/orgs/:orgId` | — | `204`; `404 not_found`, `409 accepted` |
 
 ## Onboarding checklist
 

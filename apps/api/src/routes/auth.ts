@@ -15,7 +15,7 @@ import { orgsOf } from "../lib/orgs.js";
 import { readPolicies } from "../lib/policies.js";
 import { linkAndJoin } from "../lib/ssoLink.js";
 import type { Db } from "../lib/access.js";
-import { applyPendingGroups } from "../lib/invites.js";
+import { applyPendingGroups, invitedRole } from "../lib/invites.js";
 import { domainJoinPublicRoutes } from "./provisioning.js";
 import { demoExpired, demoOn, demoSkipsTotp, sessionEnd } from "../lib/demo.js";
 import { demoRoutes } from "./demo.js";
@@ -84,9 +84,9 @@ export async function createSession(app: FastifyInstance, reply: FastifyReply, u
 
 /** Open invites from other organisations for the same address become invitations to accept in the app (at registration). */
 export async function convertOtherInvites(tx: Db, email: string, userId: string, exceptOrgId: string, now: Date) {
-  const others = await tx.invite.findMany({ where: { email, acceptedAt: null, expiresAt: { gt: now }, orgId: { not: exceptOrgId } }, select: { id: true, orgId: true, role: true, invitedById: true, createdAt: true } });
+  const others = await tx.invite.findMany({ where: { email, acceptedAt: null, expiresAt: { gt: now }, orgId: { not: exceptOrgId } }, select: { id: true, orgId: true, role: true, source: true, invitedById: true, createdAt: true } });
   for (const o of others) {
-    await tx.membership.upsert({ where: { orgId_userId: { orgId: o.orgId, userId } }, create: { orgId: o.orgId, userId, role: o.role === "owner" ? "admin" : o.role, status: "invited", invitedById: o.invitedById,
+    await tx.membership.upsert({ where: { orgId_userId: { orgId: o.orgId, userId } }, create: { orgId: o.orgId, userId, role: invitedRole(o), status: "invited", invitedById: o.invitedById,
       // The invite's own date (and so its expiry): the inviting org can't tell when the account was made.
       createdAt: o.createdAt }, update: {} });
     await tx.invite.update({ where: { id: o.id }, data: { acceptedAt: now } });

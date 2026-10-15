@@ -67,7 +67,10 @@ function useInvitationAction() {
       await api.post(`/me/invitations/${inv.orgId}/${kind}`);
       await reload(kind === "accept" ? inv.orgId : undefined);
       toast.success(kind === "accept" ? `You joined ${inv.orgName}` : "Invitation declined");
-    } catch { toast.error("Couldn't do that. Try again."); }
+    } catch (err) {
+      // An owner invitation counts toward MAX_OWNED_ORGS when it's accepted.
+      toast.error(err instanceof ApiError && err.code === "org_limit" ? "You already own as many organisations as this server allows. Hand one over or delete one first." : "Couldn't do that. Try again.");
+    }
   };
 }
 

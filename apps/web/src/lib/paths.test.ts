@@ -44,7 +44,7 @@ describe("app URLs: the space is in the path", () => {
     for (const s of ["account", "security", "device", "extension", "health"]) expect(parseAppPath(`/settings/${s}`)).toEqual({ area: "settings", section: s });
     expect(parseAppPath("/settings/people")).toEqual({ area: "redirect", to: "/settings" });
     expect(parseAppPath("/server")).toEqual({ area: "admin", space: null, section: null, detailId: null });
-    for (const s of ["accounts", "branding", "email", "backups"]) expect(parseAppPath(`/server/${s}`)).toEqual({ area: "admin", space: null, section: `server/${s}`, detailId: null });
+    for (const s of ["organisations", "accounts", "branding", "email", "backups"]) expect(parseAppPath(`/server/${s}`)).toEqual({ area: "admin", space: null, section: `server/${s}`, detailId: null });
     expect(parseAppPath("/server/nope")).toEqual({ area: "redirect", to: "/server" });
   });
 
