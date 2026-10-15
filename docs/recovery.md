@@ -178,6 +178,7 @@ account and checked by sign-in, 2FA setup, recovery, approvals and the policy sw
 master password and their authenticator:
 
 1. An admin uses **Reset 2FA** on People (signs them out everywhere; the server records which admin did it and when).
+   For an organisation owner, an instance admin does it in **Server → Accounts** (see "Organisations" below).
    **Verify the person's identity out-of-band before resetting 2FA** (a call to a known number, in person): a 2FA
    reset is what turns a stolen kit into a takeover (see the threat model).
 2. **With a recovery kit:** the member uses it; because the account has no authenticator, the flow asks them to scan
@@ -238,9 +239,28 @@ intent. Verify the person's identity out-of-band before both the reset and the a
 Admin recovery is a setting of each organisation, and since 1.2 it works for people in several organisations: each
 organisation's admins hold escrows of that organisation's membership key only, and can restore only that. Joining or
 leaving another organisation changes nothing in this one. Leaving an organisation deletes that membership's keys and
-escrows. Resetting someone's 2FA changes their whole account, so it needs an instance admin or an admin of every
-organisation they belong to, and never applies to an organisation owner (instance admins only). See
+escrows. Resetting someone's 2FA changes their whole account, so on People it needs an admin of every organisation
+they belong to (or an instance admin who is an admin there), and it never applies to an organisation owner. See
 `docs/design/2026-10-08-per-org-keypairs.md`.
+
+**Resetting an owner's 2FA.** No organisation's admin can reset its owner's authenticator. An instance admin can, by
+email address, without being a member of the owner's organisations: **Server → Accounts → Reset someone's
+authenticator** (a confirmation step first), or `POST /admin/instance/users/reset-2fa` with `{ "email": "…" }` (10 a
+minute; `404 not_found`, `409 disabled`). It works for any account, owners included, and does what **Reset 2FA** does:
+the account goes back to authenticator setup, every session is signed out, the person is emailed (through the server's
+email settings) and the instance admin is recorded as the resetter for admin recovery. The event is
+`instance.reset_2fa`, logged at instance level (no organisation). Like **Reset 2FA** on People, it asks for no
+re-authentication. An instance admin can never reset their own account this way (`400 self`): a signed-in session
+shouldn't be able to drop its own second factor.
+
+**The server operator's command.** When the instance admin is the one locked out, or on a self-hosted server without
+one to hand, whoever runs the server resets an account from the command line:
+
+    docker compose exec clane-vault node dist/src/scripts/reset-2fa.js --email someone@company.com
+
+It has the same effect and logs `instance.reset_2fa` with `via: "cli"`. No resetter is recorded, so while the person
+sets up a new authenticator no admin can be the second admin of an admin recovery: a recovery link waits until they
+have set it up. Confirm who is asking out-of-band first, as for any reset.
 
 **Upgrading to 1.2.** The migration deletes the old whole-account escrows and ends open requests. Members escrow their
 membership keys again when they next unlock in each organisation. Until then an admin can't help them: they use their

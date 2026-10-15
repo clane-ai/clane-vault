@@ -1,5 +1,5 @@
 import { Link, Navigate, useNavigate } from "react-router";
-import { Building2, DatabaseBackup, FolderSync, HardDrive, HeartPulse, KeyRound, LifeBuoy, ListChecks, Mail, Palette, ScrollText, ShieldAlert, ShieldOff, UserRoundCog, UsersRound, type LucideIcon } from "lucide-react";
+import { Building2, DatabaseBackup, FolderSync, HardDrive, HeartPulse, KeyRound, LifeBuoy, ListChecks, Mail, Palette, ScrollText, ShieldAlert, ShieldOff, UserRoundCog, UserRoundSearch, UsersRound, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader, SectionLayout, SectionPage, type NavGroup } from "@/components/SectionLayout";
 import { adminPath, isServerSection, spacePrefix, type AdminSection } from "@/lib/paths";
@@ -24,6 +24,7 @@ import EventLogPage from "./EventLogPage";
 import BackupsPage from "./BackupsPage";
 import { OrgStorageSection, ServerStorageSection } from "./StoragePages";
 import RiskPage from "./risk/RiskPage";
+import { ResetAuthenticatorCard } from "./ResetAuthenticator";
 
 /**
  * The Admin sub-navigation: the active org's pages (/o/:org/admin/...) for its owners and admins, Server (/server/...)
@@ -43,7 +44,8 @@ export function adminNav(o: { isAdmin: boolean; isInstanceAdmin: boolean; people
       item("org/recovery", "Admin recovery", LifeBuoy), item("org/email", "Email", Mail), item("org/storage", "Storage", HardDrive),
     ] });
   }
-  if (o.isInstanceAdmin) groups.push({ label: "Server", items: [item("server/branding", "Branding", Palette), item("server/email", "Email", Mail), item("server/backups", "Backups", DatabaseBackup), item("server/storage", "Storage", HardDrive)] });
+  if (o.isInstanceAdmin) groups.push({ label: "Server", items: [item("server/accounts", "Accounts", UserRoundSearch),
+    item("server/branding", "Branding", Palette), item("server/email", "Email", Mail), item("server/backups", "Backups", DatabaseBackup), item("server/storage", "Storage", HardDrive)] });
   return groups;
 }
 
@@ -103,6 +105,7 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
     : section === "org/sso" ? <SectionPage title="Single sign-on" sub={org?.name}>{demo ? <DemoUnavailable what="Single sign-on" /> : <SsoSettingsSection />}</SectionPage>
     : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><AdminRecoverySection /></SectionPage>
     : section === "org/email" ? <SectionPage title="Email" sub={org?.name}>{demo ? <DemoUnavailable what="Email" /> : <EmailSettingsSection scope="org" />}</SectionPage>
+    : section === "server/accounts" ? <SectionPage title="Accounts" sub="This server"><ResetAuthenticatorCard /></SectionPage>
     : section === "server/branding" ? <SectionPage title="Branding" sub="This server"><BrandingSection /></SectionPage>
     : section === "server/email" ? <SectionPage title="Email" sub="This server"><EmailSettingsSection scope="instance" /></SectionPage>
     : section === "org/storage" ? <SectionPage title="Storage" sub={org?.name} wide><OrgStorageSection records={records} folders={folders} /></SectionPage>

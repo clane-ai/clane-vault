@@ -12,6 +12,7 @@
     "bootstrap": "tsx --env-file=.env src/scripts/bootstrap.ts",
     "instance-admin": "tsx --env-file=.env src/scripts/instance-admin.ts",
     "org-owner": "tsx --env-file=.env src/scripts/org-owner.ts",
+    "reset-2fa": "tsx --env-file=.env src/scripts/reset-2fa.ts",
     "postinstall": "prisma generate"
   },
   "devDependencies": {

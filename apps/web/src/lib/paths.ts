@@ -10,7 +10,7 @@ import type { VaultView } from "@/features/vault/filter";
  *                /o/:org/links, /o/:org/trash[/record/:id]
  *                /o/:org/admin/{risk, people[/:userId], groups[/:groupId], events, health, migrate,
  *                               org/{general,policies,sso,recovery,email,storage}} (the org's owners and admins)
- * Server:        /server/{branding,email,backups,storage}                        (instance admins; outside any org)
+ * Server:        /server/{accounts,branding,email,backups,storage}                (instance admins; outside any org)
  * Settings:      /settings/{account,security,device,extension,health}            (the person's own; global)
  *
  * `:org` is the organisation's slug (unique), or its id. Older paths (/vault/..., /admin/..., /org/..., /health...)
@@ -42,7 +42,7 @@ export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export const ORG_ADMIN_SECTIONS = ["risk", "people", "groups", "events", "health", "migrate",
   "org/general", "org/policies", "org/sso", "org/recovery", "org/email", "org/storage"] as const;
-export const SERVER_SECTIONS = ["branding", "email", "backups", "storage"] as const;
+export const SERVER_SECTIONS = ["accounts", "branding", "email", "backups", "storage"] as const;
 export type ServerSection = (typeof SERVER_SECTIONS)[number];
 /** Admin sections: the org's (under /o/:org/admin) and the server's ("server/…", under /server). */
 export type AdminSection = (typeof ORG_ADMIN_SECTIONS)[number] | `server/${ServerSection}`;

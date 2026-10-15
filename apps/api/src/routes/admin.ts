@@ -8,6 +8,8 @@ import { expireOpenRequests } from "../lib/recovery.js";
 import { backupRoutes } from "./backups.js";
 import { adminRecoveryRoutes } from "./adminRecovery.js";
 import { startAdminAge } from "./auth.js";
+import { clearTwoFactor } from "../lib/twoFactor.js";
+import { instanceAdminRoutes } from "./instanceAdmin.js";
 import { instanceEmailRoutes, orgEmailRoutes } from "./emailSettings.js";
 import { instanceBrandRoutes } from "./brand.js";
 import { ssoSettingsRoutes } from "./ssoSettings.js";
@@ -41,6 +43,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     await instance.register(instanceEmailRoutes, { prefix: "/instance/email" });
     await instance.register(instanceBrandRoutes, { prefix: "/instance/brand" });
     await instance.register(instanceStorageRoutes, { prefix: "/instance/storage" });
+    // Account tools that work without seeing into any organisation.
+    await instance.register(instanceAdminRoutes, { prefix: "/instance" });
   });
 
   await app.register(async (org) => {
@@ -130,7 +134,10 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  /** Another member of the active org (admins can't act on themselves, and nobody but a transfer touches the owner). */
+  /**
+   * Another member of the active org (admins can't act on themselves, and nobody but a transfer touches the owner; an
+   * owner's authenticator is reset by an instance admin, POST /admin/instance/users/reset-2fa).
+   */
   async function target(req: FastifyRequest, id: string) {
     if (id === req.auth.userId) return "self" as const;
     const m = await app.prisma.membership.findUnique({ where: { orgId_userId: { orgId: orgId(req), userId: id } },
@@ -183,10 +190,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
     if (!(await canManageAccount(app.prisma, app.config, req.auth.userId, id))) return reply.code(403).send({ error: "other_orgs" });
     // Who reset it and when: admin recovery then needs a second admin and a waiting period (docs/recovery.md).
     const at = new Date();
-    await app.prisma.$transaction([
-      app.prisma.user.update({ where: { id }, data: { status: "pending_2fa", totpSecretEnc: null, totpLastStep: null, totpEnabledAt: null, totpResetBy: req.auth.userId, totpResetAt: at } }),
-      app.prisma.session.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: at } }),
-    ]);
+    await app.prisma.$transaction((tx) => clearTwoFactor(tx, id, req.auth.userId, at));
     const admin = await app.prisma.user.findUniqueOrThrow({ where: { id: req.auth.userId }, select: { name: true } });
     void sendEmail(app.mail, t.user.email, twoFactorResetEmail(await app.brand.productName(), admin.name, at), req.log);
     await logEvent(app.prisma, { orgId: orgId(req), actorId: req.auth.userId, action: "admin.reset_2fa", targetUserId: id });

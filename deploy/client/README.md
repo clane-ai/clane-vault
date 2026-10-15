@@ -36,6 +36,12 @@ Instance admins are accounts, never emails in configuration. To add or remove on
     docker compose exec clane-vault node dist/src/scripts/instance-admin.js --email you@yourcompany.com --grant   # or --revoke
     docker compose exec clane-vault node dist/src/scripts/org-owner.js --email you@yourcompany.com [--org <slug>]
 
+To reset someone's authenticator (two-step sign-in) when nobody can in the app: the instance admin's own, or an organisation owner's on a server without an instance admin to hand. Instance admins reset anyone else's, owners included, in **Server → Accounts**.
+
+    docker compose exec clane-vault node dist/src/scripts/reset-2fa.js --email someone@yourcompany.com
+
+They are signed out everywhere, set up a new authenticator at their next sign-in, and are emailed if email is set up. Confirm who is asking out-of-band first (`docs/recovery.md`).
+
 ## TLS
 
 The container speaks plain HTTP on `127.0.0.1:8080` (`HTTP_BIND` / `HTTP_PORT`). Put your own HTTPS reverse proxy in front and forward to it, passing `X-Forwarded-For` and `X-Forwarded-Proto`. Never expose the plain HTTP port publicly. Keep `COOKIE_SECURE=true`.
@@ -159,7 +165,7 @@ Until every file is moved, backups keep including chunk data. See `docs/attachme
 
 The database holds only ciphertext (the server never sees your master passwords or vault keys), but losing it loses everything, so back it up. **Back up `.env` separately (in your secrets manager), not just the database.** `SERVER_SECRET` encrypts every user's 2FA secret: if it is lost or changed, nobody can sign in with their authenticator code again. Changing `JWT_SECRET` only signs everyone out.
 
-From 1.6.1 the server checks `SERVER_SECRET` at startup and refuses to start if it differs from the one the database was set up with, logging `server_secret_mismatch` with what to do. Put back the original `SERVER_SECRET` from your saved `.env`. If it is lost for good, start once with `ACCEPT_NEW_SERVER_SECRET=true`, then remove it: every account that set up an authenticator then needs **Admin → People → Reset 2FA**, and email and SSO secrets must be entered again. Vault data is not affected (it is encrypted with each person's master password). When some accounts' authenticators were set up under an older secret, the server still starts and logs how many can't sign in.
+From 1.6.1 the server checks `SERVER_SECRET` at startup and refuses to start if it differs from the one the database was set up with, logging `server_secret_mismatch` with what to do. Put back the original `SERVER_SECRET` from your saved `.env`. If it is lost for good, start once with `ACCEPT_NEW_SERVER_SECRET=true`, then remove it: every account that set up an authenticator then needs **Admin → People → Reset 2FA** (owners: **Server → Accounts**, or `reset-2fa.js` above), and email and SSO secrets must be entered again. Vault data is not affected (it is encrypted with each person's master password). When some accounts' authenticators were set up under an older secret, the server still starts and logs how many can't sign in.
 
 ### Scheduled backups (built in)
 
@@ -268,6 +274,6 @@ This sets `CLANE_VAULT_VERSION`, pulls the image and restarts. Database migratio
   - **Recovery kit**: every user saves a one-time recovery code after sign-up (and can regenerate it in Settings → Security). With the code *and* their authenticator they can set a new master password without losing their vault. The server stores only a wrapped key and a hash; it can't use the kit. A used kit is replaced straight away.
   - **Admin account recovery** is **off by default**. When an admin turns it on (Settings → Organisation), every member's vault key is also sealed to each admin as members unlock, so **admins can reset any member's master password and read their private records**. Members are told on sign-up and in Settings. Approving a reset needs the admin's fresh 2FA code; the member finishes it with a one-time link (24 hours, single use) plus their own 2FA, and the admin never sees the new password. Turning it off deletes every escrowed key.
   - Turning admin recovery on needs the admin's master password and a fresh 2FA code; members are emailed and must confirm an in-app notice before their key is escrowed.
-  - Recovery keeps 2FA, and 2FA codes are single-use. If someone lost their authenticator too, an admin resets 2FA first (verify who you're talking to out-of-band before you do); the member then sets up a new authenticator during recovery. With admin recovery, a *different* admin who has been an admin for at least `ADMIN_RECOVERY_APPROVER_MIN_AGE_DAYS` (default 7) before the reset must approve, and the link waits `ADMIN_RECOVERY_RESET_DELAY_HOURS` (default 24) after the reset. Members are emailed when their 2FA is reset; admins are emailed when a new admin appears.
+  - Recovery keeps 2FA, and 2FA codes are single-use. If someone lost their authenticator too, an admin resets 2FA first (an organisation owner's: an instance admin in **Server → Accounts**, or the `reset-2fa.js` command; verify who you're talking to out-of-band before you do); the member then sets up a new authenticator during recovery. With admin recovery, a *different* admin who has been an admin for at least `ADMIN_RECOVERY_APPROVER_MIN_AGE_DAYS` (default 7) before the reset must approve, and the link waits `ADMIN_RECOVERY_RESET_DELAY_HOURS` (default 24) after the reset. Members are emailed when their 2FA is reset; admins are emailed when a new admin appears.
   - Recovery never changes a user's vault key: turning admin recovery off deletes the escrows but can't undo keys an admin already opened.
   - Recovery events (`auth.recovery_kit_used`, `auth.admin_recovery_used`, `recovery.*`, `admin.recovery_policy_*`) are in the event log.
