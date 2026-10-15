@@ -1,7 +1,7 @@
 name: clane-vault
 services:
   clane-vault:
-    image: ${CLANE_VAULT_IMAGE:-ghcr.io/clane-ai/clane-vault}:${CLANE_VAULT_VERSION:-1.7.2}
+    image: ${CLANE_VAULT_IMAGE:-ghcr.io/clane-ai/clane-vault}:${CLANE_VAULT_VERSION:-1.7.3}
     env_file: .env
     ports: ["${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:3001"]
     restart: unless-stopped

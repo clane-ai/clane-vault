@@ -1,6 +1,7 @@
 import { getDomain, parse } from "tldts";
 
-export const DEFAULT_SERVER = "https://vault.clane.si";
+/** The Clane Vault cloud. Self-hosted servers enter their own address. */
+export const DEFAULT_SERVER = "https://vault.clane.ai/app";
 
 /** A URL from an item ("example.com/login", "https://a.example.com") or a page; null when it has no usable host. */
 export function parseUrl(raw: string | undefined | null): URL | null {

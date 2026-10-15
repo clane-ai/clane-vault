@@ -28,7 +28,7 @@ permanent install needs the AMO-signed build (Firefox 128 or newer).
 
 ## First run
 
-1. Click the toolbar icon. Enter the **server address** (default `https://vault.clane.si`; self-hosted instances use
+1. Click the toolbar icon. Enter the **server address** (default `https://vault.clane.ai/app`, the Clane Vault cloud; self-hosted instances use
    their own address). Only `https://` is accepted, plus `http://localhost` and `http://127.0.0.1` for development.
    The browser asks to let the extension reach that one server.
 2. **Sign in** with email, master password and authenticator code. Accounts that haven't finished 2FA setup do it in

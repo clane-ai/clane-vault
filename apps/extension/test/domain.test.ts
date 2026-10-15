@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchUrl, normaliseServerUrl, originPattern, parsePageUrl, parseUrl, siteOf } from "../src/shared/domain";
+import { DEFAULT_SERVER, matchUrl, normaliseServerUrl, originPattern, parsePageUrl, parseUrl, siteOf } from "../src/shared/domain";
 
 describe("registrable domains", () => {
   it("uses the public suffix list", () => {
@@ -53,6 +53,11 @@ describe("server URL", () => {
     expect(normaliseServerUrl("northwind.example.com/vault")).toBe("https://northwind.example.com/vault");
     expect(normaliseServerUrl("https://northwind.example.com/a/b//")).toBe("https://northwind.example.com/a/b");
     expect(normaliseServerUrl("https://northwind.example.com/vault?x=1")).toBeNull();
+  });
+  it("defaults to the Clane Vault cloud, which normalises to itself", () => {
+    expect(DEFAULT_SERVER).toBe("https://vault.clane.ai/app");
+    expect(normaliseServerUrl(DEFAULT_SERVER)).toBe(DEFAULT_SERVER);
+    expect(originPattern(DEFAULT_SERVER)).toBe("https://vault.clane.ai/*");
   });
   it("derives the host permission pattern", () => {
     expect(originPattern("http://localhost:5173")).toBe("http://localhost/*");
