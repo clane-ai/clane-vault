@@ -155,6 +155,9 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
       if (!b.folderWrappedRecordKey) return reply.code(400).send({ error: "invalid_request", issues: ["folderWrappedRecordKey"] });
     } else if (!(await ownFolder(b.folderId, userId))) return reply.code(404).send({ error: "folder_not_found" });
     if (fromOrg && !team) return reply.code(409).send({ error: "org_record" });
+    // Into a team folder from outside one adds a record to the org's shared space.
+    const seatOver = team && !fromOrg ? await seatOverage(app.prisma, app.config, ctx(req)!) : null;
+    if (seatOver) return reply.code(402).send({ error: "seat_limit", ...seatOver });
     // Into a team folder the record joins that org: direct shares made in other orgs (or none) end.
     const foreign = team ? { recordId: id, holderType: "user" as const, permission: { not: "owner" as const }, OR: [{ orgId: null }, { orgId: { not: ctx(req)! } }] } : null;
     // Files are charged to the record's org (team folder) or its owner: a move re-charges them, and is refused when the

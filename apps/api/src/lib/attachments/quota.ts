@@ -71,6 +71,16 @@ export async function lockQuota(tx: Db, charge: Charge): Promise<void> {
   else await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${charge.userId}::uuid FOR UPDATE`;
 }
 
+/** Bytes a charge may hold: the configured cap, and under hosted plans also the pooled plan storage (per active member for an org, per user otherwise). */
+export async function chargeQuota(db: Db, cfg: AttachmentConfig, charge: Charge): Promise<number> {
+  const cap = (charge.kind === "org" ? cfg.orgQuotaMb : cfg.userQuotaMb) * MIB;
+  if (cfg.billingMode !== "hosted") return cap;
+  const perSeat = charge.kind === "org" ? (await orgEntitlements(db, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
+  if (perSeat === null) return cap;
+  const seats = charge.kind === "org" ? Math.max(1, await db.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
+  return Math.min(cap, perSeat * seats);
+}
+
 export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }
 
 /**
@@ -78,18 +88,9 @@ export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }
  * (`instance: false`) only re-charges bytes the instance already holds.
  */
 export async function checkQuota(tx: Db, cfg: AttachmentConfig, charge: Charge, add: number, o: { instance?: boolean } = {}): Promise<QuotaRefusal | null> {
-  const hosted = cfg.billingMode === "hosted";
-  let [used, quota, scope] = charge.kind === "org"
-    ? [await orgUsage(tx, charge.orgId), cfg.orgQuotaMb * MIB, "org" as const]
-    : [await userUsage(tx, charge.userId), cfg.userQuotaMb * MIB, "user" as const];
-  if (hosted) {
-    // Hosted plans: storage is pooled per active member (an org) or per user, on top of the configured cap.
-    const perSeat = charge.kind === "org" ? (await orgEntitlements(tx, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
-    if (perSeat !== null) {
-      const seats = charge.kind === "org" ? Math.max(1, await tx.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
-      quota = Math.min(quota, perSeat * seats);
-    }
-  }
+  const [used, quota, scope] = charge.kind === "org"
+    ? [await orgUsage(tx, charge.orgId), await chargeQuota(tx, cfg, charge), "org" as const]
+    : [await userUsage(tx, charge.userId), await chargeQuota(tx, cfg, charge), "user" as const];
   if (used + add > quota) return { scope, used, quota };
   if (o.instance === false) return null;
   const all = await instanceUsage(tx);

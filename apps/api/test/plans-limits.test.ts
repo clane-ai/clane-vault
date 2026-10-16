@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createLink, createTeamFolder, encryptLinkLabel, encryptNewRecord, wrapKey } from "@clane-vault/crypto";
+import { DEFAULT_ATTACHMENTS } from "../src/config.js";
 import { makeTestApp, resetDb, createActiveUser, createInvite } from "./helpers.js";
 import { attReq, bytes, create, prepare } from "./attachmentClient.js";
 
@@ -41,27 +42,68 @@ async function link(t: T, u: U, recordId: string, org: string | null) {
 const fillStorage = (t: T, recordId: string, owner: U, size: number) =>
   t.prisma.attachment.create({ data: { id: randomUUID(), recordId, createdBy: owner.id, state: "ready", encMeta: "x", wrappedFileKey: "x", nonceBase: "x", chunkSize: 1, chunkCount: 1, size } });
 
+// A large configured cap, so the plan's pooled storage is what limits (the default 2 GiB cap equals Team's per-seat storage).
+const big = await makeTestApp({ billingMode: "hosted", attachments: { ...DEFAULT_ATTACHMENTS, orgQuotaMb: 1_000_000, userQuotaMb: 1_000_000, instanceQuotaMb: 10_000_000, dailyUploadMb: 10_000_000 } });
+afterAll(() => big.app.close());
+const small = await makeTestApp({ billingMode: "hosted", attachments: { ...DEFAULT_ATTACHMENTS, orgQuotaMb: 4 } });
+afterAll(() => small.app.close());
+const up = async (t: T, u: U, rec: { id: string; recordKey: Uint8Array }, seed: number, org?: string | null) =>
+  create(t, u, rec.id, await prepare(rec.id, rec.recordKey, bytes(2 * MiB, seed)), org === undefined ? {} : { org });
+const planLimit = async (t: T, u: U) => (await call(t, u, "GET", "/org/plan")).json().storage.limit;
+
 describe("pooled storage", () => {
-  it("a 1-member Team org holds 2 GiB: a reservation over it is refused, freeing space admits it again", async () => {
-    const owner = await createActiveUser(hosted, { role: "owner" });
-    const f = await teamFolder(hosted, owner);
-    const filler = await teamRecord(hosted, owner, f);
-    const target = await teamRecord(hosted, owner, f);
-    await fillStorage(hosted, filler.id, owner, 2 * GiB - 3 * MiB);
+  it("a 1-member Team org holds 2 GiB (not the large configured cap): a reservation over it is refused, freeing space admits it again", async () => {
+    const owner = await createActiveUser(big, { role: "owner" });
+    const f = await teamFolder(big, owner);
+    const filler = await teamRecord(big, owner, f);
+    const target = await teamRecord(big, owner, f);
+    await fillStorage(big, filler.id, owner, 2 * GiB - 3 * MiB);
     const first = await prepare(target.id, target.recordKey, bytes(2 * MiB));
-    expect((await create(hosted, owner, target.id, first)).statusCode).toBe(201);
-    const second = await prepare(target.id, target.recordKey, bytes(2 * MiB, 9));
-    const r = await create(hosted, owner, target.id, second);
+    expect((await create(big, owner, target.id, first)).statusCode).toBe(201);
+    const r = await up(big, owner, target, 9);
     expect([r.statusCode, r.json().error, r.json().scope, r.json().quota]).toEqual([409, "quota_exceeded", "org", 2 * GiB]);
-    expect((await call(hosted, owner, "DELETE", `/records/${target.id}/attachments/${first.id}`)).statusCode).toBe(204);
-    expect((await create(hosted, owner, target.id, second)).statusCode).toBe(201);
+    expect(await planLimit(big, owner)).toBe(r.json().quota);
+    expect((await call(big, owner, "DELETE", `/records/${target.id}/attachments/${first.id}`)).statusCode).toBe(204);
+    expect((await up(big, owner, target, 9)).statusCode).toBe(201);
+  });
+
+  it("the pool grows with active members: 2 members hold 4 GiB", async () => {
+    const owner = await createActiveUser(big, { role: "owner" });
+    await createActiveUser(big, { orgId: owner.orgId! });
+    const f = await teamFolder(big, owner);
+    const target = await teamRecord(big, owner, f);
+    await fillStorage(big, (await teamRecord(big, owner, f)).id, owner, 2 * GiB - 1);
+    await fillStorage(big, (await teamRecord(big, owner, f)).id, owner, 2 * GiB - 3 * MiB);
+    expect((await up(big, owner, target, 1)).statusCode).toBe(201);
+    const r = await up(big, owner, target, 2);
+    expect([r.statusCode, r.json().scope, r.json().quota]).toEqual([409, "org", 4 * GiB]);
+    expect(await planLimit(big, owner)).toBe(4 * GiB);
+  });
+
+  it("a personal (user-charged) record is held to 1 GiB", async () => {
+    const u = await createActiveUser(big, { role: "owner" });
+    const filler = await personalRecord(big, u);
+    const target = await personalRecord(big, u);
+    await fillStorage(big, filler.id, u, GiB - 3 * MiB);
+    expect((await up(big, u, target, 1, null)).statusCode).toBe(201);
+    const r = await up(big, u, target, 2, null);
+    expect([r.statusCode, r.json().scope, r.json().quota]).toEqual([409, "user", GiB]);
+  });
+
+  it("a smaller configured cap wins over the plan, and /org/plan reports what is enforced", async () => {
+    const owner = await createActiveUser(small, { role: "owner" });
+    const target = await teamRecord(small, owner, await teamFolder(small, owner));
+    expect((await up(small, owner, target, 1)).statusCode).toBe(201);
+    const r = await up(small, owner, target, 2);
+    expect([r.statusCode, r.json().quota]).toEqual([409, 4 * MiB]);
+    expect(await planLimit(small, owner)).toBe(4 * MiB);
   });
 
   it("GET /org/plan reports storage used and limit", async () => {
-    const owner = await createActiveUser(hosted, { role: "owner" });
-    const f = await teamFolder(hosted, owner);
-    await fillStorage(hosted, (await teamRecord(hosted, owner, f)).id, owner, 1000);
-    expect((await call(hosted, owner, "GET", "/org/plan")).json().storage).toEqual({ used: 1000, limit: 2 * GiB });
+    const owner = await createActiveUser(big, { role: "owner" });
+    const f = await teamFolder(big, owner);
+    await fillStorage(big, (await teamRecord(big, owner, f)).id, owner, 1000);
+    expect((await call(big, owner, "GET", "/org/plan")).json().storage).toEqual({ used: 1000, limit: 2 * GiB });
   });
 });
 
@@ -104,6 +146,25 @@ describe("over the seat limit", () => {
     const upd = await call(hosted, owner, "PUT", `/records/${rec.id}`, { encBody: rec.enc.encBody, revision: 1 });
     expect(upd.statusCode, upd.body).toBe(200);
     expect((await call(hosted, owner, "DELETE", `/records/${rec.id}`)).statusCode).toBeLessThan(300);
+  });
+
+  it("blocks batch import into a team folder and moves into one, but not private imports or moves out", async () => {
+    const { owner, f, rec } = await overLimitOrg(hosted);
+    const mk = async (folderId: string | null) => {
+      const id = randomUUID();
+      const enc = await encryptNewRecord(id, { type: "login", title: "I", password: "x" }, owner.keys.userKey);
+      return { id, enc, item: { id, folderId, type: "login", encBody: enc.encBody, wrappedRecordKey: folderId ? await wrapKey(enc.recordKey, f.key, `record-key:${id}`) : enc.wrappedRecordKey, ...(folderId ? { ownerWrappedRecordKey: enc.wrappedRecordKey } : {}) } };
+    };
+    const t1 = await mk(f.id);
+    const blocked = await call(hosted, owner, "POST", "/records/batch", { records: [t1.item] });
+    expect([blocked.statusCode, blocked.json().error]).toEqual([402, "seat_limit"]);
+    expect(await hosted.prisma.record.count({ where: { id: t1.id } })).toBe(0);
+    const priv = await mk(null);
+    expect((await attReq(hosted, owner, "POST", "/records/batch", { records: [priv.item] }, { org: null })).statusCode).toBe(201);
+    const mv = await call(hosted, owner, "PUT", `/records/${priv.id}/folder`, { folderId: f.id, folderWrappedRecordKey: await wrapKey(priv.enc.recordKey, f.key, `record-key:${priv.id}`), ownerWrappedRecordKey: priv.enc.wrappedRecordKey });
+    expect([mv.statusCode, mv.json().error]).toEqual([402, "seat_limit"]);
+    const out = await call(hosted, owner, "PUT", `/records/${rec.id}/folder`, { folderId: null });
+    expect(out.statusCode).not.toBe(402);
   });
 
   it("a private record's upload is not blocked", async () => {
