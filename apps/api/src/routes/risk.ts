@@ -237,7 +237,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** One alert in the last 30 days, per person: how often they did it (actor) and how often it was done to them (target). */
-  app.get("/alerts/:action/members", async (req, reply) => {
+  app.get("/alerts/:action/members", { preHandler: app.requireEntitlement("risk") }, async (req, reply) => {
     const { action } = z.object({ action: z.string().max(64) }).parse(req.params);
     const def = alertDef(action);
     if (!def) return reply.code(404).send({ error: "not_found" });

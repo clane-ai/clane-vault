@@ -17,6 +17,7 @@ const rows: Row[] = [
   { feature: "risk", method: "GET", url: "/admin/risk/members", unlocked: 200 },
   { feature: "risk", method: "GET", url: "/admin/risk/members.csv", unlocked: 200 },
   { feature: "risk", method: "GET", url: "/admin/risk/alerts.csv", unlocked: 200 },
+  { feature: "risk", method: "GET", url: "/admin/risk/alerts/nope/members", unlocked: 404 },
   { feature: "orgLogo", method: "PUT", url: "/org/logo", raw: Buffer.from("not an image"), unlocked: 415 },
   { feature: "eventExport", method: "GET", url: "/admin/events/export.csv", unlocked: 200 },
 ];
