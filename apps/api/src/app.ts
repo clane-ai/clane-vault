@@ -40,6 +40,7 @@ import { DbChunkStore, type ChunkStores } from "./lib/attachments/store.js";
 import { S3ChunkStore } from "./lib/attachments/s3Store.js";
 import { AttachmentSweeper } from "./lib/attachments/sweep.js";
 import { attachmentConfig, instanceUsage, MIB } from "./lib/attachments/quota.js";
+import { SeatLimitError } from "./lib/seats.js";
 import { DEMO_SWEEP_INTERVAL_MS, sweepExpiredDemos } from "./lib/demo.js";
 
 declare module "fastify" {
@@ -106,6 +107,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
   registerOrg(app);
   app.setErrorHandler((err: FastifyError, _req, reply) => {
     if (err instanceof ZodError) return reply.code(400).send({ error: "invalid_request", issues: err.issues.map((i) => i.path.join(".")) });
+    if (err instanceof SeatLimitError) return reply.code(402).send({ error: "seat_limit", used: err.used, allowed: err.allowed });
     if (err.statusCode === 429) return reply.code(429).send({ error: "rate_limited" });
     if (err.code === "FST_ERR_CTP_BODY_TOO_LARGE") return reply.code(413).send({ error: "too_large" });
     if (err.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") return reply.code(415).send({ error: "unsupported_media_type" });

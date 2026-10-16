@@ -13,6 +13,7 @@ import { logoVersion } from "../lib/images.js";
 import { rawImageBodies, readLogo, sendLogo } from "./brand.js";
 import { TRIAL_MS } from "../lib/plans.js";
 import planRoutes from "./plan.js";
+import { assertSeat } from "../lib/seats.js";
 import { hashToken } from "../lib/tokens.js";
 
 const orgName = displayName;
@@ -95,6 +96,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       await lockUser(tx, me.id);
       const m = await tx.membership.findUnique({ where: { orgId_userId: { orgId: inv.orgId, userId: me.id } }, select: { status: true } });
       if (m?.status === "disabled") return "disabled" as const;
+      await assertSeat(tx, app.config, inv.orgId, 1, me.email);
       const now = new Date();
       // Single use: a link claimed twice (or raced) counts once.
       const n = await tx.invite.updateMany({ where: { id: inv.id, acceptedAt: null }, data: { acceptedAt: now, emailCodeHash: null } });

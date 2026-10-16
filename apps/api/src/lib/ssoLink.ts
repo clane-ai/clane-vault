@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { logEvent } from "./events.js";
 import { lockUser } from "./orgs.js";
+import { assertSeat } from "./seats.js";
 
 export interface LinkInput { orgId: string; issuer: string; subject: string; email: string; jit: boolean }
 
@@ -19,6 +20,7 @@ export async function linkAndJoin(app: FastifyInstance, p: LinkInput, user: { id
   const joined = await app.prisma.$transaction(async (tx) => {
     await lockUser(tx, user.id);
     if (await tx.membership.findUnique({ where: { orgId_userId: { orgId: p.orgId, userId: user.id } }, select: { id: true } })) return null;
+    await assertSeat(tx, app.config, p.orgId, 1, p.email);
     await tx.membership.create({ data: { orgId: p.orgId, userId: user.id, role: "member", status: "active", joinedAt: new Date() } });
     return true;
   });

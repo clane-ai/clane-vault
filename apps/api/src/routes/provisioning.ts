@@ -6,6 +6,7 @@ import { logEvent } from "../lib/events.js";
 import { requestDomainJoin } from "../lib/domainJoin.js";
 import { dailyInviteCap, INVITE_TTL_MS, invitesSentToday, resendInvite, sendNewInvite, type ResendResult } from "../lib/invites.js";
 import { cleanName, nameProblem } from "../lib/names.js";
+import { SeatLimitError } from "../lib/seats.js";
 import { csvCell } from "./events.js";
 
 /**
@@ -20,7 +21,7 @@ const MAX_BULK = 500;
 const idParam = z.object({ id: z.string().uuid() });
 
 /** Each row's outcome. `valid` only in a dry run (the preview); `invited` after sending. */
-export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "failed";
+export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "seat_limit" | "failed";
 
 const bulkBody = z.object({
   rows: z.array(z.object({
@@ -156,7 +157,10 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
           if (out.already) { r.status = "member"; continue; }
           r.status = "invited"; r.emailed = out.emailed;
           if (!app.config.hostedMode && out.inviteUrl) r.inviteUrl = out.inviteUrl;
-        } catch (e) { req.log.warn({ err: e }, "bulk invite row failed"); r.status = "failed"; }
+        } catch (e) {
+          if (e instanceof SeatLimitError) { r.status = "seat_limit"; continue; }
+          req.log.warn({ err: e }, "bulk invite row failed"); r.status = "failed";
+        }
       }
     }
     const counts: Partial<Record<BulkStatus, number>> = {};

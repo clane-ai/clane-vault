@@ -6,6 +6,7 @@ import { logEvent } from "../lib/events.js";
 import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
 import { displayName, cleanName, nameProblem } from "../lib/names.js";
+import { assertSeat } from "../lib/seats.js";
 import { linkAndJoin } from "../lib/ssoLink.js";
 import { secretBox } from "../lib/secretBox.js";
 import {
@@ -254,6 +255,7 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
     try {
       user = await app.prisma.$transaction(async (tx) => {
         const now = new Date();
+        await assertSeat(tx, app.config, p.orgId, 1, p.email);
         if (inv) await tx.invite.update({ where: { id: inv.id }, data: { acceptedAt: now, emailCodeHash: null } });
         const u = await tx.user.create({ data: {
           email: p.email, name: b.name, status: "pending_2fa", authHash, instanceAdmin: inv?.instanceAdmin ?? false,

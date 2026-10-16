@@ -5,6 +5,7 @@ import type { Db } from "./access.js";
 import { orgInvitationEmail, sendEmail, sendInviteEmail } from "./email.js";
 import { logEvent } from "./events.js";
 import { lockGroup, recomputeGroupFolders } from "./groups.js";
+import { assertSeat } from "./seats.js";
 import { hashToken } from "./tokens.js";
 
 /** After a decline or a cancelled invitation, the same org can't invite that address again for this long. */
@@ -100,6 +101,7 @@ export async function sendNewInvite(app: FastifyInstance, o: {
   const token = makeLink ? randomBytes(24).toString("base64url") : null;
   const now = new Date();
   await app.prisma.$transaction(async (tx) => {
+    if (!already) await assertSeat(tx, app.config, o.org.id, 1, o.email);
     if (token) {
       // One live invite per address and org: a new one replaces any pending one.
       await tx.invite.deleteMany({ where: { email: o.email, orgId: o.org.id, acceptedAt: null } });
@@ -132,7 +134,7 @@ export type ResendResult = { ok: true; id: string; email: string; emailed: boole
  */
 export async function resendInvite(app: FastifyInstance, orgId: string, inviteId: string, actorId: string, log?: Log): Promise<ResendResult> {
   const lg: Log = log ?? app.log;
-  const row = await app.prisma.invite.findFirst({ where: { id: inviteId, orgId, acceptedAt: null }, select: { id: true, email: true, role: true, lastSentAt: true, createdAt: true } });
+  const row = await app.prisma.invite.findFirst({ where: { id: inviteId, orgId, acceptedAt: null }, select: { id: true, email: true, role: true, lastSentAt: true, createdAt: true, expiresAt: true } });
   const m = row ? null : await app.prisma.membership.findFirst({ where: { id: inviteId, orgId, status: "invited" }, select: { role: true, createdAt: true, user: { select: { email: true } } } });
   const email = row?.email ?? m?.user.email;
   if (!email) return { ok: false, error: "not_found" };
@@ -153,6 +155,8 @@ export async function resendInvite(app: FastifyInstance, orgId: string, inviteId
   const token = makeLink ? randomBytes(24).toString("base64url") : null;
   const now = new Date();
   const id = await app.prisma.$transaction(async (tx) => {
+    // A live invitation already holds its seat; an expired one needs one again.
+    if (!(row ? row.expiresAt > now : m!.createdAt.getTime() + INVITE_TTL_MS > now.getTime())) await assertSeat(tx, app.config, orgId, 1, email);
     let id = inviteId;
     if (token) {
       const fresh = { tokenHash: hashToken(token), expiresAt: new Date(now.getTime() + INVITE_TTL_MS), lastSentAt: now,
