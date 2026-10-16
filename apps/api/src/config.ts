@@ -88,6 +88,8 @@ export interface AttachmentConfig {
   chunkRatePerMinute?: number; createRatePerMinute?: number;
   /** The public link chunk route, per client address. */
   publicChunkRatePerMinute?: number;
+  /** Set by attachmentConfig() from the instance's BILLING_MODE, so quota checks apply the plan's pooled storage. */
+  billingMode?: Config["billingMode"];
 }
 
 export const DEFAULT_ATTACHMENTS: AttachmentConfig = {

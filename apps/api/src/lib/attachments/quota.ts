@@ -1,5 +1,6 @@
 import { DEFAULT_ATTACHMENTS, demoAttachments, type AttachmentConfig, type Config } from "../../config.js";
 import type { Db } from "../access.js";
+import { getPersonalEntitlements, orgEntitlements } from "../plans.js";
 
 /**
  * Attachment quotas and accounting (docs/design/2026-10-12-attachments.md §3.5). Usage is SUM(size) of
@@ -12,8 +13,8 @@ export const MIB = 1024 * 1024;
 export const QUOTA_LOCK = 7342;
 
 /** The attachment settings in force: a demo instance's are capped small (docs/demo.md). */
-export const attachmentConfig = (c: Pick<Config, "attachments" | "demo">): AttachmentConfig => {
-  const a = c.attachments ?? DEFAULT_ATTACHMENTS;
+export const attachmentConfig = (c: Pick<Config, "attachments" | "demo" | "billingMode">): AttachmentConfig => {
+  const a = { ...(c.attachments ?? DEFAULT_ATTACHMENTS), billingMode: c.billingMode };
   return c.demo ? demoAttachments(a) : a;
 };
 
@@ -77,9 +78,18 @@ export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }
  * (`instance: false`) only re-charges bytes the instance already holds.
  */
 export async function checkQuota(tx: Db, cfg: AttachmentConfig, charge: Charge, add: number, o: { instance?: boolean } = {}): Promise<QuotaRefusal | null> {
-  const [used, quota, scope] = charge.kind === "org"
+  const hosted = cfg.billingMode === "hosted";
+  let [used, quota, scope] = charge.kind === "org"
     ? [await orgUsage(tx, charge.orgId), cfg.orgQuotaMb * MIB, "org" as const]
     : [await userUsage(tx, charge.userId), cfg.userQuotaMb * MIB, "user" as const];
+  if (hosted) {
+    // Hosted plans: storage is pooled per active member (an org) or per user, on top of the configured cap.
+    const perSeat = charge.kind === "org" ? (await orgEntitlements(tx, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
+    if (perSeat !== null) {
+      const seats = charge.kind === "org" ? Math.max(1, await tx.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
+      quota = Math.min(quota, perSeat * seats);
+    }
+  }
   if (used + add > quota) return { scope, used, quota };
   if (o.instance === false) return null;
   const all = await instanceUsage(tx);

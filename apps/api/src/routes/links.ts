@@ -4,7 +4,7 @@ import { z } from "zod";
 import { accessFor, canEdit } from "../lib/access.js";
 import { logEvent } from "../lib/events.js";
 import { accessMatches, BURN, deadReason, hashAccess, isUniqueViolation, type LinkState } from "../lib/links.js";
-import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
+import { getEntitlements, getPersonalEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { signLinkDownload, verifyLinkDownload } from "../lib/tokens.js";
 import { attachmentConfig, MIB } from "../lib/attachments/quota.js";
@@ -83,6 +83,15 @@ export const linkRoutes: FastifyPluginAsync = async (app) => {
             if (b.expiresInHours > p.maxExpiryHours) { refused = { code: 400, body: { error: "link_expiry_too_long", maxExpiryHours: p.maxExpiryHours } }; return; }
             if (p.requirePassword && !b.accessHash) { refused = { code: 400, body: { error: "link_password_required" } }; return; }
             if (fileIds.length && !p.allowAttachments) { refused = { code: 403, body: { error: "link_attachments_disabled" } }; return; }
+          }
+          if (!access.orgId) {
+            const limit = getPersonalEntitlements(app.config).activeLinkLimit;
+            if (limit !== null) {
+              await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${req.auth.userId}::uuid FOR UPDATE`;
+              const [row] = await tx.$queryRaw<{ n: bigint }[]>`SELECT COUNT(*)::bigint AS n FROM "ShareLink" WHERE "createdBy" = ${req.auth.userId}::uuid AND "orgId" IS NULL
+                AND "revokedAt" IS NULL AND "expiresAt" > now() AND "encPayload" IS NOT NULL AND ("maxOpens" IS NULL OR opens < "maxOpens")`;
+              if (Number(row?.n ?? 0) >= limit) { refused = { code: 402, body: { error: "link_limit", limit } }; return; }
+            }
           }
           await tx.shareLink.create({ data: {
             // The link belongs to the org the access comes through (none for the creator's own private record).

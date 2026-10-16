@@ -44,7 +44,14 @@ export async function assertSeat(tx: Db, cfg: Pick<Config, "billingMode">, orgId
 }
 
 /** Already past the allowance (a downgrade or fewer paid seats): new invitations are refused, nothing else changes. */
-export async function overSeatLimit(db: Db, cfg: Pick<Config, "billingMode">, orgId: string): Promise<boolean> {
+export async function seatOverage(db: Db, cfg: Pick<Config, "billingMode">, orgId: string): Promise<{ used: number; allowed: number } | null> {
+  if (cfg.billingMode !== "hosted") return null; // hot path (record create, upload): no query when billing is off
   const allowed = (await orgEntitlements(db, cfg, orgId)).seatsAllowed;
-  return allowed !== null && (await seatsUsed(db, orgId)) > allowed;
+  if (allowed === null) return null;
+  const used = await seatsUsed(db, orgId);
+  return used > allowed ? { used, allowed } : null;
+}
+
+export async function overSeatLimit(db: Db, cfg: Pick<Config, "billingMode">, orgId: string): Promise<boolean> {
+  return (await seatOverage(db, cfg, orgId)) !== null;
 }
