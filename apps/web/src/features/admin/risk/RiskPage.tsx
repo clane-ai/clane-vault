@@ -18,6 +18,7 @@ import "./risk-print.css";
 import { csvTile, download, isTile, memberHas, pct, REMEDIATION, scoreTone, SEVERITY_LABEL, trendLabel, type Alert, type AlertPeople, type Benchmark, type RiskMember, type RiskMembers, type RiskOverview, type Tile } from "./model";
 import { formatBytes } from "@/features/attachments/format";
 import { StorageMembers } from "../StoragePages";
+import { planMessage } from "../plan";
 
 const card = "rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]";
 const h2 = "font-display text-[15px] font-semibold tracking-[-0.01em] text-text-primary";
@@ -177,10 +178,10 @@ function Drilldown({ tile, d, onClose }: { tile: Tile; d: RiskOverview; onClose:
   const resend = useMutation({
     mutationFn: () => oapi.post<{ resent: number; skipped: number }>("/admin/invites/resend-all", {}),
     onSuccess: (r) => {
-      toast.success(r.resent ? `Sent ${r.resent} invitation${r.resent === 1 ? "" : "s"} again${r.skipped ? ` (${r.skipped} skipped: sent recently or over the daily limit)` : ""}` : "Nothing sent: the invitations were sent recently or the daily limit is reached");
+      toast.success(r.resent ? `Sent ${r.resent} invitation${r.resent === 1 ? "" : "s"} again${r.skipped ? ` (${r.skipped} skipped: sent recently, over the daily limit or no seat left)` : ""}` : "Nothing sent: the invitations were sent recently or the daily limit is reached");
       void qc.invalidateQueries({ queryKey: ["admin-risk-members", scope] }); void qc.invalidateQueries({ queryKey: ["admin-risk", scope] });
     },
-    onError: (e) => toast.error(e instanceof ApiError && e.code === "email_required" ? "Set up email first: invitations can only be resent by email." : e instanceof ApiError && e.status === 429 ? "Too many requests. Try again in a minute." : "Couldn't resend the invitations."),
+    onError: (e) => toast.error(planMessage(e) ?? (e instanceof ApiError && e.code === "email_required" ? "Set up email first: invitations can only be resent by email." : e instanceof ApiError && e.status === 429 ? "Too many requests. Try again in a minute." : "Couldn't resend the invitations.")),
   });
 
   async function exportCsv() {

@@ -59,7 +59,7 @@ export function PendingInvites({ links, onLinks, onChanged }: { links: Record<st
       const fresh = Object.fromEntries(r.results.filter((x) => x.inviteUrl).map((x) => [x.email, x.inviteUrl!]));
       if (Object.keys(fresh).length) onLinks(fresh);
       const capped = r.results.filter((x) => x.status === "invite_limit").length;
-      toast.success(`Resent ${r.resent} ${r.resent === 1 ? "invitation" : "invitations"}${r.skipped ? ` · ${r.skipped} skipped${capped ? " (today's limit)" : " (sent recently)"}` : ""}`);
+      toast.success(`Resent ${r.resent} ${r.resent === 1 ? "invitation" : "invitations"}${r.skipped ? ` · ${r.skipped} skipped${capped ? " (today's limit)" : r.results.some((x) => x.status === "seat_limit") ? " (no seat left)" : " (sent recently)"}` : ""}`);
       refresh();
     },
     onError: (e) => toast.error((e instanceof ApiError && RESEND_ERRORS[e.code]) || "Couldn't resend. Try again.") });

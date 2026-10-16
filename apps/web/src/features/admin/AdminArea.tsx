@@ -26,6 +26,7 @@ import { OrgStorageSection, ServerStorageSection } from "./StoragePages";
 import RiskPage from "./risk/RiskPage";
 import { CustomerOrgsSection } from "./CustomerOrgs";
 import { ResetAuthenticatorCard } from "./ResetAuthenticator";
+import { PlanGate, TrialLine } from "./PlanLock";
 
 /**
  * The Admin sub-navigation: the active org's pages (/o/:org/admin/...) for its owners and admins, Server (/server/...)
@@ -95,16 +96,16 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
   }
   if (section === null && !mobile) return <Navigate to={first.to} replace />;
   const back = section === "people" && detailId ? { to: paths.admin("people"), label: "People" } : section === "groups" && detailId ? { to: paths.admin("groups"), label: "Groups" } : undefined;
-  const page = section === "risk" ? <RiskPage />
+  const page = section === "risk" ? <PlanGate feature="risk"><RiskPage /></PlanGate>
     : section === "people" ? (detailId ? <MemberPage key={detailId} userId={detailId} folders={folders} /> : <PeoplePage pendingReady={pendingReady} onOpenMigrate={() => navigate(paths.admin("migrate"))} />)
     : section === "groups" ? (detailId ? <GroupPage key={detailId} groupId={detailId} folders={folders} /> : <SectionPage title="Groups"><GroupsSection /></SectionPage>)
     : section === "events" ? <EventLogPage />
     : section === "health" ? <SectionPage title="Password health" wide><TeamHealth /></SectionPage>
     : section === "migrate" ? <MigratePage folders={folders} records={records} vaultLoading={vaultLoading} />
     : section === "org/general" ? <SectionPage title="General" sub={org?.name}><OrgDetailsSection /></SectionPage>
-    : section === "org/policies" ? <SectionPage title="Policies" sub={org?.name}><OrgPoliciesSection /></SectionPage>
+    : section === "org/policies" ? <SectionPage title="Policies" sub={org?.name}><PlanGate feature="policyEdit"><OrgPoliciesSection /></PlanGate></SectionPage>
     : section === "org/sso" ? <SectionPage title="Single sign-on" sub={org?.name}>{demo ? <DemoUnavailable what="Single sign-on" /> : <SsoSettingsSection />}</SectionPage>
-    : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><AdminRecoverySection /></SectionPage>
+    : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><PlanGate feature="adminRecovery"><AdminRecoverySection /></PlanGate></SectionPage>
     : section === "org/email" ? <SectionPage title="Email" sub={org?.name}>{demo ? <DemoUnavailable what="Email" /> : <EmailSettingsSection scope="org" />}</SectionPage>
     : section === "server/organisations" ? <SectionPage title="Customer organisations" sub="This server" wide><CustomerOrgsSection /></SectionPage>
     : section === "server/accounts" ? <SectionPage title="Accounts" sub="This server"><ResetAuthenticatorCard /></SectionPage>
@@ -114,5 +115,5 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
     : section === "server/storage" ? <SectionPage title="Storage" sub="This server" wide><ServerStorageSection /></SectionPage>
     : section === "server/backups" ? <BackupsPage /> : null;
   // The sub-navigation marks the list for its detail pages (a member is under People).
-  return <SectionLayout title="Admin" base={org && orgAdmin ? paths.admin() : "/server"} groups={groups} active={section} mobile={mobile} back={back}>{page}</SectionLayout>;
+  return <SectionLayout title="Admin" base={org && orgAdmin ? paths.admin() : "/server"} groups={groups} active={section} mobile={mobile} back={back}>{orgAdmin && section && !isServerSection(section) && <TrialLine />}{page}</SectionLayout>;
 }

@@ -16,6 +16,8 @@ import { usePeople } from "@/features/vault/useVault";
 import { ROLE_LABEL, useOrgDetails, useReloadOrgs } from "./orgs";
 import { LogoField } from "@/features/settings/LogoField";
 import { OrgAvatar, useOrgLogoUrl } from "./OrgLogo";
+import { useLocked } from "@/features/admin/plan";
+import { LockLine } from "@/features/admin/PlanLock";
 
 const card = "rounded-[14px] border border-border-default bg-card p-4 shadow-[var(--shadow-card)]";
 const h2 = "font-display text-[15px] font-semibold tracking-[-0.01em] text-text-primary";
@@ -41,6 +43,7 @@ export function OrgDetailsSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logoUrl = useOrgLogoUrl(org?.id, org?.logoVersion);
+  const logoLocked = useLocked("orgLogo");
   if (!org) return null;
   const isOwner = org.role === "owner";
   const canEdit = org.role === "owner" || org.role === "admin";
@@ -93,10 +96,10 @@ export function OrgDetailsSection() {
         </div>
         {canEdit && (
           <div className="border-t border-border-default pt-3">
-            <LogoField id="org-logo" label="Organisation logo" url={logoUrl} fallback={<OrgAvatar org={{ id: org.id, name: org.name }} size={36} tone="light" />}
+            {logoLocked ? <LockLine /> : <LogoField id="org-logo" label="Organisation logo" url={logoUrl} fallback={<OrgAvatar org={{ id: org.id, name: org.name }} size={36} tone="light" />}
               onUpload={async (f) => { await oapi.upload("/org/logo", f); await afterLogo(); }}
-              onRemove={async () => { await oapi.del("/org/logo"); await afterLogo(); }} />
-            <p className="mt-2 text-[12.5px] text-text-tertiary">Shown to this organisation's members in the sidebar and the organisation menu.</p>
+              onRemove={async () => { await oapi.del("/org/logo"); await afterLogo(); }} />}
+            {!logoLocked && <p className="mt-2 text-[12.5px] text-text-tertiary">Shown to this organisation's members in the sidebar and the organisation menu.</p>}
           </div>
         )}
         <div className="flex flex-wrap gap-2 border-t border-border-default pt-3">

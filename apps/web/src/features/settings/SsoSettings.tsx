@@ -12,6 +12,7 @@ import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { DomainJoinSection } from "./DomainJoinSection";
+import { PlanGate } from "@/features/admin/PlanLock";
 import { Chip } from "@/features/vault/people";
 
 const card = "rounded-[14px] border border-border-default bg-card p-4 shadow-[var(--shadow-card)]";
@@ -56,6 +57,10 @@ function Copyable({ label, value }: { label: string; value: string }) {
 
 /** Organisation settings → Single sign-on (the active organisation's owners and admins). */
 export function SsoSettingsSection() {
+  return <PlanGate feature="sso"><SsoSettingsForm /></PlanGate>;
+}
+
+function SsoSettingsForm() {
   const oapi = useOrgApi();
   const qc = useQueryClient();
   const KEY = ["sso-settings", useScope()];

@@ -1,6 +1,6 @@
 /** Shapes of the provisioning API (docs/provisioning.md) and the words the UI uses for them. */
 
-export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "failed";
+export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "seat_limit" | "failed";
 export interface BulkRow { row: number; email: string; name: string | null; role: string; groups: string[]; status: BulkStatus; detail?: string; emailed?: boolean; inviteUrl?: string }
 export interface InviteCap { perDay: number; sentToday: number; remaining: number }
 export interface BulkResponse { dryRun: boolean; counts: Partial<Record<BulkStatus, number>>; cap: InviteCap; results: BulkRow[] }
@@ -24,6 +24,7 @@ export const STATUS_LABEL: Record<BulkStatus, { label: string; tone: "neutral" |
   already_invited: { label: "Already invited", tone: "neutral" },
   cooldown: { label: "Declined recently", tone: "orange" },
   over_cap: { label: "Over today's limit", tone: "orange" },
+  seat_limit: { label: "No seat left", tone: "orange" },
   failed: { label: "Failed", tone: "red" },
 };
 

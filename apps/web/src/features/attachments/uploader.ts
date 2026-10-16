@@ -3,6 +3,7 @@ import {
   sha256Stream, wrapFileKey, type AttachmentMeta,
 } from "@clane-vault/crypto";
 import { ApiError, type OrgApi } from "@/lib/api";
+import { planMessage } from "@/features/admin/plan";
 import { formatBytes } from "./format";
 
 /**
@@ -75,7 +76,7 @@ export function uploadErrorMessage(e: unknown, name: string): string {
     case "in_trash": return "This record is in the trash.";
     case "forbidden": case "not_found": return "You can't add files to this record.";
     case "rate_limited": return "Too many requests. Wait a minute and retry.";
-    default: return "The upload failed. Check your connection and retry.";
+    default: return planMessage(e) ?? "The upload failed. Check your connection and retry.";
   }
 }
 

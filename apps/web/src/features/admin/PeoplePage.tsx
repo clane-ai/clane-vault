@@ -18,6 +18,7 @@ import { InviteDialog } from "./InviteDialog";
 import { PendingInvites } from "./PendingInvites";
 import { OnboardingChecklist } from "./Onboarding";
 import { INVITES_KEY, ONBOARDING_KEY } from "./provisioning";
+import { planMessage } from "./plan";
 
 export type Role = "admin" | "member";
 export type Status = "active" | "pending_2fa" | "disabled";
@@ -98,8 +99,8 @@ export default function PeoplePage({ onOpenMigrate, pendingReady = 0 }: { onOpen
       toast.success(r.emailed ? `Invite emailed to ${r.email}` : r.inviteUrl ? `Invite created for ${r.email}. Copy the link and send it to them.` : `Invited ${r.email}`);
     } catch (err) {
       const c = err instanceof ApiError ? err.code : "";
-      setError(c === "invite_cooldown" ? "That address declined (or was cancelled) recently. Try again tomorrow." : c === "invite_limit" ? "This organisation has sent its invites for today. Try again tomorrow."
-        : c === "email_required" ? "Invites are sent by email here, and email isn't set up on this server." : "Couldn't create the invite. Try again.");
+      setError(planMessage(err) ?? (c === "invite_cooldown" ? "That address declined (or was cancelled) recently. Try again tomorrow." : c === "invite_limit" ? "This organisation has sent its invites for today. Try again tomorrow."
+        : c === "email_required" ? "Invites are sent by email here, and email isn't set up on this server." : "Couldn't create the invite. Try again."));
     }
   }
 

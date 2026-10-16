@@ -23,6 +23,7 @@ import { useAttachmentLimits, useRecordDrop } from "@/features/attachments/useAt
 import { precheck, startUpload } from "@/features/attachments/uploader";
 import { useOrgApi } from "@/lib/scope";
 import { useSpacePaths } from "@/lib/space";
+import { planMessage } from "@/features/admin/plan";
 
 type Editing = ({ mode: "create" } & NewRecordStart) | { mode: "edit"; id: string; newPassword?: string } | null;
 
@@ -93,6 +94,8 @@ export default function VaultScreen() {
     } catch (e) {
       if (e instanceof ConflictError) { toast.error(e.message); return; }
       if (e instanceof ApiError && e.code === "in_trash") { toast.error("This record is in the trash."); return; }
+      const pm = planMessage(e);
+      if (pm) throw new Error(pm);
       // The body's own limits (crypto validate): shown in the editor as they are.
       if (e instanceof Error && /too large|too long|at most \d+/.test(e.message)) throw new Error("This record is too large. Shorten long fields or notes, or remove some custom fields.");
       throw new Error("Couldn't save. Check your connection and try again.");

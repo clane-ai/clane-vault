@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useOrgApi, useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
+import { useLocked, useOrgPlan } from "./plan";
+import { LockLine } from "./PlanLock";
 
 interface Who { id: string; name: string | null; email: string | null }
 export interface LogEvent { id: string; at: string; action: string; actor: Who | null; target: Who | null; recordId: string | null; folderId: string | null; ip: string | null; meta: unknown }
@@ -44,6 +46,8 @@ export default function EventLogPage() {
   const events = q.data?.pages.flatMap((p) => p.events) ?? [];
   const families = [...new Set((actions.data ?? []).map((a) => `${a.split(".")[0]}.`))];
   const [exporting, setExporting] = useState(false);
+  const plan = useOrgPlan().data;
+  const exportLocked = useLocked("eventExport");
 
   async function exportCsv() {
     setExporting(true);
@@ -63,7 +67,7 @@ export default function EventLogPage() {
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Event log">
       <PageHeader title="Event log">
-        <Button type="button" variant="outline" size="sm" onClick={() => void exportCsv()} disabled={exporting}><Download className="size-3.5" />{exporting ? "Exporting…" : "Export CSV"}</Button>
+        {exportLocked ? <LockLine /> : <Button type="button" variant="outline" size="sm" onClick={() => void exportCsv()} disabled={exporting}><Download className="size-3.5" />{exporting ? "Exporting…" : "Export CSV"}</Button>}
       </PageHeader>
       <div className="relative min-h-0 flex-1 overflow-y-auto px-6 py-5 max-[760px]:px-3">
         <div className="mx-auto flex max-w-[1000px] flex-col gap-4">
@@ -84,6 +88,7 @@ export default function EventLogPage() {
             <div className="flex flex-col gap-1.5"><Label htmlFor="ev-to">To</Label><Input id="ev-to" type="date" className="w-[160px]" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} /></div>
             {(f.actor || f.action || f.from || f.to) && <Button type="button" variant="ghost" size="sm" onClick={() => setF({ actor: "", action: "", from: "", to: "" })}>Clear</Button>}
           </div>
+          {plan?.entitlements.eventLogDays && <p className="text-[12.5px] text-text-tertiary">Showing the last {plan.entitlements.eventLogDays} days on the {plan.plan === "team" ? "Team" : "Business"} plan.</p>}
           {q.isLoading ? <p className="text-[14px] text-text-secondary">Loading…</p> : q.error ? <p role="alert" className="text-[14px] text-red-500">Couldn't load the event log.</p> : (
             <div className="overflow-x-auto rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]">
               <table className="w-full min-w-[700px] text-[13px]">
