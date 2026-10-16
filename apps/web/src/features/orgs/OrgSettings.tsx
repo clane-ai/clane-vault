@@ -43,7 +43,7 @@ export function OrgDetailsSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logoUrl = useOrgLogoUrl(org?.id, org?.logoVersion);
-  const logoLocked = useLocked("orgLogo");
+  const logoLocked = useLocked("orgLogo", org?.role === "owner" || org?.role === "admin");
   if (!org) return null;
   const isOwner = org.role === "owner";
   const canEdit = org.role === "owner" || org.role === "admin";

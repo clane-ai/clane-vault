@@ -88,7 +88,7 @@ export default function EventLogPage() {
             <div className="flex flex-col gap-1.5"><Label htmlFor="ev-to">To</Label><Input id="ev-to" type="date" className="w-[160px]" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} /></div>
             {(f.actor || f.action || f.from || f.to) && <Button type="button" variant="ghost" size="sm" onClick={() => setF({ actor: "", action: "", from: "", to: "" })}>Clear</Button>}
           </div>
-          {plan?.entitlements.eventLogDays && <p className="text-[12.5px] text-text-tertiary">Showing the last {plan.entitlements.eventLogDays} days on the {plan.plan === "team" ? "Team" : "Business"} plan.</p>}
+          {plan?.entitlements.eventLogDays && <p className="text-[12.5px] text-text-tertiary">Showing the last {plan.entitlements.eventLogDays} days.</p>}
           {q.isLoading ? <p className="text-[14px] text-text-secondary">Loading…</p> : q.error ? <p role="alert" className="text-[14px] text-red-500">Couldn't load the event log.</p> : (
             <div className="overflow-x-auto rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]">
               <table className="w-full min-w-[700px] text-[13px]">

@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
@@ -8,7 +8,9 @@ import * as sessionModule from "@/lib/session";
 import { SsoSettingsSection } from "@/features/settings/SsoSettings";
 
 const ORG = { id: "o1", name: "Acme", slug: "acme", role: "owner", isDefault: true };
-vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: ORG, orgs: [ORG], user: { id: "a1", name: "Ada", role: "admin" } } as never);
+let spy: ReturnType<typeof vi.spyOn>;
+beforeAll(() => { spy = vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: ORG, orgs: [ORG], user: { id: "a1", name: "Ada", role: "admin" } } as never); });
+afterAll(() => spy.mockRestore());
 const view = { config: null, domains: [], redirectUri: "http://x/cb", orgSlug: "acme", scopes: "openid", linkedAccounts: 0 };
 const wrap = () => render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><SsoSettingsSection /></MemoryRouter></QueryClientProvider>);
 

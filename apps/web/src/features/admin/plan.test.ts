@@ -13,3 +13,10 @@ describe("planMessage", () => {
     expect(planMessage(new Error("x"))).toBeNull();
   });
 });
+
+describe("planMessage with a thin body", () => {
+  it("never says undefined", () => {
+    expect(planMessage(new ApiError(402, "seat_limit", {}))).toBe("All seats are in use. An owner can add seats.");
+    expect(planMessage(new ApiError(402, "link_limit", null))).toBe("You've reached the limit of active one-time links. Revoke one to make another.");
+  });
+});

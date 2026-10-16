@@ -15,7 +15,9 @@ export function PlanGate({ feature, children }: { feature: PlanFeature; children
 /** Owners' and admins' header line while the Business trial runs. */
 export function TrialLine() {
   const d = useOrgPlan().data;
-  if (!d?.entitlements.trial) return null;
-  const n = Math.max(1, Math.ceil((new Date(d.trialEndsAt ?? 0).getTime() - Date.now()) / 86_400_000));
+  const end = d?.trialEndsAt ? Date.parse(d.trialEndsAt) : 0;
+  // The plan is cached for a minute: the line ends on time even if the cached answer still says trial.
+  if (!d?.entitlements.trial || !(end > Date.now())) return null;
+  const n = Math.ceil((end - Date.now()) / 86_400_000);
   return <p className="border-b border-border-default bg-well px-4 py-1.5 text-[12.5px] text-text-secondary">Business trial: {n} {n === 1 ? "day" : "days"} left</p>;
 }
