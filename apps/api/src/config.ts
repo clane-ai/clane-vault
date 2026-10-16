@@ -20,6 +20,7 @@ const schema = z.object({
   DEFAULT_ORG_NAME: z.preprocess((v) => (typeof v === "string" ? v.trim() : v) || undefined, z.string().max(80).optional()),
   ALLOW_ORG_CREATION: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
   HOSTED_MODE: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
+  BILLING_MODE: z.preprocess(blank, z.enum(["off", "hosted"]).default("off")),
   INVITES_PER_ORG_PER_DAY: z.preprocess(blank, z.coerce.number().int().min(1).max(100000).default(50)),
   MAX_OWNED_ORGS: z.preprocess(blank, z.coerce.number().int().min(1).max(10000).default(5)),
   KDF_MIN_MEMORY_KIB: z.coerce.number().int().min(1024).default(65536),
@@ -133,6 +134,8 @@ export interface Config {
    * and registering also needs a 6-digit code emailed to the invited address.
    */
   hostedMode?: boolean;
+  /** BILLING_MODE (default off): "hosted" turns on plans and limits (lib/plans.ts); off leaves every limit unset. */
+  billingMode?: "off" | "hosted";
   /** Invites an org may send per 24 h (INVITES_PER_ORG_PER_DAY, default 50). */
   invitesPerOrgPerDay?: number;
   /** Organisations one account may own (MAX_OWNED_ORGS, default 5). */
@@ -259,7 +262,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return { productName: e.PRODUCT_NAME, basePath, databaseUrl: e.DATABASE_URL, jwtSecret: e.JWT_SECRET, serverSecret: e.SERVER_SECRET, publicUrl, cookieSecure: e.COOKIE_SECURE === "true", port: e.PORT, kdfMinMemoryKiB: e.KDF_MIN_MEMORY_KIB, rateLimitPerMinute: e.RATE_LIMIT_PER_MINUTE, adminRecoveryResetDelayHours: e.ADMIN_RECOVERY_RESET_DELAY_HOURS, adminRecoveryApproverMinAgeDays: e.ADMIN_RECOVERY_APPROVER_MIN_AGE_DAYS, trustProxy: e.TRUST_PROXY === "true" ? true : e.TRUST_PROXY === "false" ? false : Number(e.TRUST_PROXY),
     ...(e.RESEND_API_KEY && e.EMAIL_FROM ? { resendApiKey: e.RESEND_API_KEY, emailFrom: e.EMAIL_FROM } : {}), backup: backupConfig(e),
     ...(e.DEFAULT_ORG_NAME ? { defaultOrgName: e.DEFAULT_ORG_NAME } : {}), allowOrgCreation: e.ALLOW_ORG_CREATION === "true", acceptNewServerSecret: e.ACCEPT_NEW_SERVER_SECRET === "true",
-    hostedMode: e.HOSTED_MODE === "true", invitesPerOrgPerDay: e.INVITES_PER_ORG_PER_DAY, maxOwnedOrgs: e.MAX_OWNED_ORGS,
+    hostedMode: e.HOSTED_MODE === "true", billingMode: e.BILLING_MODE, invitesPerOrgPerDay: e.INVITES_PER_ORG_PER_DAY, maxOwnedOrgs: e.MAX_OWNED_ORGS,
     ssoAllowHttpIssuer: e.SSO_ALLOW_HTTP_ISSUER === "true",
     attachments: attachmentConfig(e),
     ...(e.DEMO_MODE === "true" ? { demo: { ttlMinutes: e.DEMO_TTL_MINUTES, sandboxesPerIpPerHour: e.DEMO_SANDBOXES_PER_IP_PER_HOUR } } : {}) };

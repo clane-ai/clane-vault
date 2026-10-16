@@ -10,6 +10,8 @@ import { startAdminAge } from "./auth.js";
 import { readPolicies } from "../lib/policies.js";
 import { logoVersion } from "../lib/images.js";
 import { rawImageBodies, readLogo, sendLogo } from "./brand.js";
+import { TRIAL_MS } from "../lib/plans.js";
+import planRoutes from "./plan.js";
 import { hashToken } from "../lib/tokens.js";
 
 const orgName = displayName;
@@ -147,7 +149,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const org = await app.prisma.$transaction(async (tx) => {
       await lockUser(tx, me);
-      return tx.organization.create({ data: { name, slug: slugFor(name),
+      return tx.organization.create({ data: { name, slug: slugFor(name), ...(app.config.billingMode === "hosted" ? { trialEndsAt: new Date(+now + TRIAL_MS) } : {}),
         memberships: { create: { userId: me, role: "owner", status: "active", adminSince: now, joinedAt: now } } } });
     });
     await logEvent(app.prisma, { orgId: org.id, actorId: req.auth.userId, action: "org.create" });
@@ -166,6 +168,8 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       if (req.org?.role !== "owner" && req.org?.role !== "admin") await reply.code(403).send({ error: "forbidden" });
     };
     const meta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
+
+    if (app.config.billingMode === "hosted") await o.register(planRoutes);
 
     o.get("/org", async (req) => {
       const id = req.org!.id;

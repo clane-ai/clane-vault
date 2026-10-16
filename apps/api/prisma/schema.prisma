@@ -9,6 +9,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum OrgPlan {
+  team
+  business
+}
+
+enum BillingStatus {
+  free
+  active
+  past_due
+  canceled
+}
+
 enum OrgRole {
   owner
   admin
@@ -141,6 +153,15 @@ model Organization {
   /// owner invitation went to, as the operator typed it, and who created it. Null for every other organisation.
   customerOwnerEmail     String?
   customerCreatedById    String?      @db.Uuid
+  /// Hosted plans (lib/plans.ts); only read when BILLING_MODE=hosted.
+  plan                   OrgPlan       @default(team)
+  billingStatus          BillingStatus @default(free)
+  seatsPaid              Int?
+  currentPeriodEnd       DateTime?     @db.Timestamptz
+  stripeCustomerId       String?       @unique
+  stripeSubscriptionId   String?       @unique
+  /// End of the 14-day Business trial; null when billing is off.
+  trialEndsAt            DateTime?     @db.Timestamptz
 
   @@index([demoExpiresAt])
   @@index([customerOwnerEmail])
