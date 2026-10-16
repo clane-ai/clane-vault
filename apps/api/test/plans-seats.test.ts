@@ -4,6 +4,8 @@ import { makeTestApp, resetDb, createActiveUser, FAST_KDF } from "./helpers.js";
 import { MockOidc } from "./mockOidc.js";
 import { seatsUsed } from "../src/lib/seats.js";
 import { requestDomainJoin } from "../src/lib/domainJoin.js";
+import { linkAndJoin } from "../src/lib/ssoLink.js";
+import { SeatLimitError } from "../src/lib/seats.js";
 
 // Seat limits (hosted plans): every way into an organisation checks the allowance under the org row lock.
 const t = await makeTestApp({ billingMode: "hosted" });
@@ -142,5 +144,47 @@ describe("seat limits on self-service joins", () => {
     const reg = await pub("/auth/sso/register", { proof, name: "New", authKey: acct.authKey, material: acct.material }, cookie);
     expect([reg.statusCode, reg.json()]).toEqual([402, { error: "seat_limit", used: 1, allowed: 1 }]);
     expect(await t.prisma.user.count({ where: { email: "new@acme.test" } })).toBe(0);
+  });
+});
+
+describe("seat limits: late paths", () => {
+  async function fullOrgWithGuest() {
+    const owner = await createActiveUser(t, { role: "owner" });
+    const other = await t.prisma.organization.create({ data: { name: "Other", slug: "other-org" } });
+    const guest = await createActiveUser(t, { orgId: other.id, role: "owner" });
+    expect((await invite(owner, guest.email)).statusCode).toBe(201);
+    await fill(owner, 8); // owner + guest + 8 = 10
+    expect((await invite(owner, "late@x.test")).statusCode).toBe(402);
+    return { owner, guest };
+  }
+
+  it("a fresh invitation is accepted at a full org (its seat was counted)", async () => {
+    const { owner, guest } = await fullOrgWithGuest();
+    expect((await call(guest, "POST", `/me/invitations/${owner.orgId}/accept`)).statusCode).toBe(200);
+    expect(await seatsUsed(t.prisma, owner.orgId!)).toBe(10);
+  });
+
+  it("a stale invitation is not accepted at a full org", async () => {
+    const { owner, guest } = await fullOrgWithGuest();
+    await t.prisma.invite.deleteMany({ where: { email: guest.email } });
+    await t.prisma.membership.updateMany({ where: { orgId: owner.orgId!, userId: guest.id }, data: { createdAt: new Date(Date.now() - 8 * 864e5) } });
+    // Past the 7 days the accept route already answers 404; its seat check would be 402 if it ever got that far.
+    expect((await call(guest, "POST", `/me/invitations/${owner.orgId}/accept`)).statusCode).toBe(404);
+    expect(await t.prisma.membership.findFirstOrThrow({ where: { orgId: owner.orgId!, userId: guest.id } })).toMatchObject({ status: "invited" });
+  });
+
+  it("SSO just-in-time join at a full org leaves no identity link or membership", async () => {
+    const owner = await createActiveUser(t, { role: "owner" });
+    const other = await t.prisma.organization.create({ data: { name: "Other", slug: "other-org" } });
+    const user = await createActiveUser(t, { orgId: other.id, role: "owner", email: "jit@acme.test" });
+    await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { plan: "business", seatsPaid: 1 } });
+    const p = { orgId: owner.orgId!, issuer: idp.issuer, subject: "s1", email: user.email, jit: true };
+    await expect(linkAndJoin(t.app, p, { id: user.id }, t.app.log)).rejects.toBeInstanceOf(SeatLimitError);
+    expect(await t.prisma.ssoIdentity.count({ where: { orgId: owner.orgId!, userId: user.id } })).toBe(0);
+    expect(await t.prisma.membership.count({ where: { orgId: owner.orgId!, userId: user.id } })).toBe(0);
+    await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { seatsPaid: 2 } });
+    await linkAndJoin(t.app, p, { id: user.id }, t.app.log);
+    expect(await t.prisma.ssoIdentity.count({ where: { orgId: owner.orgId!, userId: user.id } })).toBe(1);
+    expect(await t.prisma.membership.count({ where: { orgId: owner.orgId!, userId: user.id, status: "active" } })).toBe(1);
   });
 });

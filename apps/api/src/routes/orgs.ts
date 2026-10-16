@@ -59,6 +59,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       await lockUser(tx, me);
       const inv = await tx.membership.findFirst({ where: { orgId, userId: me, status: "invited", ...liveInvitation() }, select: { role: true } });
       if (!inv) return null;
+      await assertSeat(tx, app.config, orgId, 1, u.email); // a no-op while the invitation still holds its seat
       let role = inv.role;
       if (role === "owner") {
         // An owner invitation (a customer organisation, docs/provisioning.md): one owner per organisation, so it counts
