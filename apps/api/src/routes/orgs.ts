@@ -13,7 +13,7 @@ import { logoVersion } from "../lib/images.js";
 import { rawImageBodies, readLogo, sendLogo } from "./brand.js";
 import { TRIAL_MS } from "../lib/plans.js";
 import planRoutes from "./plan.js";
-import { assertSeat } from "../lib/seats.js";
+import { assertSeat, lockSeats } from "../lib/seats.js";
 import { hashToken } from "../lib/tokens.js";
 
 const orgName = displayName;
@@ -56,6 +56,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const me = req.auth.userId;
     const u = await app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { id: true, name: true, email: true } });
     const ended = await app.prisma.$transaction(async (tx) => {
+      await lockSeats(tx, app.config, orgId);
       await lockUser(tx, me);
       const inv = await tx.membership.findFirst({ where: { orgId, userId: me, status: "invited", ...liveInvitation() }, select: { role: true } });
       if (!inv) return null;
@@ -94,6 +95,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(token) }, select: { id: true, orgId: true, email: true, role: true, invitedById: true, source: true, acceptedAt: true, expiresAt: true, org: { select: { name: true } } } });
     if (!inv || inv.acceptedAt || inv.expiresAt < new Date() || inv.email !== me.email) return reply.code(404).send({ error: "not_found" });
     const state = await app.prisma.$transaction(async (tx) => {
+      await lockSeats(tx, app.config, inv.orgId);
       await lockUser(tx, me.id);
       const m = await tx.membership.findUnique({ where: { orgId_userId: { orgId: inv.orgId, userId: me.id } }, select: { status: true } });
       if (m?.status === "disabled") return "disabled" as const;

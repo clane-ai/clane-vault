@@ -200,11 +200,12 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
     const orgId = orgOf(req);
     if (app.config.hostedMode && !(await app.mail.configured(orgId))) return reply.code(409).send({ error: "email_required" });
     const list = (await pendingInvites(orgId)).filter((i) => b.includeExpired || !i.expired).sort((a, c) => (a.lastSentAt ?? "").localeCompare(c.lastSentAt ?? ""));
-    const results: { id: string; email: string; status: "resent" | "too_soon" | "invite_limit" | "not_found" | "email_required"; emailed?: boolean; inviteUrl?: string }[] = [];
+    const results: { id: string; email: string; status: "resent" | "seat_limit" | "too_soon" | "invite_limit" | "not_found" | "email_required"; emailed?: boolean; inviteUrl?: string }[] = [];
     let capped = false;
     for (const i of list) {
       if (capped) { results.push({ id: i.id, email: i.email, status: "invite_limit" }); continue; }
-      const r = await resendInvite(app, orgId, i.id, req.auth.userId, req.log);
+      const r = await resendInvite(app, orgId, i.id, req.auth.userId, req.log).catch((e) => { if (e instanceof SeatLimitError) return "seat_limit" as const; throw e; });
+      if (r === "seat_limit") { results.push({ id: i.id, email: i.email, status: "seat_limit" }); continue; }
       if (r.ok) results.push({ id: r.id, email: r.email, status: "resent", emailed: r.emailed, ...(r.inviteUrl ? { inviteUrl: r.inviteUrl } : {}) });
       else { results.push({ id: i.id, email: i.email, status: r.error }); if (r.error === "invite_limit") capped = true; }
     }

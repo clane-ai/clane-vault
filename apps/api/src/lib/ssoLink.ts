@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { logEvent } from "./events.js";
 import { lockUser } from "./orgs.js";
-import { assertSeat } from "./seats.js";
+import { assertSeat, lockSeats } from "./seats.js";
 
 export interface LinkInput { orgId: string; issuer: string; subject: string; email: string; jit: boolean }
 
@@ -12,6 +12,7 @@ export interface LinkInput { orgId: string; issuer: string; subject: string; ema
 export async function linkAndJoin(app: FastifyInstance, p: LinkInput, user: { id: string }, log: { warn: (o: object, m: string) => void }, meta: { ip?: string; userAgent?: string } = {}) {
   // The membership goes first: a seat refusal (402) must leave no identity link behind.
   const joined = p.jit ? await app.prisma.$transaction(async (tx) => {
+    await lockSeats(tx, app.config, p.orgId);
     await lockUser(tx, user.id);
     if (await tx.membership.findUnique({ where: { orgId_userId: { orgId: p.orgId, userId: user.id } }, select: { id: true } })) return null;
     await assertSeat(tx, app.config, p.orgId, 1, p.email);

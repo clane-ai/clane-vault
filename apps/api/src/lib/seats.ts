@@ -24,13 +24,18 @@ export async function seatsUsed(db: Db, orgId: string, now = new Date()): Promis
   return (await seatEmails(db, orgId, now)).size;
 }
 
+/** The org row lock alone. Lock order is always Organization then User, so a transaction that also locks the user takes this first. */
+export async function lockSeats(tx: Db, cfg: Pick<Config, "billingMode">, orgId: string): Promise<void> {
+  if (cfg.billingMode === "hosted") await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+}
+
 /**
  * Call first in the transaction that creates the seat: it locks the org row, so concurrent seat-takers queue up.
  * Throws SeatLimitError if `adding` more seats would pass the allowance. An `email` that already holds a seat adds none.
  */
 export async function assertSeat(tx: Db, cfg: Pick<Config, "billingMode">, orgId: string, adding = 1, email?: string): Promise<void> {
   if (cfg.billingMode !== "hosted") return;
-  await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${orgId}::uuid FOR UPDATE`;
+  await lockSeats(tx, cfg, orgId);
   const allowed = (await orgEntitlements(tx, cfg, orgId)).seatsAllowed;
   if (allowed === null) return;
   const emails = await seatEmails(tx, orgId, new Date());

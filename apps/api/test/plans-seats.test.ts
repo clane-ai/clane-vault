@@ -2,10 +2,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccount } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, FAST_KDF } from "./helpers.js";
 import { MockOidc } from "./mockOidc.js";
-import { seatsUsed } from "../src/lib/seats.js";
+import { seatsUsed, SeatLimitError } from "../src/lib/seats.js";
 import { requestDomainJoin } from "../src/lib/domainJoin.js";
 import { linkAndJoin } from "../src/lib/ssoLink.js";
-import { SeatLimitError } from "../src/lib/seats.js";
 
 // Seat limits (hosted plans): every way into an organisation checks the allowance under the org row lock.
 const t = await makeTestApp({ billingMode: "hosted" });
@@ -70,11 +69,11 @@ describe("seat limits", () => {
     expect([r.statusCode, r.json()]).toEqual([402, { error: "seat_limit", used: 10, allowed: 10 }]);
   });
 
-  it("two invites racing for the last seat: exactly one wins", async () => {
+  it("six invites racing for the last seat: exactly one wins", async () => {
     const owner = await createActiveUser(t, { role: "owner" });
     await fill(owner, 8);
-    const res = await Promise.all([invite(owner, "r1@x.test"), invite(owner, "r2@x.test")]);
-    expect(res.map((r) => r.statusCode).sort()).toEqual([201, 402]);
+    const res = await Promise.all([1, 2, 3, 4, 5, 6].map((i) => invite(owner, `r${i}@x.test`)));
+    expect(res.map((r) => r.statusCode).sort()).toEqual([201, 402, 402, 402, 402, 402]);
     expect(await seatsUsed(t.prisma, owner.orgId!)).toBe(10);
   });
 
@@ -86,6 +85,19 @@ describe("seat limits", () => {
     expect(r.json().results.map((x: { status: string }) => x.status)).toEqual(["invited", "invited", "seat_limit", "seat_limit", "seat_limit"]);
     expect(await seatsUsed(t.prisma, owner.orgId!)).toBe(10);
     expect(await t.prisma.invite.count({ where: { email: { endsWith: "@bulk.test" } } })).toBe(2);
+  });
+
+  it("Resend all keeps going when an expired invite no longer fits", async () => {
+    const owner = await createActiveUser(t, { role: "owner" });
+    await fill(owner, 9); // 10 used
+    await t.prisma.invite.updateMany({ where: { email: "fill0@x.test" }, data: { expiresAt: new Date(Date.now() - 1000), lastSentAt: new Date(Date.now() - 864e5) } });
+    await t.prisma.invite.updateMany({ where: { email: { not: "fill0@x.test" } }, data: { lastSentAt: new Date(Date.now() - 864e5) } });
+    expect((await invite(owner, "late@x.test")).statusCode).toBe(201); // takes the expired one's seat
+    const r = await call(owner, "POST", "/admin/invites/resend-all", { includeExpired: true });
+    expect(r.statusCode).toBe(200);
+    const st = (r.json().results as { email: string; status: string }[]);
+    expect(st.find((x) => x.email === "fill0@x.test")!.status).toBe("seat_limit");
+    expect(st.filter((x) => x.status === "resent").length).toBe(8);
   });
 
   it("GET /org/plan reports seats", async () => {
