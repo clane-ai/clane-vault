@@ -263,7 +263,7 @@ export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
     void sendEmail(app.mail, user.email, recoveryUsedEmail(await app.brand.productName(), via, now), req.log);
     const fresh = await app.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const { accessToken } = await createSession(app, reply, fresh, meta(req).userAgent);
-    return authView(app.prisma, accessToken, fresh);
+    return authView(app.prisma, app.config, accessToken, fresh);
   });
 
   /** Checks the current master password (auth key) of a recovery-token holder: wrong ones count toward the lockout. */

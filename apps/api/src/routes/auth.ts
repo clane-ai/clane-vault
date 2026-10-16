@@ -4,13 +4,14 @@ import argon2 from "argon2";
 import { authenticator } from "otplib";
 import { z } from "zod";
 import { secretBox } from "../lib/secretBox.js";
-import { apiPrefix } from "../config.js";
+import { apiPrefix, type Config } from "../config.js";
 import { consumeTotp, totpKeyUri } from "../lib/totp.js";
 import { hashToken, newRefreshToken, signAccess, signSetup, splitRefresh } from "../lib/tokens.js";
 import { logEvent } from "../lib/events.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
 import { adminAddedEmail, sendEmail, signupCodeEmail } from "../lib/email.js";
 import { displayName } from "../lib/names.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { orgsOf } from "../lib/orgs.js";
 import { readPolicies } from "../lib/policies.js";
 import { linkAndJoin } from "../lib/ssoLink.js";
@@ -44,8 +45,8 @@ export const materialView = (u: { kdfSalt: string; kdfParams: unknown; wrappedUs
   ({ kdfSalt: u.kdfSalt, kdfParams: kdfView(u.kdfParams), wrappedUserKey: u.wrappedUserKey, publicKey: u.publicKey, wrappedPrivateKey: u.wrappedPrivateKey });
 
 /** What a sign-in returns: the token, the account, its key material and its active organisations. */
-export async function authView(prisma: Db, accessToken: string, u: Parameters<typeof userView>[0] & Parameters<typeof materialView>[0]) {
-  return { accessToken, user: userView(u), material: materialView(u), orgs: await orgsOf(prisma, u.id) };
+export async function authView(prisma: Db, cfg: Pick<Config, "billingMode">, accessToken: string, u: Parameters<typeof userView>[0] & Parameters<typeof materialView>[0]) {
+  return { accessToken, user: userView(u), material: materialView(u), orgs: await orgsOf(prisma, cfg, u.id) };
 }
 
 /**
@@ -113,11 +114,11 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/invite/:token", async (req, reply) => {
     const { token } = req.params as { token: string };
-    const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(token) }, include: { org: { select: { name: true, adminRecoveryEnabled: true, policies: true } } } });
+    const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(token) }, include: { org: { select: { ...PLAN_SELECT, name: true, adminRecoveryEnabled: true, policies: true } } } });
     if (!inv || inv.acceptedAt || inv.expiresAt < new Date()) return reply.code(404).send({ error: "invite_invalid" });
     // The inviting org's admin-recovery policy, for the disclosure on the sign-up page; and whether an emailed code is needed.
     // Its master password rule too (docs/policies.md): the sign-up form enforces it.
-    const pol = readPolicies(inv.org.policies);
+    const pol = readPolicies(inv.org.policies, getEntitlements(app.config, inv.org));
     return { email: inv.email, orgName: inv.org.name, adminRecoveryEnabled: inv.org.adminRecoveryEnabled, emailVerification: !!app.config.hostedMode,
       passwordPolicy: { minLength: pol.minPasswordLength, minScore: pol.minPasswordScore }, ...(inv.nameHint ? { name: inv.nameHint } : {}) };
   });
@@ -221,7 +222,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     // An account set up from an SSO sign-in: the session counts as that org's SSO (if still a member).
     const sso = req.setupSsoOrgId && await app.prisma.membership.findFirst({ where: { orgId: req.setupSsoOrgId, userId: user.id, status: "active" }, select: { orgId: true } });
     const { accessToken } = await createSession(app, reply, active, meta(req).userAgent, sso ? { ssoOrgIds: [sso.orgId] } : {});
-    return authView(app.prisma, accessToken, active);
+    return authView(app.prisma, app.config, accessToken, active);
   });
 
   /**
@@ -265,7 +266,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       const active = await app.prisma.user.update({ where: { id: user.id }, data: { status: "active", failedLogins: 0, lockedUntil: null } });
       await logEvent(app.prisma, { actorId: user.id, action: "auth.login", ...meta(req), meta: { demo: true } });
       const { accessToken, refreshToken } = await createSession(app, reply, active, meta(req).userAgent, { client: body.client });
-      return { ...(await authView(app.prisma, accessToken, active)), ...(refreshToken ? { refreshToken } : {}) };
+      return { ...(await authView(app.prisma, app.config, accessToken, active)), ...(refreshToken ? { refreshToken } : {}) };
     }
     if (user.status === "pending_2fa") return { needsTotpSetup: true, setupToken: await signSetup(app.config, user.id) };
     if (!body.code) return reply.code(401).send({ error: "totp_required" });
@@ -274,7 +275,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     await app.prisma.user.update({ where: { id: user.id }, data: { failedLogins: 0, lockedUntil: null } });
     await logEvent(app.prisma, { actorId: user.id, action: "auth.login", ...meta(req) });
     const { accessToken, refreshToken } = await createSession(app, reply, user, meta(req).userAgent, { client: body.client });
-    return { ...(await authView(app.prisma, accessToken, user)), ...(refreshToken ? { refreshToken } : {}) };
+    return { ...(await authView(app.prisma, app.config, accessToken, user)), ...(refreshToken ? { refreshToken } : {}) };
   });
 
   /**
@@ -299,7 +300,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (!session || !valid(session)) return deny();
     const h = hashToken(parsed.secret);
     const respond = async (s: NonNullable<typeof session>, refreshToken?: string) =>
-      ({ ...(await authView(app.prisma, await signAccess(app.config, { userId: s.user.id, sessionId: s.id }), s.user)), ...(refreshToken ? { refreshToken } : {}) });
+      ({ ...(await authView(app.prisma, app.config, await signAccess(app.config, { userId: s.user.id, sessionId: s.id }), s.user)), ...(refreshToken ? { refreshToken } : {}) });
     if (h === session.refreshHash) {
       const refresh = newRefreshToken(session.id);
       const now = new Date();

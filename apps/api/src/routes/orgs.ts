@@ -7,6 +7,7 @@ import { applyPendingGroups, coolDown, dropPendingGroups, INVITE_TTL_MS, invited
 import { displayName } from "../lib/names.js";
 import { defaultOrg, dropInstanceAdminIfGone, isInstanceAdmin, lockUser, offboard, orgsOf, slugFor } from "../lib/orgs.js";
 import { startAdminAge } from "./auth.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { logoVersion } from "../lib/images.js";
 import { rawImageBodies, readLogo, sendLogo } from "./brand.js";
@@ -29,14 +30,14 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
   app.get("/me/orgs", async (req) => {
     const me = req.auth.userId;
     const invited = await app.prisma.membership.findMany({ where: { userId: me, status: "invited", ...liveInvitation() }, orderBy: { createdAt: "asc" },
-      select: { role: true, createdAt: true, invitedById: true, org: { select: { id: true, name: true, policies: true } } } });
+      select: { role: true, createdAt: true, invitedById: true, org: { select: { ...PLAN_SELECT, id: true, name: true, policies: true } } } });
     const inviters = new Map((await app.prisma.user.findMany({ where: { id: { in: invited.map((m) => m.invitedById).filter((x): x is string => !!x) } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
     const instanceAdmin = await isInstanceAdmin(app.prisma, app.config, me);
     return {
-      orgs: await orgsOf(app.prisma, me),
+      orgs: await orgsOf(app.prisma, app.config, me),
       invitations: invited.map((m) => {
         // The org's master password rule: the app checks it before accepting (docs/policies.md).
-        const p = readPolicies(m.org.policies);
+        const p = readPolicies(m.org.policies, getEntitlements(app.config, m.org));
         return { orgId: m.org.id, orgName: m.org.name, role: m.role, invitedBy: m.invitedById ? inviters.get(m.invitedById) ?? null : null, invitedAt: m.createdAt.toISOString(),
           passwordPolicy: { minLength: p.minPasswordLength, minScore: p.minPasswordScore } };
       }),
@@ -75,7 +76,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     if (ended === "org_limit") return reply.code(409).send({ error: "org_limit" });
     await startAdminAge(app, u, req.log);
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "org.join" });
-    return { orgs: await orgsOf(app.prisma, req.auth.userId) };
+    return { orgs: await orgsOf(app.prisma, app.config, req.auth.userId) };
   });
 
   /**

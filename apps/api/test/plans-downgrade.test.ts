@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { makeTestApp, resetDb, createActiveUser } from "./helpers.js";
+import { makeTestApp, resetDb, createActiveUser, createInvite } from "./helpers.js";
 
 const t = await makeTestApp({ billingMode: "hosted" });
 afterAll(() => t.app.close());
@@ -16,7 +16,7 @@ describe("Team reads stored Business settings as off", () => {
     const owner = await createActiveUser(t, { role: "owner", email: "boss@acme.test" });
     const member = await createActiveUser(t, { email: "sara@acme.test" });
     const orgId = owner.orgId!;
-    const policies = { ipAllowlist: ["203.0.113.0/24"], ownerBreakGlass: true, minPasswordLength: 20 };
+    const policies = { ipAllowlist: ["203.0.113.0/24"], ownerBreakGlass: true, minPasswordLength: 20, autoLockMinutes: 3 };
     await t.prisma.organization.update({ where: { id: orgId }, data: { plan: "business", seatsPaid: 50, policies, adminRecoveryEnabled: true } });
     await t.prisma.orgSso.create({ data: { id: randomUUID(), orgId, issuer: "https://idp.test", clientId: "c", requireSso: true, autoJoin: true } });
     await t.prisma.ssoDomain.create({ data: { orgId, domain: "acme.test", token: "tok", verifiedAt: new Date(), checkedAt: new Date() } });
@@ -29,9 +29,14 @@ describe("Team reads stored Business settings as off", () => {
     t.config.resendApiKey = "re_test"; t.config.emailFrom = "vault@clane.ai";
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     const actions = async () => (await call(owner, "GET", "/admin/events?limit=200")).json().events.map((e: { action: string }) => e.action);
+    const inviteToken = await createInvite(t.prisma, "pending@acme.test", "member", orgId);
+    const clientPol = async () => (await call(member, "GET", "/me")).json().orgs.find((o: { id: string }) => o.id === orgId).policies;
+    const invitePol = async () => (await t.app.inject({ method: "GET", url: `/api/v1/auth/invite/${inviteToken}`, remoteAddress: "10.192.0.1" })).json().passwordPolicy;
     const stored = () => t.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { policies: true, adminRecoveryEnabled: true } });
 
     // Business: everything on.
+    expect(await clientPol()).toMatchObject({ autoLockMinutes: 3 });
+    expect((await invitePol()).minLength).toBe(20);
     expect((await pub("/auth/sso/discover", { email: "x@acme.test" })).json().orgs).toHaveLength(1);
     expect((await call(member, "GET", "/sync")).json()).toEqual({ error: "sso_required", orgId });
     expect((await call(owner, "GET", "/admin/settings/policies")).json().policies).toMatchObject(policies);
@@ -56,6 +61,8 @@ describe("Team reads stored Business settings as off", () => {
     expect(await actions()).not.toContain("test.ancient");
     expect((await pub("/auth/domain-join", { email: "new@acme.test" })).statusCode).toBe(202);
     expect(await t.prisma.invite.count({ where: { email: "new@acme.test" } })).toBe(0);
+    expect(await clientPol()).toMatchObject({ autoLockMinutes: null, ipRestricted: false });
+    expect((await invitePol()).minLength).toBe(12);
     expect(await stored()).toEqual(before);
     expect(await t.prisma.orgSso.count({ where: { orgId, requireSso: true, autoJoin: true } })).toBe(1);
     expect(await t.prisma.orgDomainJoin.count({ where: { orgId, enabled: true } })).toBe(1);
@@ -67,6 +74,8 @@ describe("Team reads stored Business settings as off", () => {
     expect((await call(owner, "GET", "/admin/settings/policies")).json().policies).toMatchObject(policies);
     expect((await call(owner, "GET", "/admin/settings")).json().adminRecovery.enabled).toBe(true);
     expect(await actions()).toContain("test.recent");
+    expect(await clientPol()).toMatchObject({ autoLockMinutes: 3 });
+    expect((await invitePol()).minLength).toBe(20);
     expect((await pub("/auth/domain-join", { email: "new@acme.test" })).statusCode).toBe(202);
     expect(await t.prisma.invite.count({ where: { email: "new@acme.test" } })).toBe(1);
   });

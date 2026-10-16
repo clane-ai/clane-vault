@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logEvent } from "../lib/events.js";
 import { INVITE_TTL_MS } from "../lib/invites.js";
 import { isInstanceAdmin } from "../lib/orgs.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies, readRiskIgnored, RISK_IGNORED } from "../lib/policies.js";
 import { isPublicMailDomain } from "../lib/publicMailDomains.js";
 import { ALERTS, alertDef, computeBenchmarks, computeScore, DAY_MS, HEALTH_AT_RISK_SCORE, INACTIVE_ADMIN_DAYS, isBenchmarkKey, STORAGE_ALERT_RATIO, trendPercent, WIDE_DOWNLOAD_ALERT, WINDOW_DAYS } from "../lib/risk.js";
@@ -123,7 +124,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const [ms, inv, org, ssoDomains, orgEmail, emailAny, instanceAdmin, alertRows] = await Promise.all([
       members(orgId), pendingInvites(orgId),
-      app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { policies: true, adminRecoveryEnabled: true, sso: { select: { id: true } } } }),
+      app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { ...PLAN_SELECT, policies: true, adminRecoveryEnabled: true, sso: { select: { id: true } } } }),
       app.prisma.ssoDomain.findMany({ where: { orgId }, select: { verifiedAt: true } }),
       app.prisma.emailSettings.findUnique({ where: { orgId }, select: { provider: true, m365AuthMode: true, m365ReconnectAt: true } }),
       app.mail.configured(orgId),
@@ -136,7 +137,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
       JOIN "Folder" f ON f.id = r."folderId" WHERE a.state = 'ready' AND f.kind = 'team' AND f."orgId" = ${orgId}::uuid`)[0]?.n ?? 0) : 0;
     const storage = { used: storageUsed, quota: att.orgQuotaMb * MIB, files: storageFiles, alertRatio: STORAGE_ALERT_RATIO, enabled: att.enabled };
     const lastBackup = instanceAdmin ? await app.prisma.backupRun.findFirst({ where: { status: "success" }, orderBy: { startedAt: "desc" }, select: { finishedAt: true, startedAt: true, bytes: true, attachmentBytes: true } }) : null;
-    const policies = readPolicies(org.policies);
+    const policies = readPolicies(org.policies, getEntitlements(app.config, org));
     const ignored = readRiskIgnored(org.policies);
     const d30 = since(WINDOW_DAYS, now.getTime()), d90 = since(INACTIVE_ADMIN_DAYS, now.getTime());
     const admins = ms.filter((m) => m.role !== "member");

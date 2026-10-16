@@ -235,7 +235,7 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
     await logEvent(app.prisma, { orgId: p.orgId, actorId: user.id, action: "auth.login", meta: { via: "sso", totpSkipped: skip }, ...meta(req) });
     const { accessToken } = await createSession(app, reply, user, meta(req).userAgent, { ssoOrgIds: [p.orgId], ...(skip ? { totpSkippedForOrg: p.orgId } : {}) });
     clearCookie(reply);
-    return { ...(await authView(app.prisma, accessToken, user)), returnTo: p.returnTo };
+    return { ...(await authView(app.prisma, app.config, accessToken, user)), returnTo: p.returnTo };
   });
 
   /** A new account through SSO (verified domain: just-in-time, or an open invite). No email code: the IdP verified the address. */
