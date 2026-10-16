@@ -8,7 +8,7 @@ import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies, readRiskIgnored, RISK_IGNORED } from "../lib/policies.js";
 import { isPublicMailDomain } from "../lib/publicMailDomains.js";
 import { ALERTS, alertDef, computeBenchmarks, computeScore, DAY_MS, HEALTH_AT_RISK_SCORE, INACTIVE_ADMIN_DAYS, isBenchmarkKey, STORAGE_ALERT_RATIO, trendPercent, WIDE_DOWNLOAD_ALERT, WINDOW_DAYS } from "../lib/risk.js";
-import { attachmentConfig, MIB, orgUsage } from "../lib/attachments/quota.js";
+import { attachmentConfig, chargeQuota, orgUsage } from "../lib/attachments/quota.js";
 import { csvCell } from "./events.js";
 
 /** One active member of the org, as the dashboard sees them: metadata and counts only. */
@@ -135,7 +135,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     const storageUsed = att.enabled ? await orgUsage(app.prisma, orgId) : 0;
     const storageFiles = att.enabled ? Number((await app.prisma.$queryRaw<{ n: bigint }[]>`SELECT COUNT(a.id)::bigint AS n FROM "Attachment" a JOIN "Record" r ON r.id = a."recordId"
       JOIN "Folder" f ON f.id = r."folderId" WHERE a.state = 'ready' AND f.kind = 'team' AND f."orgId" = ${orgId}::uuid`)[0]?.n ?? 0) : 0;
-    const storage = { used: storageUsed, quota: att.orgQuotaMb * MIB, files: storageFiles, alertRatio: STORAGE_ALERT_RATIO, enabled: att.enabled };
+    const storage = { used: storageUsed, quota: await chargeQuota(app.prisma, att, { kind: "org", orgId }), files: storageFiles, alertRatio: STORAGE_ALERT_RATIO, enabled: att.enabled };
     const lastBackup = instanceAdmin ? await app.prisma.backupRun.findFirst({ where: { status: "success" }, orderBy: { startedAt: "desc" }, select: { finishedAt: true, startedAt: true, bytes: true, attachmentBytes: true } }) : null;
     const policies = readPolicies(org.policies, getEntitlements(app.config, org));
     const ignored = readRiskIgnored(org.policies);

@@ -4,6 +4,8 @@ Images: `ghcr.io/clane-ai/clane-vault:<version>` (public; also `sha-<commit>`). 
 
 ## Unreleased
 
+Upgrading: migration `20261025000000_org_plans` runs on start (two enums, seven columns on `Organization`, nullable or with defaults). No `.env` change unless you want hosted plans (`BILLING_MODE=hosted`, docs/plans.md).
+
 - Hosted plans (docs/plans.md): with `BILLING_MODE=hosted` each organisation is on Team or Business, with seat, link, storage and event log limits and Business-only features. A new organisation gets a 14-day Business trial. Off by default: self-hosted servers are unchanged.
 - The web app shows "Available on the Business plan." in place of Business-only forms, a "Business trial: n days left" line for owners and admins, and plain messages when an invite, link or upload hits a limit.
 - `npm run set-plan -- --org <id> --plan team|business [--seats N]` sets a plan by hand.

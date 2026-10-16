@@ -29,7 +29,9 @@ export const BURN_REQUEST = { wrappedMembershipKey: null, proofHash: null } as c
 /** Whether this organisation's admin recovery is on (no org: whether any organisation has it on). */
 export async function adminRecoveryEnabled(prisma: Db, cfg: Pick<Config, "billingMode">, orgId?: string): Promise<boolean> {
   if (orgId) { const o = await prisma.organization.findUnique({ where: { id: orgId }, select: { ...PLAN_SELECT, adminRecoveryEnabled: true } }); return !!o && adminRecoveryOn(cfg, o); }
-  return (await prisma.organization.findMany({ where: { adminRecoveryEnabled: true }, select: PLAN_SELECT })).some((o) => adminRecoveryOn(cfg, { ...o, adminRecoveryEnabled: true }));
+  // Hosted: the plan condition mirrors getEntitlements (Business, or a Team trial still running).
+  const plan: Prisma.OrganizationWhereInput = cfg.billingMode === "hosted" ? { OR: [{ plan: "business" }, { plan: "team", billingStatus: "free", trialEndsAt: { gt: new Date() } }] } : {};
+  return !!(await prisma.organization.findFirst({ where: { adminRecoveryEnabled: true, ...plan }, select: { id: true } }));
 }
 /** The stored flag counts only while the plan includes admin recovery (a downgrade leaves the flag, and the escrows, alone). */
 export const adminRecoveryOn = (cfg: Pick<Config, "billingMode">, o: OrgPlanFields & { adminRecoveryEnabled: boolean }) => o.adminRecoveryEnabled && getEntitlements(cfg, o).features.adminRecovery;

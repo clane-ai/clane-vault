@@ -24,7 +24,7 @@ export interface UploadItem {
 }
 
 interface Job {
-  item: UploadItem; file: Blob & { name: string; type: string }; api: OrgApi; recordKey: Uint8Array; onDone?: () => void;
+  item: UploadItem; file: Blob & { name: string; type: string }; api: OrgApi; recordKey: Uint8Array; onDone?: () => void; member: boolean;
   fid: string | null; fileKey: Uint8Array | null; nonceBase: Uint8Array | null; meta: AttachmentMeta | null;
   /** SHA-256 of each plaintext chunk from the hash pass: a file that changes on disk meanwhile is caught. */
   chunkHashes: string[];
@@ -63,7 +63,7 @@ const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16)
 const slice = async (f: Blob, i: number) => new Uint8Array(await f.slice(i * ATTACHMENT_CHUNK_SIZE, Math.min((i + 1) * ATTACHMENT_CHUNK_SIZE, f.size)).arrayBuffer());
 
 /** What the server's refusals mean to the person uploading. */
-export function uploadErrorMessage(e: unknown, name: string): string {
+export function uploadErrorMessage(e: unknown, name: string, member = false): string {
   if (!(e instanceof ApiError)) return e instanceof Stop && e.reason === "fatal" ? e.message : "The upload failed. Check your connection and retry.";
   const b = (e.body ?? {}) as { max?: number; maxMb?: number; scope?: string };
   switch (e.code) {
@@ -76,7 +76,7 @@ export function uploadErrorMessage(e: unknown, name: string): string {
     case "in_trash": return "This record is in the trash.";
     case "forbidden": case "not_found": return "You can't add files to this record.";
     case "rate_limited": return "Too many requests. Wait a minute and retry.";
-    default: return planMessage(e) ?? "The upload failed. Check your connection and retry.";
+    default: return planMessage(e, member) ?? "The upload failed. Check your connection and retry.";
   }
 }
 
@@ -212,7 +212,7 @@ async function run(j: Job) {
   } catch (e) {
     if (e instanceof Stop && e.reason === "cancelled") return;
     j.item.status = "failed";
-    j.item.error = uploadErrorMessage(e, j.item.name);
+    j.item.error = uploadErrorMessage(e, j.item.name, j.member);
     // A refusal that a retry can't change ends the upload for good.
     if (e instanceof ApiError && e.status < 500 && e.status !== 429) { const fid = j.fid; j.fid = null; finish(j); if (fid) void j.api.del(`/records/${j.item.recordId}/attachments/${fid}`).catch(() => undefined); }
     emit();
@@ -225,6 +225,7 @@ export interface StartUpload {
   api: OrgApi; recordId: string;
   /** Copied: the uploader zeroes its copy when the upload ends. */ recordKey: Uint8Array;
   file: Blob & { name: string; type: string }; onDone?: () => void;
+  /** The uploader is a plain member of the charged organisation: plan refusals read without numbers. */ member?: boolean;
 }
 
 /** Starts one upload; returns its key (for cancel and retry). */
@@ -232,7 +233,7 @@ export function startUpload(s: StartUpload): string {
   const key = crypto.randomUUID();
   const j: Job = {
     item: { key, recordId: s.recordId, name: s.file.name || "file", size: s.file.size, sent: 0, status: "hashing" },
-    file: s.file, api: s.api, recordKey: s.recordKey.slice(), onDone: s.onDone,
+    file: s.file, api: s.api, recordKey: s.recordKey.slice(), onDone: s.onDone, member: !!s.member,
     fid: null, fileKey: null, nonceBase: null, meta: null, chunkHashes: [], kept: new Map(), encrypted: new Set(), accepted: new Set(),
     controller: new AbortController(), restarts: 0,
   };

@@ -26,9 +26,12 @@ export function useLocked(feature: PlanFeature, enabled = true): boolean {
 
 export const UPGRADE = "Available on the Business plan.";
 
-/** The line for a plan or limit refusal (402), or null for any other error. */
-export function planMessage(e: unknown): string | null {
+export const MEMBER_OVER_LIMIT = "Your organisation is over its plan's limit. Ask an admin.";
+
+/** The line for a plan or limit refusal (402), or null for any other error. `member`: plain members never see seat counts or upgrade prompts. */
+export function planMessage(e: unknown, member = false): string | null {
   if (!(e instanceof ApiError)) return null;
+  if (member && (e.code === "seat_limit" || e.code === "plan_required" || e.code === "link_limit")) return MEMBER_OVER_LIMIT;
   const b = (e.body ?? {}) as { allowed?: number; limit?: number };
   if (e.code === "seat_limit") return b.allowed == null ? "All seats are in use. An owner can add seats." : `All ${b.allowed} seats are in use. An owner can add seats.`;
   if (e.code === "link_limit") return b.limit == null ? "You've reached the limit of active one-time links. Revoke one to make another." : `You can have ${b.limit} active one-time links. Revoke one to make another.`;

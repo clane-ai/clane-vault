@@ -45,7 +45,7 @@ const fillStorage = (t: T, recordId: string, owner: U, size: number) =>
 // A large configured cap, so the plan's pooled storage is what limits (the default 2 GiB cap equals Team's per-seat storage).
 const big = await makeTestApp({ billingMode: "hosted", attachments: { ...DEFAULT_ATTACHMENTS, orgQuotaMb: 1_000_000, userQuotaMb: 1_000_000, instanceQuotaMb: 10_000_000, dailyUploadMb: 10_000_000 } });
 afterAll(() => big.app.close());
-const small = await makeTestApp({ billingMode: "hosted", attachments: { ...DEFAULT_ATTACHMENTS, orgQuotaMb: 4 } });
+const small = await makeTestApp({ billingMode: "hosted", attachments: { ...DEFAULT_ATTACHMENTS, orgQuotaMb: 4, instanceQuotaMb: 5 } });
 afterAll(() => small.app.close());
 const up = async (t: T, u: U, rec: { id: string; recordKey: Uint8Array }, seed: number, org?: string | null) =>
   create(t, u, rec.id, await prepare(rec.id, rec.recordKey, bytes(2 * MiB, seed)), org === undefined ? {} : { org });
@@ -90,13 +90,17 @@ describe("pooled storage", () => {
     expect([r.statusCode, r.json().scope, r.json().quota]).toEqual([409, "user", GiB]);
   });
 
-  it("a smaller configured cap wins over the plan, and /org/plan reports what is enforced", async () => {
+  it("hosted ignores the env per-org cap (the plan pool replaces it) but the instance cap still applies; /org/plan, /admin/storage and /admin/risk report what is enforced", async () => {
     const owner = await createActiveUser(small, { role: "owner" });
     const target = await teamRecord(small, owner, await teamFolder(small, owner));
     expect((await up(small, owner, target, 1)).statusCode).toBe(201);
-    const r = await up(small, owner, target, 2);
-    expect([r.statusCode, r.json().quota]).toEqual([409, 4 * MiB]);
-    expect(await planLimit(small, owner)).toBe(4 * MiB);
+    expect((await up(small, owner, target, 2)).statusCode).toBe(201); // 4 MiB held: the 4 MiB env org cap would refuse a third
+    const r = await up(small, owner, target, 3);
+    expect([r.statusCode, r.json().scope, r.json().quota]).toEqual([409, "instance", 5 * MiB]);
+    expect(await planLimit(small, owner)).toBe(2 * GiB);
+    expect((await call(small, owner, "GET", "/admin/storage")).json().quota).toBe(2 * GiB);
+    await small.prisma.organization.update({ where: { id: owner.orgId! }, data: { plan: "business", seatsPaid: 5 } }); // risk is a Business page
+    expect((await call(small, owner, "GET", "/admin/risk")).json().utilisation.storage.quota).toBe(await planLimit(small, owner));
   });
 
   it("GET /org/plan reports storage used and limit", async () => {

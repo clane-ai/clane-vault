@@ -71,14 +71,14 @@ export async function lockQuota(tx: Db, charge: Charge): Promise<void> {
   else await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${charge.userId}::uuid FOR UPDATE`;
 }
 
-/** Bytes a charge may hold: the configured cap, and under hosted plans also the pooled plan storage (per active member for an org, per user otherwise). */
+/** Bytes a charge may hold: the env per-org / per-user cap, or under hosted plans the pooled plan storage instead (per active member for an org, per user otherwise). */
 export async function chargeQuota(db: Db, cfg: AttachmentConfig, charge: Charge): Promise<number> {
   const cap = (charge.kind === "org" ? cfg.orgQuotaMb : cfg.userQuotaMb) * MIB;
   if (cfg.billingMode !== "hosted") return cap;
   const perSeat = charge.kind === "org" ? (await orgEntitlements(db, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
   if (perSeat === null) return cap;
   const seats = charge.kind === "org" ? Math.max(1, await db.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
-  return Math.min(cap, perSeat * seats);
+  return perSeat * seats;
 }
 
 export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }

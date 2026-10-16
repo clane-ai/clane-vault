@@ -30,6 +30,8 @@ This is what the server enforces today.
 
 Seats are active members plus pending invitations, counted once per email address. Disabled members don't count.
 
+Under `hosted`, the plan's pooled storage replaces the per-organisation and per-person caps (`ATTACHMENT_ORG_QUOTA_MB`, `ATTACHMENT_USER_QUOTA_MB`). The instance cap (`ATTACHMENT_INSTANCE_QUOTA_MB`) and the daily upload cap still apply. With `BILLING_MODE=off` the env caps work as before.
+
 Reading, decrypting, exporting and deleting are never blocked. Going over a limit only blocks new invitations, new records in team folders and new file uploads.
 
 ## The 14-day trial
@@ -61,5 +63,14 @@ Run it from `apps/api` (or `npm run set-plan -w @clane-vault/api -- ...` from th
 ## Turning hosted mode on over existing organisations
 
 Every organisation starts as Team. An organisation that already uses single sign-on, policies or admin recovery would lose those features.
+
+Existing organisations become Team at once, with no trial. Team allows 10 seats, so an organisation with more is over its limit from the first request: its members can't create team records or upload files. List them first (active members plus unexpired pending invitations, one seat per email address):
+
+    SELECT o.id, o.name, count(*) AS seats FROM "Organization" o JOIN (
+      SELECT m."orgId", lower(u.email) AS e FROM "Membership" m JOIN "User" u ON u.id = m."userId" WHERE m.status = 'active'
+      UNION SELECT "orgId", lower(email) FROM "Invite" WHERE "acceptedAt" IS NULL AND "expiresAt" > now()
+    ) s ON s."orgId" = o.id GROUP BY o.id, o.name HAVING count(*) > 10;
+
+For each one, run `set-plan --org <id> --plan team --seats N` (or `business`) before you switch.
 
 Before you set `BILLING_MODE=hosted`, run `set-plan --plan business --seats N` for each existing organisation that needs them. Stored settings are never deleted. A stored "Require SSO" is not enforced on Team, so members can still sign in with their password and authenticator.

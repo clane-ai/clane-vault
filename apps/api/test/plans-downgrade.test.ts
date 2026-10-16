@@ -9,6 +9,7 @@ beforeEach(() => resetDb(t.prisma));
 let n = 0;
 const call = (u: { accessToken: string; orgId?: string | null }, method: "GET" | "POST", url: string) =>
   t.app.inject({ method, url: `/api/v1${url}`, remoteAddress: `10.190.0.${++n % 250}`, headers: { authorization: `Bearer ${u.accessToken}`, ...(u.orgId ? { "x-org-id": u.orgId } : {}) } });
+const options = async () => (await t.app.inject({ method: "GET", url: "/api/v1/auth/recovery/options", remoteAddress: `10.193.0.${++n % 250}` })).json().adminRecoveryEnabled;
 const pub = (url: string, payload: object) => t.app.inject({ method: "POST", url: `/api/v1${url}`, payload, remoteAddress: `10.191.0.${++n % 250}` });
 
 describe("Team reads stored Business settings as off", () => {
@@ -41,6 +42,7 @@ describe("Team reads stored Business settings as off", () => {
     expect((await call(member, "GET", "/sync")).json()).toEqual({ error: "sso_required", orgId });
     expect((await call(owner, "GET", "/admin/settings/policies")).json().policies).toMatchObject(policies);
     expect((await call(owner, "GET", "/admin/settings")).json().adminRecovery.enabled).toBe(true);
+    expect(await options()).toBe(true);
     const ev = await actions();
     expect(ev).toContain("test.recent");
     expect(ev).not.toContain("test.ancient");
@@ -57,6 +59,7 @@ describe("Team reads stored Business settings as off", () => {
     expect((await call(member, "GET", "/sync")).statusCode).toBe(200);
     expect((await call(owner, "GET", "/admin/settings/policies")).json().policies).toMatchObject({ ipAllowlist: [], minPasswordLength: 12 });
     expect((await call(owner, "GET", "/admin/settings")).json().adminRecovery.enabled).toBe(false);
+    expect(await options()).toBe(false);
     expect(await actions()).not.toContain("test.recent");
     expect(await actions()).not.toContain("test.ancient");
     expect((await pub("/auth/domain-join", { email: "new@acme.test" })).statusCode).toBe(202);

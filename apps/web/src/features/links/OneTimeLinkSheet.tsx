@@ -15,6 +15,7 @@ import { useOrgPolicies } from "@/lib/policies";
 import { useAttachmentLimits, useFileRows, type FileRow } from "@/features/attachments/useAttachments";
 import { formatBytes } from "@/features/attachments/format";
 import { planMessage } from "@/features/admin/plan";
+import { useSession } from "@/lib/session";
 
 /** A link carries at most this much in files (the server checks it too). */
 const LINK_FILES_MAX = 100 * 1024 * 1024;
@@ -102,6 +103,7 @@ export function LinkRow({ l, title, onRevoke }: { l: ShareLink; title?: string; 
  */
 export function OneTimeLinkForm({ record, inline, onClose }: { record: VaultRecord; inline?: boolean; onClose?: () => void }) {
   const { links, create, revoke } = useLinks(record.id);
+  const { org } = useSession();
   const [label, setLabel] = useState("");
   const [hours, setHours] = useState<1 | 24 | 168>(24);
   const [maxOpens, setMaxOpens] = useState<1 | 3 | null>(1);
@@ -130,7 +132,7 @@ export function OneTimeLinkForm({ record, inline, onClose }: { record: VaultReco
       // The organisation's link policy (docs/policies.md), enforced by the server.
       const c = err instanceof ApiError ? err.code : "";
       const max = (err instanceof ApiError ? (err.body as { maxExpiryHours?: number } | null)?.maxExpiryHours : undefined) ?? 0;
-      setError(planMessage(err) ?? (c === "links_disabled" ? "Your organisation has turned one-time links off."
+      setError(planMessage(err, org?.role === "member") ?? (c === "links_disabled" ? "Your organisation has turned one-time links off."
         : c === "link_password_required" ? "Your organisation requires a password on one-time links. Add one below."
         : c === "link_expiry_too_long" ? `Your organisation allows links for at most ${max === 1 ? "1 hour" : max === 24 ? "24 hours" : "7 days"}. Pick a shorter expiry.`
         : c === "link_attachments_disabled" ? "Your organisation doesn't allow files in one-time links. Untick the files."

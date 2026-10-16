@@ -12,7 +12,8 @@ import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { DomainJoinSection } from "./DomainJoinSection";
-import { PlanGate } from "@/features/admin/PlanLock";
+import { LockLine } from "@/features/admin/PlanLock";
+import { useOrgPlan } from "@/features/admin/plan";
 import { Chip } from "@/features/vault/people";
 
 const card = "rounded-[14px] border border-border-default bg-card p-4 shadow-[var(--shadow-card)]";
@@ -57,10 +58,13 @@ function Copyable({ label, value }: { label: string; value: string }) {
 
 /** Organisation settings → Single sign-on (the active organisation's owners and admins). */
 export function SsoSettingsSection() {
-  return <PlanGate feature="sso"><SsoSettingsForm /></PlanGate>;
+  const plan = useOrgPlan();
+  if (plan.isPending) return null;
+  return <SsoSettingsForm locked={plan.data?.entitlements.features.sso === false} />;
 }
 
-function SsoSettingsForm() {
+/** `locked`: the plan lacks SSO. Stored settings can still be removed (the server keeps DELETE open), never set up or edited. */
+function SsoSettingsForm({ locked }: { locked: boolean }) {
   const oapi = useOrgApi();
   const qc = useQueryClient();
   const KEY = ["sso-settings", useScope()];
@@ -144,6 +148,7 @@ function SsoSettingsForm() {
   return (<>
     <section className="flex flex-col gap-3" aria-label="Single sign-on">
       <h2 className={h2}>Single sign-on</h2>
+      {locked && <LockLine />}
       <div className={cn(card, "flex flex-col gap-4")}>
         <div className="flex items-start gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-[10px] bg-well text-text-tertiary"><KeyRound className="size-4" /></span>
@@ -157,10 +162,10 @@ function SsoSettingsForm() {
             {c && <p className="mt-1 truncate font-mono text-[11.5px] text-text-tertiary" title={c.issuer}>{c.issuer} · client {c.clientId} · secret {c.clientSecret.set ? `set${c.clientSecret.last4 ? ` (…${c.clientSecret.last4})` : ""}` : "missing"}
               {c.updatedBy ? ` · changed ${relativeTime(c.updatedAt) || ""} by ${c.updatedBy.name}` : ""} · {d!.linkedAccounts} linked</p>}
           </div>
-          {!editing && <Button type="button" variant="outline" size="sm" onClick={startEdit} disabled={!d}>{c ? "Edit" : "Set up"}</Button>}
+          {!editing && !locked && <Button type="button" variant="outline" size="sm" onClick={startEdit} disabled={!d}>{c ? "Edit" : "Set up"}</Button>}
         </div>
 
-        {d && (
+        {d && !locked && (
           <div className="grid gap-3 sm:grid-cols-2">
             <Copyable label="Redirect URI (add it at your identity provider)" value={d.redirectUri} />
             <Copyable label="Organisation ID (for “Sign in with SSO”)" value={d.orgSlug} />
@@ -190,7 +195,7 @@ function SsoSettingsForm() {
         )}
         {!editing && c && (
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => runTest.mutate({})} disabled={runTest.isPending}>{runTest.isPending ? "Testing…" : "Test connection"}</Button>
+            {!locked && <Button type="button" variant="outline" size="sm" onClick={() => runTest.mutate({})} disabled={runTest.isPending}>{runTest.isPending ? "Testing…" : "Test connection"}</Button>}
             <Button type="button" variant="ghost" size="sm" className="text-red-500 hover:bg-red-tint hover:text-red-500" onClick={() => remove.mutate()} disabled={remove.isPending}>Turn off single sign-on</Button>
           </div>
         )}
@@ -205,7 +210,7 @@ function SsoSettingsForm() {
           </ul>
         )}
 
-        <div className="flex flex-col gap-2 border-t border-border-default pt-3">
+        {(!locked || !!d?.domains.length) && <div className="flex flex-col gap-2 border-t border-border-default pt-3">
           <p className="text-[13.5px] font-medium text-text-primary">Domains</p>
           <p className="text-[12.5px] text-text-secondary">SSO accepts addresses in these domains. Verify each with a DNS TXT record: sign-in suggestions, automatic joining and "Require SSO" only apply to verified domains.</p>
           <ul className="flex flex-col gap-2" aria-label="SSO domains">
@@ -215,31 +220,31 @@ function SsoSettingsForm() {
                   <Globe className="size-4 text-text-tertiary" /><span className="font-mono text-[13px] text-text-primary">{x.domain}</span>
                   {x.verified ? <Chip tone="green">Verified</Chip> : <Chip tone="orange">Not verified</Chip>}
                   <span className="ml-auto flex gap-1">
-                    {!x.verified && <Button type="button" size="sm" variant="outline" onClick={() => verify.mutate(x.domain)} disabled={verify.isPending}>Verify</Button>}
+                    {!x.verified && !locked && <Button type="button" size="sm" variant="outline" onClick={() => verify.mutate(x.domain)} disabled={verify.isPending}>Verify</Button>}
                     <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${x.domain}`} onClick={() => dropDomain.mutate(x.domain)}><Trash2 className="size-3.5" /></Button>
                   </span>
                 </div>
-                {!x.verified && <Copyable label={`Add this TXT record to ${x.txtRecord.name}`} value={x.txtRecord.value} />}
+                {!x.verified && !locked && <Copyable label={`Add this TXT record to ${x.txtRecord.name}`} value={x.txtRecord.value} />}
                 {domainMsg?.domain === x.domain && <p role={domainMsg.ok ? "status" : "alert"} className={cn("text-[12.5px]", domainMsg.ok ? "text-green-600" : "text-red-500")}>{domainMsg.text}</p>}
               </li>
             ))}
           </ul>
-          <form className="flex gap-2" noValidate onSubmit={(e) => { e.preventDefault(); setDomainMsg(null); if (newDomain.trim()) addDomain.mutate(newDomain.trim()); }}>
+          {!locked && <form className="flex gap-2" noValidate onSubmit={(e) => { e.preventDefault(); setDomainMsg(null); if (newDomain.trim()) addDomain.mutate(newDomain.trim()); }}>
             <Label htmlFor="sso-domain" className="sr-only">Domain</Label>
             <Input id="sso-domain" placeholder="company.com" spellCheck={false} value={newDomain} onChange={(e) => setNewDomain(e.target.value)} className="h-9" />
             <Button type="submit" size="sm" variant="outline" className="h-9" disabled={!newDomain.trim() || addDomain.isPending}><Plus className="size-3.5" />Add domain</Button>
-          </form>
+          </form>}
           {domainMsg && !domainMsg.domain && <p role="alert" className="text-[12.5px] text-red-500">{domainMsg.text}</p>}
-        </div>
+        </div>}
 
-        <div className="flex flex-col gap-3 border-t border-border-default pt-3">
+        {!locked && <div className="flex flex-col gap-3 border-t border-border-default pt-3">
           {option("requireSso", "Require SSO for members", "Members with an address in a verified domain reach this organisation only after signing in with SSO. Their password sign-in still works for their private vault and other organisations. The owner is exempt.", true)}
           {option("trustIdpMfa", "Trust the identity provider's MFA", "Skip the authenticator code after SSO for members with an address in a verified domain. Only turn on if your provider enforces MFA.", false)}
           {option("autoJoin", "Auto-join verified domain users", "People with an address in a verified domain join this organisation as members on their first SSO sign-in (and can create an account through SSO).", true)}
-        </div>
+        </div>}
       </div>
     </section>
     {/* Without SSO too: verified domains also let people join by email (docs/provisioning.md). */}
-    <DomainJoinSection />
+    {!locked && <DomainJoinSection />}
   </>);
 }

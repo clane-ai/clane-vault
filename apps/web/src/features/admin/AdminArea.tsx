@@ -103,9 +103,9 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
     : section === "health" ? <SectionPage title="Password health" wide><TeamHealth /></SectionPage>
     : section === "migrate" ? <MigratePage folders={folders} records={records} vaultLoading={vaultLoading} />
     : section === "org/general" ? <SectionPage title="General" sub={org?.name}><OrgDetailsSection /></SectionPage>
-    : section === "org/policies" ? <SectionPage title="Policies" sub={org?.name}><PlanGate feature="policyEdit"><OrgPoliciesSection /></PlanGate></SectionPage>
+    : section === "org/policies" ? <SectionPage title="Policies" sub={org?.name}><OrgPoliciesSection /></SectionPage>
     : section === "org/sso" ? <SectionPage title="Single sign-on" sub={org?.name}>{demo ? <DemoUnavailable what="Single sign-on" /> : <SsoSettingsSection />}</SectionPage>
-    : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><PlanGate feature="adminRecovery"><AdminRecoverySection /></PlanGate></SectionPage>
+    : section === "org/recovery" ? <SectionPage title="Admin recovery" sub={org?.name}><AdminRecoverySection /></SectionPage>
     : section === "org/email" ? <SectionPage title="Email" sub={org?.name}>{demo ? <DemoUnavailable what="Email" /> : <EmailSettingsSection scope="org" />}</SectionPage>
     : section === "server/organisations" ? <SectionPage title="Customer organisations" sub="This server" wide><CustomerOrgsSection /></SectionPage>
     : section === "server/accounts" ? <SectionPage title="Accounts" sub="This server"><ResetAuthenticatorCard /></SectionPage>

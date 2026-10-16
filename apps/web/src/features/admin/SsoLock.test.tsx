@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -28,5 +29,23 @@ describe("SSO settings and the plan", () => {
     wrap();
     expect(await screen.findByRole("button", { name: /set up/i })).toBeInTheDocument();
     expect(screen.queryByText("Available on the Business plan.")).toBeNull();
+  });
+});
+
+describe("SSO settings on Team with a stored configuration", () => {
+  it("offers only removal: no edit, test, domain forms or options", async () => {
+    let removed = false;
+    const stored = { ...view, config: { issuer: "https://idp.test", clientId: "c", clientSecret: { set: true, last4: "abcd" }, requireSso: true, trustIdpMfa: false, autoJoin: false, updatedAt: new Date().toISOString(), updatedBy: null },
+      domains: [{ domain: "acme.test", verified: true, verifiedAt: null, txtRecord: { name: "acme.test", value: "v" } }] };
+    server.use(http.get("/api/v1/org/plan", () => HttpResponse.json({ entitlements: { features: { sso: false } } })),
+      http.get("/api/v1/admin/settings/sso", () => HttpResponse.json(stored)),
+      http.delete("/api/v1/admin/settings/sso", () => { removed = true; return new HttpResponse(null, { status: 204 }); }));
+    wrap();
+    await userEvent.click(await screen.findByRole("button", { name: "Turn off single sign-on" }));
+    await waitFor(() => expect(removed).toBe(true));
+    expect(screen.getByRole("button", { name: "Remove acme.test" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /add domain/i })).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
   });
 });

@@ -17,11 +17,11 @@ export const TRIAL_MS = 14 * 864e5;
 const GIB = 1024 ** 3;
 export const TEAM_FREE_SEATS = 10;
 const FEATURES: Feature[] = ["sso", "domains", "policyEdit", "adminRecovery", "risk", "orgLogo", "eventExport"];
-const all = (on: boolean) => Object.fromEntries(FEATURES.map((f) => [f, on])) as Record<Feature, boolean>;
+const all = (on: boolean) => Object.freeze(Object.fromEntries(FEATURES.map((f) => [f, on]))) as Record<Feature, boolean>;
 
-const UNLIMITED: Entitlements = { plan: "unlimited", features: all(true), seatsAllowed: null, storageBytesPerSeat: null, activeLinkLimit: null, eventLogDays: null };
-const TEAM: Entitlements = { plan: "team", features: all(false), seatsAllowed: TEAM_FREE_SEATS, storageBytesPerSeat: 2 * GIB, activeLinkLimit: null, eventLogDays: 30 };
-const BUSINESS: Entitlements = { plan: "business", features: all(true), seatsAllowed: 0, storageBytesPerSeat: 10 * GIB, activeLinkLimit: null, eventLogDays: 365 };
+const UNLIMITED: Entitlements = Object.freeze({ plan: "unlimited", features: all(true), seatsAllowed: null, storageBytesPerSeat: null, activeLinkLimit: null, eventLogDays: null });
+const TEAM: Entitlements = Object.freeze({ plan: "team", features: all(false), seatsAllowed: TEAM_FREE_SEATS, storageBytesPerSeat: 2 * GIB, activeLinkLimit: null, eventLogDays: 30 });
+const BUSINESS: Entitlements = Object.freeze({ plan: "business", features: all(true), seatsAllowed: 0, storageBytesPerSeat: 10 * GIB, activeLinkLimit: null, eventLogDays: 365 });
 
 /** `trial` is true while a Team org without a subscription is inside its 14-day Business trial. */
 export function getEntitlements(cfg: Pick<Config, "billingMode">, org: OrgPlanFields, now = new Date()): Entitlements & { trial: boolean } {
