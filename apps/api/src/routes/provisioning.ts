@@ -267,6 +267,7 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/settings/domain-join", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     if (req.org!.role !== "owner") return reply.code(403).send({ error: "owner_only" });
     const b = z.object({ enabled: z.boolean(), groupIds: z.array(z.string().uuid()).max(50).default([]) }).parse(req.body);
+    if (b.enabled && !(await app.hasEntitlement(req, reply, "domains"))) return;
     const orgId = orgOf(req);
     const ids = [...new Set(b.groupIds)];
     if (ids.length && (await app.prisma.group.count({ where: { orgId, id: { in: ids } } })) !== ids.length) return reply.code(400).send({ error: "group_not_found" });

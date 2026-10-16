@@ -68,7 +68,7 @@ export const ssoSettingsRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/", async (req) => view(orgOf(req)));
 
-  app.put("/", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.put("/", { preHandler: app.requireEntitlement("sso"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const b = body.parse(req.body);
     const orgId = orgOf(req);
     const issuer = b.issuer.replace(/\/+$/, "");
@@ -111,7 +111,7 @@ export const ssoSettingsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Discovery, metadata and a client-credentials sanity check against the saved settings (or the ones in the body). */
-  app.post("/test", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/test", { preHandler: app.requireEntitlement("sso"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const orgId = orgOf(req);
     const b = z.object({ issuer: z.string().trim().max(500).optional(), clientId: z.string().trim().max(500).optional(), clientSecret: z.string().max(2048).optional() }).parse(req.body ?? {});
     const cur = await app.prisma.orgSso.findUnique({ where: { orgId } });
@@ -129,7 +129,7 @@ export const ssoSettingsRoutes: FastifyPluginAsync = async (app) => {
     return { ok, checks };
   });
 
-  app.post("/domains", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/domains", { preHandler: app.requireEntitlement("domains"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const d = normalizeDomain(z.object({ domain: z.string().max(260) }).parse(req.body).domain);
     if (!d) return reply.code(400).send({ error: "invalid_domain" });
     if (isPublicMailDomain(d)) return reply.code(400).send({ error: "public_domain" });
@@ -171,7 +171,7 @@ export const ssoSettingsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Looks for `clane-vault-verify=<token>` in the domain's TXT records. */
-  app.post("/domains/:domain/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/domains/:domain/verify", { preHandler: app.requireEntitlement("domains"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const d = normalizeDomain(domainParam.parse(req.params).domain);
     const orgId = orgOf(req);
     const row = d ? await app.prisma.ssoDomain.findUnique({ where: { orgId_domain: { orgId, domain: d } } }) : null;

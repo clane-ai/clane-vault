@@ -59,7 +59,7 @@ export const eventAdminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Streams the filtered log as CSV, newest first, in pages (no size limit, constant memory). */
-  app.get("/export.csv", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/export.csv", { preHandler: app.requireEntitlement("eventExport"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const f = filters.parse(req.query);
     const where = whereOf(req.org!.id, f);
     await logEvent(app.prisma, { orgId: req.org!.id, actorId: req.auth.userId, action: "admin.events_export", ip: req.ip, meta: { ...f } });

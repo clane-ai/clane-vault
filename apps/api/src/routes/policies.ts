@@ -18,7 +18,7 @@ export const policyAdminRoutes: FastifyPluginAsync = async (app) => {
    * Replaces the policies. Guards against locking yourself out: a non-empty allowlist must include the caller's address
    * unless they are the owner with break-glass on, and only the owner turns break-glass on or off.
    */
-  app.put("/", async (req, reply) => {
+  app.put("/", { preHandler: app.requireEntitlement("policyEdit") }, async (req, reply) => {
     const next = policySchema.parse(req.body);
     const orgId = req.org!.id;
     const owner = req.org!.role === "owner";

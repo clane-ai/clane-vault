@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isAdminRole } from "../lib/orgs.js";
 import { logEvent } from "../lib/events.js";
 import { ipAllowed, readPolicies } from "../lib/policies.js";
+import { orgEntitlements, planRequired, type Feature } from "../lib/plans.js";
 
 /** The caller's active organisation for this request (docs/design/2026-10-07-multi-org-design.md §4). */
 export interface ActiveOrg { id: string; role: OrgRole; adminSince: Date | null }
@@ -16,6 +17,10 @@ declare module "fastify" {
     orgRequired: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
     /** X-Org-Id required, and the caller must be owner or admin of that org (read from the database). */
     orgAdmin: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** Replies 402 plan_required unless the org's plan has the feature (always allowed with billing off). Runs after req.org is set. */
+    requireEntitlement: (feature: Feature) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** For gates that depend on the request body: true when the org has the feature, else sends the 402. */
+    hasEntitlement: (req: FastifyRequest, reply: FastifyReply, feature: Feature) => Promise<boolean>;
   }
 }
 
@@ -103,4 +108,11 @@ export function registerOrg(app: FastifyInstance) {
   app.decorate("orgOptional", handler("optional"));
   app.decorate("orgRequired", handler("required"));
   app.decorate("orgAdmin", handler("admin"));
+  const has = async (req: FastifyRequest, reply: FastifyReply, feature: Feature) => {
+    if ((await orgEntitlements(app.prisma, app.config, req.org!.id)).features[feature]) return true;
+    await reply.code(402).send(planRequired(feature));
+    return false;
+  };
+  app.decorate("hasEntitlement", has);
+  app.decorate("requireEntitlement", (feature: Feature) => async (req: FastifyRequest, reply: FastifyReply) => { await has(req, reply, feature); });
 }

@@ -192,10 +192,10 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     health: m.score === null ? null : { score: m.score, weak: m.weak, reused: m.reused, old: m.old, breached: m.breached, reportedAt: iso(m.reportedAt), recent: m.reportedAt! >= d30 },
   });
 
-  app.get("/", async (req) => overview(req));
+  app.get("/", { preHandler: app.requireEntitlement("risk") }, async (req) => overview(req));
 
   /** The tiles' drill-down: every active member with their metrics, and the pending invitations. */
-  app.get("/members", async (req) => {
+  app.get("/members", { preHandler: app.requireEntitlement("risk") }, async (req) => {
     const orgId = req.org!.id;
     const d30 = since(WINDOW_DAYS);
     const [ms, inv] = await Promise.all([members(orgId), pendingInvites(orgId)]);
@@ -210,7 +210,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
       .send([header.join(","), ...rows.map((r) => r.map(csvCell).join(","))].join("\r\n") + "\r\n");
 
   /** A tile's drill-down as CSV (`tile`, and `has` = yes/no to keep only the members with or without it). */
-  app.get("/members.csv", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/members.csv", { preHandler: app.requireEntitlement("risk"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const q = csvQuery.parse(req.query);
     const orgId = req.org!.id;
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "admin.risk_export", ip: req.ip, meta: { what: "members", ...q } });
@@ -228,7 +228,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** The alerts table as CSV. */
-  app.get("/alerts.csv", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/alerts.csv", { preHandler: app.requireEntitlement("risk"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const orgId = req.org!.id;
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "admin.risk_export", ip: req.ip, meta: { what: "alerts" } });
     const rows = await alerts(orgId, new Date());

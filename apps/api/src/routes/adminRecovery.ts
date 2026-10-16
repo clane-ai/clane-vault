@@ -41,6 +41,7 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
    */
   app.put("/settings/admin-recovery", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { enabled, code, authKey } = z.object({ enabled: z.boolean(), code: z.string().max(10).optional(), authKey: z.string().max(4096).optional() }).parse(req.body);
+    if (enabled && !(await app.hasEntitlement(req, reply, "adminRecovery"))) return;
     const me = await app.prisma.user.findUniqueOrThrow({ where: { id: req.auth.userId } });
     const orgId = req.org!.id;
     if (enabled && !(await adminRecoveryEnabled(app.prisma, orgId))) {

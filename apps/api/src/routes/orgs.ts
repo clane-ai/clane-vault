@@ -196,7 +196,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     /** Owners and admins set the org's logo: PNG, JPEG or WebP bytes as the request body (docs/branding.md). */
     await o.register(async (logo) => {
       rawImageBodies(logo);
-      logo.put("/org/logo", { preHandler: ownerOrAdmin, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+      logo.put("/org/logo", { preHandler: [ownerOrAdmin, app.requireEntitlement("orgLogo")], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
         const up = await readLogo(req, reply);
         if (!up) return;
         const orgId = req.org!.id;
