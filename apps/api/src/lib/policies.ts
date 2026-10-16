@@ -1,5 +1,6 @@
 import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { z } from "zod";
+import type { Entitlements } from "./plans.js";
 
 /**
  * Organisation policies (docs/policies.md), stored as JSON on the organisation and validated here on every write and
@@ -66,8 +67,12 @@ function policyPart(stored: unknown): unknown {
   return rest;
 }
 
-/** Stored policies (validated on write); a row that somehow fails validation falls back field by field, never open. */
-export function readPolicies(stored: unknown): Policies {
+/**
+ * Stored policies (validated on write); a row that somehow fails validation falls back field by field, never open.
+ * Given the org's entitlements, a plan without policy editing reads the defaults (the stored JSON stays untouched).
+ */
+export function readPolicies(stored: unknown, ent?: Pick<Entitlements, "features">): Policies {
+  if (ent && !ent.features.policyEdit) return DEFAULT_POLICIES;
   const raw = policyPart(stored);
   const r = policySchema.safeParse(raw ?? {});
   if (r.success) return r.data;

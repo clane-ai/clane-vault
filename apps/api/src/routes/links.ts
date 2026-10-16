@@ -4,6 +4,7 @@ import { z } from "zod";
 import { accessFor, canEdit } from "../lib/access.js";
 import { logEvent } from "../lib/events.js";
 import { accessMatches, BURN, deadReason, hashAccess, isUniqueViolation, type LinkState } from "../lib/links.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { signLinkDownload, verifyLinkDownload } from "../lib/tokens.js";
 import { attachmentConfig, MIB } from "../lib/attachments/quota.js";
@@ -76,7 +77,8 @@ export const linkRoutes: FastifyPluginAsync = async (app) => {
           // owner's. Read under a share lock, so a policy switching links off can't miss a link created meanwhile.
           if (access.orgId) {
             await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${access.orgId}::uuid FOR SHARE`;
-            const p = readPolicies((await tx.organization.findUnique({ where: { id: access.orgId }, select: { policies: true } }))?.policies).links;
+            const o = await tx.organization.findUnique({ where: { id: access.orgId }, select: { ...PLAN_SELECT, policies: true } });
+            const p = readPolicies(o?.policies, o ? getEntitlements(app.config, o) : undefined).links;
             if (!p.allowed) { refused = { code: 403, body: { error: "links_disabled" } }; return; }
             if (b.expiresInHours > p.maxExpiryHours) { refused = { code: 400, body: { error: "link_expiry_too_long", maxExpiryHours: p.maxExpiryHours } }; return; }
             if (p.requirePassword && !b.accessHash) { refused = { code: 400, body: { error: "link_password_required" } }; return; }

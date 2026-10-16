@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isAdminRole } from "../lib/orgs.js";
 import { logEvent } from "../lib/events.js";
 import { ipAllowed, readPolicies } from "../lib/policies.js";
-import { orgEntitlements, planRequired, type Feature } from "../lib/plans.js";
+import { getEntitlements, orgEntitlements, PLAN_SELECT, planRequired, type Entitlements, type Feature } from "../lib/plans.js";
 
 /** The caller's active organisation for this request (docs/design/2026-10-07-multi-org-design.md §4). */
 export interface ActiveOrg { id: string; role: OrgRole; adminSince: Date | null }
@@ -58,8 +58,8 @@ export function registerOrg(app: FastifyInstance) {
    * IP allowlist (docs/policies.md): org-scoped requests only from the org's networks. The owner may keep a break-glass
    * path (on by default, only the owner turns it off); each session's first use of it is logged.
    */
-  async function ipBlocked(req: FastifyRequest, orgId: string, role: OrgRole, raw: unknown): Promise<boolean> {
-    const p = readPolicies(raw);
+  async function ipBlocked(req: FastifyRequest, orgId: string, role: OrgRole, raw: unknown, ent: Entitlements): Promise<boolean> {
+    const p = readPolicies(raw, ent);
     if (ipAllowed(req.ip, p.ipAllowlist)) return false;
     if (role === "owner" && p.ownerBreakGlass) {
       const k = `ip:${req.auth.sessionId}:${orgId}`;
@@ -80,10 +80,12 @@ export function registerOrg(app: FastifyInstance) {
     if (typeof raw !== "string" || !UUID.test(raw)) return "bad";
     // Checked on every request: a disable or a removal applies at once, whatever the access token says.
     const m = await app.prisma.membership.findFirst({ where: { orgId: raw.toLowerCase(), userId: req.auth.userId, status: "active", user: { status: "active" } },
-      select: { orgId: true, role: true, adminSince: true, org: { select: { policies: true, sso: { select: { requireSso: true } } } }, user: { select: { email: true } } } });
+      select: { orgId: true, role: true, adminSince: true, org: { select: { ...PLAN_SELECT, policies: true, sso: { select: { requireSso: true } } } }, user: { select: { email: true } } } });
     if (!m) return "bad";
-    if (m.org.sso?.requireSso && await ssoMissing(req, m.orgId, m.role, m.user.email)) return "sso";
-    if (await ipBlocked(req, m.orgId, m.role, m.org.policies)) return "ip";
+    // One lookup serves both: a Team org's stored SSO requirement and IP list are not enforced (nobody is locked out by a downgrade).
+    const ent = getEntitlements(app.config, m.org);
+    if (m.org.sso?.requireSso && ent.features.sso && await ssoMissing(req, m.orgId, m.role, m.user.email)) return "sso";
+    if (await ipBlocked(req, m.orgId, m.role, m.org.policies, ent)) return "ip";
     return { id: m.orgId, role: m.role, adminSince: m.adminSince };
   }
 

@@ -9,7 +9,8 @@ import { lockUser } from "../lib/orgs.js";
 import { isPrivateLocked } from "../lib/privateLock.js";
 import { secretBox } from "../lib/secretBox.js";
 import { consumeTotp } from "../lib/totp.js";
-import { secretValueMatches } from "../lib/recovery.js";
+import { adminRecoveryOn, secretValueMatches } from "../lib/recovery.js";
+import { orgEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { kdfView } from "./auth.js";
 import argon2 from "argon2";
 
@@ -44,13 +45,13 @@ export const membershipKeyRoutes: FastifyPluginAsync = async (app) => {
     const me = req.auth.userId, org = orgId(req);
     const [user, membership, keys] = await Promise.all([
       app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { userKeyGen: true } }),
-      app.prisma.membership.findUniqueOrThrow({ where: { orgId_userId: { orgId: org, userId: me } }, select: { adminRecoveryAckAt: true, keysRepairedGen: true, org: { select: { adminRecoveryEnabled: true, adminRecoveryChangedAt: true } } } }),
+      app.prisma.membership.findUniqueOrThrow({ where: { orgId_userId: { orgId: org, userId: me } }, select: { adminRecoveryAckAt: true, keysRepairedGen: true, org: { select: { ...PLAN_SELECT, adminRecoveryEnabled: true, adminRecoveryChangedAt: true } } } }),
       app.prisma.membershipKey.findMany({ where: { orgId: org, userId: me, state: { in: ["current", "retiring"] } }, orderBy: { createdAt: "asc" } }),
     ]);
     const mine = keys.filter((k) => k.userKeyGen === user.userKeyGen);
     const current = mine.find((k) => k.state === "current") ?? null;
     const pendingRows = await blockingRows(app.prisma, org, me);
-    const enabled = membership.org.adminRecoveryEnabled;
+    const enabled = adminRecoveryOn(app.config, membership.org);
     const ackRequired = enabled && !acked(membership.adminRecoveryAckAt, membership.org.adminRecoveryChangedAt);
     const escrows = await app.prisma.membershipEscrow.findMany({ where: { orgId: org, userId: me }, select: { adminId: true, memberPublicKey: true, adminPublicKey: true, createdAt: true } });
     const admins = enabled ? await adminsWithKeys(app.prisma, org, me) : [];
@@ -174,7 +175,7 @@ export const membershipKeyRoutes: FastifyPluginAsync = async (app) => {
       await lockUser(tx, me);
       // Locks the policy against a concurrent switch-off (which deletes escrows) until this commits.
       const rows = await tx.$queryRaw<{ adminRecoveryEnabled: boolean; adminRecoveryChangedAt: Date | null }[]>`SELECT "adminRecoveryEnabled", "adminRecoveryChangedAt" FROM "Organization" WHERE id = ${org}::uuid FOR SHARE`;
-      if (!rows[0]?.adminRecoveryEnabled) return "policy_off" as const;
+      if (!rows[0]?.adminRecoveryEnabled || !(await orgEntitlements(tx, app.config, org)).features.adminRecovery) return "policy_off" as const;
       const m = await tx.membership.findFirst({ where: { orgId: org, userId: me, status: "active" }, select: { adminRecoveryAckAt: true } });
       if (!m) return "policy_off" as const;
       if (!acked(m.adminRecoveryAckAt, rows[0].adminRecoveryChangedAt)) return "ack_required" as const;

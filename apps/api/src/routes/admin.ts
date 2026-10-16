@@ -4,7 +4,8 @@ import { sendEmail, twoFactorResetEmail } from "../lib/email.js";
 import { logEvent } from "../lib/events.js";
 import { canManageAccount, dropInstanceAdminIfGone, isInstanceAdmin, lockUser, offboard } from "../lib/orgs.js";
 import { coolDown, coolingDown, dailyInviteCap, dropPendingGroups, INVITE_TTL_MS, invitesSentToday, sendNewInvite } from "../lib/invites.js";
-import { expireOpenRequests } from "../lib/recovery.js";
+import { adminRecoveryOn, expireOpenRequests } from "../lib/recovery.js";
+import { PLAN_SELECT } from "../lib/plans.js";
 import { backupRoutes } from "./backups.js";
 import { adminRecoveryRoutes } from "./adminRecovery.js";
 import { startAdminAge } from "./auth.js";
@@ -217,7 +218,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
         select: { folderId: true, permission: true, directPermission: true, folder: { select: { ownerId: true } } } }),
       app.prisma.healthReport.findUnique({ where: { orgId_userId: { orgId: org, userId } }, select: { score: true, total: true, weak: true, reused: true, old: true, breached: true, reportedAt: true } }),
       app.prisma.membershipEscrow.count({ where: { orgId: org, userId } }),
-      app.prisma.organization.findUnique({ where: { id: org }, select: { adminRecoveryEnabled: true } }),
+      app.prisma.organization.findUnique({ where: { id: org }, select: { ...PLAN_SELECT, adminRecoveryEnabled: true } }),
       app.prisma.recoveryRequest.count({ where: { orgId: org, userId, status: "pending" } }),
     ]);
     return {
@@ -226,7 +227,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
       groups: groups.map((g) => g.group),
       folders: folders.map((f) => ({ id: f.folderId, permission: f.permission, direct: f.directPermission, owner: f.folder.ownerId === userId })),
       health: report ? { ...report, reportedAt: report.reportedAt.toISOString() } : null,
-      recovery: { enabled: o?.adminRecoveryEnabled ?? false, acknowledged: !!m.adminRecoveryAckAt, escrowed: escrows > 0, pendingRequest: requests > 0 },
+      recovery: { enabled: !!o && adminRecoveryOn(app.config, o), acknowledged: !!m.adminRecoveryAckAt, escrowed: escrows > 0, pendingRequest: requests > 0 },
     };
   });
 

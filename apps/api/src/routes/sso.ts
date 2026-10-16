@@ -3,6 +3,7 @@ import argon2 from "argon2";
 import * as oidc from "openid-client";
 import { z } from "zod";
 import { logEvent } from "../lib/events.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
 import { displayName, cleanName, nameProblem } from "../lib/names.js";
 import { linkAndJoin } from "../lib/ssoLink.js";
@@ -43,8 +44,10 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
   const binding = (req: FastifyRequest) => { const v = req.cookies[SSO_COOKIE]; return v && /^[A-Za-z0-9_-]{20,100}$/.test(v) ? sha256(v) : null; };
   const limit = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
   /** Orgs with SSO set up for a verified domain. */
-  const ssoOrgsFor = (domain: string) => app.prisma.organization.findMany({ where: { sso: { isNot: null }, ssoDomains: { some: { domain, verifiedAt: { not: null } } } },
-    select: { slug: true, name: true }, orderBy: { name: "asc" } });
+  const ssoOrgsFor = async (domain: string) => (await app.prisma.organization.findMany({ where: { sso: { isNot: null }, ssoDomains: { some: { domain, verifiedAt: { not: null } } } },
+    select: { ...PLAN_SELECT, slug: true, name: true }, orderBy: { name: "asc" } }))
+    // A Team org keeps its SSO row but doesn't offer it.
+    .filter((o) => getEntitlements(app.config, o).features.sso).map((o) => ({ slug: o.slug, name: o.name }));
 
   /** Which organisations offer SSO for this address's domain (verified domains only). Says nothing about accounts. */
   app.post("/discover", limit(30), async (req) => {
@@ -66,8 +69,8 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
   /** Starts an authorization request for the org (by slug) and returns the identity provider URL to go to. */
   app.post("/start", limit(20), async (req, reply) => {
     const b = z.object({ org: slug, email: email.optional(), returnTo: z.string().max(512).optional() }).parse(req.body);
-    const org = await app.prisma.organization.findUnique({ where: { slug: b.org }, select: { id: true, sso: true } });
-    if (!org?.sso) return reply.code(404).send({ error: "sso_not_configured" });
+    const org = await app.prisma.organization.findUnique({ where: { slug: b.org }, select: { ...PLAN_SELECT, id: true, sso: true } });
+    if (!org?.sso || !getEntitlements(app.config, org).features.sso) return reply.code(404).send({ error: "sso_not_configured" });
     if (!orgStartAllowed(org.id)) return reply.code(429).send({ error: "rate_limited" });
     let conf: oidc.Configuration;
     try { conf = await app.oidc.get(org.sso.issuer, org.sso.clientId, openClientSecret(app.settingsBox, org.sso)); }

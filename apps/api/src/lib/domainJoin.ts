@@ -4,6 +4,7 @@ import type { Db } from "./access.js";
 import { domainJoinEmail, sendInviteEmail, sendEmail } from "./email.js";
 import { logEvent } from "./events.js";
 import { addPendingGroups, coolingDown, INVITE_TTL_MS, inviteUrlFor, joinUrlFor, RESEND_MIN_INTERVAL_MS } from "./invites.js";
+import { orgEntitlements } from "./plans.js";
 import { isPublicMailDomain } from "./publicMailDomains.js";
 import { domainStillVerified, emailDomain, normalizeDomain } from "./sso.js";
 import { hashToken } from "./tokens.js";
@@ -34,6 +35,8 @@ export async function domainJoinTarget(app: FastifyInstance, email: string): Pro
   const orgId = owners[0]!.orgId;
   const cfg = await app.prisma.orgDomainJoin.findUnique({ where: { orgId }, select: { enabled: true, role: true, groupIds: true, org: { select: { name: true } } } });
   if (!cfg?.enabled) return null;
+  // Before the DNS re-check, which would un-verify a stored domain: a Team org's rows stay as they are.
+  if (!(await orgEntitlements(app.prisma, app.config, orgId)).features.domains) return null;
   if (!(await domainStillVerified(app.prisma, app.ssoDeps, orgId, domain))) return null;
   return { orgId, orgName: cfg.org.name, domain, role: cfg.role === "admin" ? "admin" : "member", groupIds: cfg.groupIds };
 }

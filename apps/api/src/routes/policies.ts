@@ -2,14 +2,15 @@ import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { logEvent } from "../lib/events.js";
 import { BURN } from "../lib/links.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { ipAllowed, normalizeIp, policySchema, readPolicies, readRiskIgnored, RISK_IGNORED, type Policies } from "../lib/policies.js";
 
 /** /admin/settings/policies: the active org's policies (owners and admins; docs/policies.md). */
 export const policyAdminRoutes: FastifyPluginAsync = async (app) => {
   const view = async (req: FastifyRequest) => {
-    const o = await app.prisma.organization.findUniqueOrThrow({ where: { id: req.org!.id }, select: { policies: true, policiesChangedAt: true, policiesChangedBy: true } });
+    const o = await app.prisma.organization.findUniqueOrThrow({ where: { id: req.org!.id }, select: { ...PLAN_SELECT, policies: true, policiesChangedAt: true, policiesChangedBy: true } });
     const by = o.policiesChangedBy ? await app.prisma.user.findUnique({ where: { id: o.policiesChangedBy }, select: { id: true, name: true } }) : null;
-    return { policies: readPolicies(o.policies), changedAt: o.policiesChangedAt?.toISOString() ?? null, changedBy: by, yourIp: req.ip ? normalizeIp(req.ip) : null };
+    return { policies: readPolicies(o.policies, getEntitlements(app.config, o)), changedAt: o.policiesChangedAt?.toISOString() ?? null, changedBy: by, yourIp: req.ip ? normalizeIp(req.ip) : null };
   };
 
   app.get("/", async (req) => view(req));

@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { logEvent } from "../lib/events.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { attachmentConfig, instanceUsage, MIB, orgUsage } from "../lib/attachments/quota.js";
 import { csvCell } from "./events.js";
@@ -36,8 +37,8 @@ export const storageAdminRoutes: FastifyPluginAsync = async (app) => {
   const cfg = attachmentConfig(app.config);
   app.get("/", async (req) => {
     const orgId = req.org!.id;
-    const [s, org] = await Promise.all([orgStorage(app.prisma, orgId), app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { policies: true } })]);
-    const p = readPolicies(org.policies);
+    const [s, org] = await Promise.all([orgStorage(app.prisma, orgId), app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { ...PLAN_SELECT, policies: true } })]);
+    const p = readPolicies(org.policies, getEntitlements(app.config, org));
     return {
       enabled: cfg.enabled, used: s.used, quota: cfg.orgQuotaMb * MIB, files: s.files,
       limits: { maxFileMb: Math.min(cfg.maxFileMb, p.attachments.maxFileMb ?? Infinity), serverMaxFileMb: cfg.maxFileMb, maxPerRecord: cfg.maxPerRecord, maxRecordMb: cfg.maxRecordMb },
