@@ -6,7 +6,7 @@
   "workspaces": ["packages/*", "apps/*", "e2e"],
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "npm run test -w packages/crypto -w apps/api -w apps/web -w apps/extension --if-present",
+    "test": "npm run test -w packages/crypto -w apps/api -w apps/web -w apps/extension -w apps/gateway --if-present",
     "e2e": "npm run test -w e2e",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
