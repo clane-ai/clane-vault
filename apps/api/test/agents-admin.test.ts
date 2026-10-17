@@ -13,7 +13,7 @@ const t = await makeTestApp({ agents });
 const hosted = await makeTestApp({ agents, billingMode: "hosted" });
 const off = await makeTestApp({});
 afterAll(async () => { await Promise.all([t.app.close(), hosted.app.close(), off.app.close()]); await fake.close(); });
-beforeEach(async () => { await resetDb(t.prisma); fake.setDown(false); });
+beforeEach(async () => { await resetDb(t.prisma); fake.setDown(false); fake.setSignWrongAgent(false); });
 
 type U = Awaited<ReturnType<typeof createActiveUser>>;
 type App = typeof t;
@@ -61,6 +61,16 @@ describe("enrolment through the gateway", () => {
     expect(gw).toEqual({ url: "https://gw.test/mcp", identityKeyId: fake.identity.keyId, identityPublicKey: fake.identity.publicKey });
   });
 
+  it("an attestation that doesn't verify (signed for another agent id): 503 gateway_unavailable and nothing is created", async () => {
+    const owner = await createActiveUser(t, { role: "owner" });
+    fake.setSignWrongAgent(true);
+    const before = await counts();
+    const r = await call(owner, "POST", "/admin/agents", { name: "Bot" });
+    expect([r.statusCode, r.json()]).toEqual([503, { error: "gateway_unavailable" }]);
+    expect(await counts()).toEqual(before);
+    expect(await t.prisma.event.count({ where: { action: "agent.create" } })).toBe(0);
+  });
+
   it("refuses an expiry in the past and a member", async () => {
     const owner = await createActiveUser(t, { role: "owner" }), member = await createActiveUser(t);
     expect((await call(owner, "POST", "/admin/agents", { name: "Bot", expiresAt: new Date(Date.now() - 1000).toISOString() })).statusCode).toBe(400);
@@ -81,6 +91,16 @@ describe("enrolment through the gateway", () => {
     expect((await t.prisma.membership.findFirstOrThrow({ where: { userId: a.id } })).status).toBe("active");
     expect(await t.prisma.agent.findUniqueOrThrow({ where: { userId: a.id } })).toMatchObject({ verifiedById: owner.id });
     expect(await t.prisma.event.count({ where: { action: "agent.verify", targetUserId: a.id } })).toBe(1);
+  });
+
+  it("verifying a revoked agent is 409 agent_revoked", async () => {
+    const owner = await createActiveUser(t, { role: "owner" });
+    const a = await createTestAgent(t, { orgId: owner.orgId, createdById: owner.id });
+    await t.prisma.agent.update({ where: { userId: a.id }, data: { revokedAt: new Date() } });
+    const r = await call(owner, "POST", `/admin/agents/${a.id}/verify`, { publicKey: a.publicKey });
+    expect([r.statusCode, r.json()]).toEqual([409, { error: "agent_revoked" }]);
+    expect((await t.prisma.membership.findFirstOrThrow({ where: { userId: a.id } })).status).toBe("invited");
+    expect(await t.prisma.event.count({ where: { action: "agent.verify" } })).toBe(0);
   });
 
   it("identity changed: creation is 503 gateway_identity_changed; accept pins the new one", async () => {
@@ -137,7 +157,7 @@ describe("listing and editing", () => {
     expect(await t.prisma.event.count({ where: { action: "agent.update" } })).toBe(2);
   });
 
-  it("R41: /users, /groups and pending group access carry a verified agent's attestation and gateway key id", async () => {
+  it("R41: /users, /groups, pending group access and /sync folder members carry a verified agent's attestation and gateway key id", async () => {
     const owner = await createActiveUser(t, { role: "owner" }), member = await createActiveUser(t);
     const a = (await call(owner, "POST", "/admin/agents", { name: "Bot" })).json();
     expect((await call(owner, "POST", `/admin/agents/${a.id}/verify`, { publicKey: a.publicKey })).statusCode).toBe(200);
@@ -163,6 +183,13 @@ describe("listing and editing", () => {
     expect((await call(owner, "POST", `/folders/${fid}/groups`, { groupId: g, permission: "use", wraps: [] })).statusCode).toBe(201);
     const pending = (await call(owner, "GET", "/group-access/pending")).json().pending as { userId: string }[];
     await check(pending.find((p) => p.userId === a.id) as never);
+
+    // /sync folder members: what re-granting access seals to.
+    expect((await call(owner, "POST", `/folders/${fid}/members`, { userId: a.id, permission: "use", wrappedFolderKey: "s1.a.b.c", sealedTo: a.publicKey })).statusCode).toBe(201);
+    const folder = (await call(owner, "GET", "/sync")).json().folders.find((x: { id: string }) => x.id === fid);
+    const members = folder.members as { userId: string; attestation?: string; gatewayKeyId: string; membershipKey: string }[];
+    await check(members.find((m) => m.userId === a.id) as never);
+    expect(members.find((m) => m.userId === owner.id)).not.toHaveProperty("attestation");
   });
 });
 

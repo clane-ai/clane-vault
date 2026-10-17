@@ -1,14 +1,24 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { z } from "zod";
 import { displayName } from "../lib/names.js";
 import { logEvent } from "../lib/events.js";
 import { agentEmail, assertAgentSlot, fingerprintOf } from "../lib/agents.js";
-import { pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
+import { GatewayUnavailable, pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
 import { isPublicKeyB64 } from "../lib/membershipKeys.js";
 
 const idParam = z.object({ id: z.string().uuid() });
 const expiry = z.string().datetime({ offset: true }).transform((s) => new Date(s)).refine((d) => d.getTime() > Date.now(), { message: "past" }).nullable();
+
+/** "g1.<keyId>.<sig>": Ed25519 over "agent-key:<orgId>:<agentId>:<publicKey>" by the pinned identity (packages/crypto agents.ts). */
+function attestationOk(att: string, ids: { orgId: string; agentId: string; publicKey: string }, identity: GatewayIdentityInfo): boolean {
+  const [tag, keyId, sig, ...rest] = att.split(".");
+  if (tag !== "g1" || rest.length || !sig || keyId !== identity.keyId) return false;
+  try {
+    return verify(null, Buffer.from(`agent-key:${ids.orgId}:${ids.agentId}:${ids.publicKey}`, "utf8"),
+      createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: identity.publicKey }, format: "jwk" }), Buffer.from(sig, "base64url"));
+  } catch { return false; }
+}
 
 /** health → pin: what every caller that needs the gateway identity goes through. Throws GatewayUnavailable / GatewayIdentityChanged. */
 async function ensureIdentity(app: FastifyInstance): Promise<GatewayIdentityInfo> {
@@ -39,6 +49,8 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     const gateway = await ensureIdentity(app);
     const id = randomUUID();
     const key = await app.gateway.createAgentKey({ agentId: id, orgId: org });
+    // Defence in depth (the browser checks it too): never store a key the pinned gateway identity didn't sign.
+    if (!attestationOk(key.attestation, { orgId: org, agentId: id, publicKey: key.publicKey }, gateway)) throw new GatewayUnavailable("the agent gateway's attestation does not verify");
     await app.prisma.$transaction(async (tx) => {
       await assertAgentSlot(tx, app.config, org);
       await tx.user.create({ data: { id, kind: "agent", email: agentEmail(id), name: b.name, status: "active",

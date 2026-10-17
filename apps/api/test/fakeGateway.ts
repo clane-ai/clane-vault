@@ -8,6 +8,7 @@ import type { GatewayIdentityInfo } from "../src/lib/gateway.js";
 export async function startFakeGateway(o: { down?: boolean } = {}) {
   const token = randomBytes(24).toString("base64url");
   let down = !!o.down;
+  let signWrongAgent = false;
   let priv: Uint8Array = new Uint8Array();
   const identity: GatewayIdentityInfo = { keyId: "", publicKey: "" };
   const rotateIdentity = async () => {
@@ -32,7 +33,7 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
       const ids = JSON.parse(raw) as { agentId: string; orgId: string };
       created.push({ agentId: ids.agentId, orgId: ids.orgId });
       const publicKey = b64url.encode((await generateKeyPair()).publicKey);
-      const attestation = await signAgentKey(priv, identity.keyId, { orgId: ids.orgId, agentId: ids.agentId, publicKey });
+      const attestation = await signAgentKey(priv, identity.keyId, { orgId: ids.orgId, agentId: signWrongAgent ? crypto.randomUUID() : ids.agentId, publicKey });
       return send(200, { publicKey, wrappedPrivateKey: `k1.file-test.${randomBytes(8).toString("base64url")}.v1.${randomBytes(16).toString("base64url")}`, kekId: "file-test", attestation });
     }
     const del = /^\/internal\/agents\/([^/]+)$/.exec(url);
@@ -43,6 +44,8 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token, identity, created, dropped, rotateIdentity,
     setDown(d: boolean) { down = d; },
+    /** Tests: attest a different agent id than the one asked for. */
+    setSignWrongAgent(b: boolean) { signWrongAgent = b; },
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }

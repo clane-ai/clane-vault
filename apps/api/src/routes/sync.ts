@@ -4,6 +4,7 @@ import { z } from "zod";
 import { folderToRecordPermission, maxPermission, recordOrgOf } from "../lib/access.js";
 import { isPrivateLocked } from "../lib/privateLock.js";
 import { currentKeys, liveKeys, needsAccess } from "../lib/membershipKeys.js";
+import { agentAttestations } from "../lib/agents.js";
 import { attachmentConfig } from "../lib/attachments/quota.js";
 import { attachmentView, readyAttachments } from "../lib/attachments/view.js";
 
@@ -58,6 +59,8 @@ export const syncRoutes: FastifyPluginAsync = async (app) => {
     const myKeys = orgId ? await app.prisma.membershipKey.findMany({ where: { orgId, userId, state: { in: ["current", "retiring"] }, userKeyGen: user.userKeyGen }, orderBy: { createdAt: "asc" }, select: { publicKey: true, wrappedPrivateKey: true, state: true } }) : [];
     const memberIds = [...new Set(members.map((m) => m.userId))];
     const [memberKeys, live] = orgId ? await Promise.all([currentKeys(app.prisma, orgId, memberIds), liveKeys(app.prisma, orgId, memberIds)]) : [new Map<string, string>(), new Set<string>()];
+    // Re-granting access seals to these keys: an agent's comes with the gateway's attestation (R41).
+    const att = await agentAttestations(app.prisma, [...new Set(members.filter((m) => m.user.kind === "agent").map((m) => m.userId))]);
 
     const byRecord = new Map<string, Row[]>();
     for (const a of access) byRecord.set(a.recordId, [...(byRecord.get(a.recordId) ?? []), a]);
@@ -105,7 +108,7 @@ export const syncRoutes: FastifyPluginAsync = async (app) => {
           wrappedFolderKey: memberships.find((m) => m.folderId === f.id)!.wrappedFolderKey,
           sealedTo: memberships.find((m) => m.folderId === f.id)!.sealedTo,
           myPermission: myFolderPerm.get(f.id)!,
-          members: (membersOf.get(f.id) ?? []).map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, publicKey: m.user.publicKey, kind: m.user.kind, membershipKey: memberKeys.get(m.userId) ?? null, permission: m.permission, directPermission: m.directPermission,
+          members: (membersOf.get(f.id) ?? []).map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, publicKey: m.user.publicKey, kind: m.user.kind, membershipKey: memberKeys.get(m.userId) ?? null, permission: m.permission, directPermission: m.directPermission, ...att.get(m.userId),
             ...(needsAccess(m.sealedTo, live) ? { needsAccess: true } : {}) })),
           groups: grants.filter((g) => g.folderId === f.id).map((g) => ({ id: g.group.id, name: g.group.name, permission: g.permission, memberIds: g.group.members.map((x) => x.userId) })),
         } : {}),
