@@ -1,18 +1,15 @@
 import type { Server } from "node:http";
-import { url as inspectorUrl } from "node:inspector";
 import { createGateway } from "./app.js";
 import { loadConfig } from "./config.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { loadKek } from "./kek.js";
-import { assertNoInspector, createLogger, HeldSecrets, installCrashHandlers } from "./log.js";
+import { assertSafeRuntime, createLogger, HeldSecrets, installCrashHandlers } from "./log.js";
 
 const held = new HeldSecrets();
 const log = createLogger(held);
 let gateway: Awaited<ReturnType<typeof createGateway>>;
 try {
-  assertNoInspector(process.execArgv, process.env.NODE_OPTIONS);
-  // Backstop for any spelling assertNoInspector misses.
-  if (inspectorUrl() !== undefined) throw new Error("refusing to start with the inspector open: it exposes process memory");
+  assertSafeRuntime(process);
   installCrashHandlers(process, log, process.exit);
   const config = loadConfig();
   const kek = await loadKek(config.kek);

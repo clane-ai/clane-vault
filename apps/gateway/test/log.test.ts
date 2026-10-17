@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertNoInspector, createLogger, HeldSecrets, installCrashHandlers, safeError } from "../src/log.js";
+import { assertSafeRuntime, createLogger, HeldSecrets, installCrashHandlers, safeError } from "../src/log.js";
 import { variantsOf } from "../src/outbound/scrub.js";
 
 const S = "sk_live_SECRET123";
@@ -71,22 +71,31 @@ describe("crash handlers", () => {
   });
 });
 
-describe("assertNoInspector", () => {
-  it("refuses inspector and heap/cpu dump flags", () => {
-    expect(() => assertNoInspector(["--inspect"], undefined)).toThrow();
-    expect(() => assertNoInspector(["--inspect-brk=0.0.0.0:9229"], undefined)).toThrow();
-    expect(() => assertNoInspector([], "--heapsnapshot-signal=SIGUSR2")).toThrow();
-    expect(() => assertNoInspector([], "--max-old-space-size=512 --cpu-prof")).toThrow();
-    expect(() => assertNoInspector(["--heap-prof"], "")).toThrow();
-    expect(() => assertNoInspector(["--heap_prof"], undefined)).toThrow();
-    expect(() => assertNoInspector([], "--cpu_prof")).toThrow();
-    expect(() => assertNoInspector([], '"--inspect"')).toThrow();
-    expect(() => assertNoInspector([], "'--inspect=127.0.0.1:0'")).toThrow();
-    expect(() => assertNoInspector(["--report-on-fatalerror"], undefined)).toThrow();
-    expect(() => assertNoInspector([], "--report_on_signal")).toThrow();
-    expect(() => assertNoInspector([], "--max-old-space-size=512 --report-uncaught-exception")).toThrow();
-    expect(() => assertNoInspector(["--inspect_brk"], undefined)).toThrow();
-    expect(() => assertNoInspector([], "")).not.toThrow();
-    expect(() => assertNoInspector(["--disable-sigusr1"], "--max-old-space-size=512")).not.toThrow();
+describe("assertSafeRuntime", () => {
+  const SAFE = ["--disable-sigusr1"];
+  const proc = (execArgv: string[], NODE_OPTIONS?: string, report: Partial<NodeJS.ProcessReport> = {}) =>
+    ({ execArgv, env: NODE_OPTIONS === undefined ? {} : { NODE_OPTIONS }, report: { reportOnFatalError: false, reportOnSignal: false, reportOnUncaughtException: false, ...report } });
+  const ok = (p: ReturnType<typeof proc>, url?: string) => () => assertSafeRuntime(p as never, () => url);
+
+  it("refuses any non-empty NODE_OPTIONS, with a fixed message", () => {
+    for (const o of ["--max-old-space-size=512", '--"cpu-prof"', '--report"-on-signal"', "--in\"\"spect", " "])
+      expect(ok(proc(SAFE, o))).toThrow("NODE_OPTIONS is not allowed for the gateway");
+    expect(ok(proc(SAFE, ""))).not.toThrow();
+    expect(ok(proc(SAFE))).not.toThrow();
+  });
+  it("refuses an execArgv entry outside the allowlist, after _ to - normalisation", () => {
+    for (const a of ["--heap_prof", "--heap-prof", "--inspect", "--cpu-prof", "--report-on-fatalerror", "--max-old-space-size=512", "--enable-source-maps=1"])
+      expect(ok(proc([...SAFE, a]))).toThrow();
+    expect(ok(proc(["--disable-sigusr1", "--enable-source-maps", "--no_deprecation", "--disallow-code-generation-from-strings"]))).not.toThrow();
+    expect(ok(proc(["--disable_sigusr1"]))).not.toThrow();
+  });
+  it("refuses to start without --disable-sigusr1 and says how to run", () => {
+    expect(ok(proc([]))).toThrow("node --disable-sigusr1 dist/server.js");
+    expect(ok(proc(["--no-deprecation"]))).toThrow("--disable-sigusr1");
+  });
+  it("refuses an open inspector or any report-on flag at runtime", () => {
+    expect(ok(proc(SAFE), "ws://127.0.0.1:9229/x")).toThrow();
+    for (const k of ["reportOnFatalError", "reportOnSignal", "reportOnUncaughtException"] as const)
+      expect(ok(proc(SAFE, undefined, { [k]: true }))).toThrow();
   });
 });
