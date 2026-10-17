@@ -29,7 +29,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   const folders: { id: string; name: string; key: Uint8Array; encName: string; wrappedFolderKey: string }[] = [];
   const records: Record<string, unknown>[] = [];
   const events: UseEvent[] = [];
-  let revoked = false, expired = false, syncCalls = 0;
+  let revoked = false, expired = false, syncCalls = 0, tokenCalls = 0;
   let url = "";
 
   const issueToken = () => new SignJWT({ scope: "agent", org: orgId, grant: randomUUID() }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
@@ -83,6 +83,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
     const path = new URL(req.url ?? "/", url).pathname.replace(/^\/api\/v1/, "");
     if (req.method === "GET" && path === "/.well-known/jwks.json") return send(res, 200, { keys: [jwk] });
     if (req.method === "POST" && path === "/oauth/token") {
+      tokenCalls++;
       if (req.headers["x-gateway-token"] !== token) return send(res, 401, { error: "invalid_client" });
       const f = new URLSearchParams(await read(req));
       if (f.get("grant_type") !== "urn:clane:agent-token") return send(res, 400, { error: "unsupported_grant_type" });
@@ -104,6 +105,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
     url, token, staticToken, events, agent: { id: agentId, orgId, publicKey },
     addFolderRecord, addSharedRecord, issueToken,
     get syncCalls() { return syncCalls; },
+    get tokenCalls() { return tokenCalls; },
     revoke() { revoked = true; },
     expire() { expired = true; },
     close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }),
