@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { activeMember, isUniqueViolation, permissionRank, type Db } from "../lib/access.js";
+import { activeMember, capForAgent, isUniqueViolation, permissionRank, type Db } from "../lib/access.js";
 import { logEvent } from "../lib/events.js";
 import { groupPermission, lockFolder, lockGroup, pendingGroupAccess, recomputeFolder, recomputeGroupFolders } from "../lib/groups.js";
 import { displayName } from "../lib/names.js";
@@ -61,7 +61,8 @@ export const groupRoutes: FastifyPluginAsync = async (app) => {
       if (!(await activeMember(tx, w.userId, org))) continue;
       if (await tx.folderMember.findUnique({ where: { folderId_userId: { folderId, userId: w.userId } }, select: { id: true } })) continue;
       if (!(await recipientKeyOk(tx, org, w.userId, w.sealedTo))) continue;
-      await tx.folderMember.create({ data: { folderId, userId: w.userId, permission: perm, directPermission: null, wrappedFolderKey: w.wrappedFolderKey, sealedTo: w.sealedTo } });
+      // Group grants to an agent are capped to use silently.
+      await tx.folderMember.create({ data: { folderId, userId: w.userId, permission: await capForAgent(tx, w.userId, perm), directPermission: null, wrappedFolderKey: w.wrappedFolderKey, sealedTo: w.sealedTo } });
       await tx.groupAccessDecline.deleteMany({ where: { folderId, userId: w.userId } });
       added.push(w.userId);
     }

@@ -181,7 +181,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       const id = req.org!.id;
       const [org, members, teamFolders, d] = await Promise.all([
         app.prisma.organization.findUniqueOrThrow({ where: { id }, select: { id: true, name: true, slug: true, createdAt: true, logo: { select: { sha256: true } } } }),
-        app.prisma.membership.count({ where: { orgId: id, status: { in: ["active", "disabled"] } } }),
+        app.prisma.membership.count({ where: { orgId: id, status: { in: ["active", "disabled"] }, user: { kind: "person" } } }),
         app.prisma.folder.count({ where: { orgId: id, kind: "team", deletedAt: null } }),
         defaultOrg(app.prisma),
       ]);
@@ -224,8 +224,9 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       const { userId } = z.object({ userId: z.string().uuid() }).parse(req.body);
       const orgId = req.org!.id;
       if (userId === req.auth.userId) return reply.code(400).send({ error: "self" });
-      const t = await app.prisma.membership.findFirst({ where: { orgId, userId, status: "active", user: { status: "active" } }, select: { id: true, user: { select: { id: true, name: true, email: true } } } });
+      const t = await app.prisma.membership.findFirst({ where: { orgId, userId, status: "active", user: { status: "active" } }, select: { id: true, user: { select: { id: true, name: true, email: true, kind: true } } } });
       if (!t) return reply.code(404).send({ error: "not_found" });
+      if (t.user.kind === "agent") return reply.code(409).send({ error: "is_agent" });
       if ((await app.prisma.membership.count({ where: { userId, role: "owner" } })) >= (app.config.maxOwnedOrgs ?? 5)) return reply.code(409).send({ error: "org_limit" });
       await app.prisma.$transaction(async (tx) => {
         await tx.membership.update({ where: { id: t.id }, data: { role: "owner" } });

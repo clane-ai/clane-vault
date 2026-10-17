@@ -1,5 +1,5 @@
-import type { Permission } from "@prisma/client";
-import { canEdit, maxPermission, type Db } from "./access.js";
+import type { Permission, UserKind } from "@prisma/client";
+import { canEdit, capForAgent, maxPermission, type Db } from "./access.js";
 import { removeFolderMember } from "./folderMembers.js";
 import { revokeLinksOfLostAccess } from "./links.js";
 import { currentKeys } from "./membershipKeys.js";
@@ -38,8 +38,9 @@ export async function recomputeMember(tx: Db, folder: { id: string; ownerId: str
   const m = await tx.folderMember.findUnique({ where: { folderId_userId: { folderId: folder.id, userId } }, select: { permission: true, directPermission: true } });
   if (!m) return "none";
   if (m.permission === "owner" || userId === folder.ownerId) return "same";
-  const eff = maxPermission(m.directPermission === "owner" ? null : m.directPermission, await groupPermission(tx, folder.id, userId));
-  if (!eff) { await removeFolderMember(tx, folder.id, folder.ownerId, userId); return "removed"; }
+  const max = maxPermission(m.directPermission === "owner" ? null : m.directPermission, await groupPermission(tx, folder.id, userId));
+  if (!max) { await removeFolderMember(tx, folder.id, folder.ownerId, userId); return "removed"; }
+  const eff = await capForAgent(tx, userId, max);
   if (eff === m.permission) return "same";
   await tx.folderMember.update({ where: { folderId_userId: { folderId: folder.id, userId } }, data: { permission: eff } });
   if (canEdit(m.permission) && !canEdit(eff)) {
@@ -73,7 +74,7 @@ export async function recomputeGroupFolders(tx: Db, folderIds: string[], userIds
  * `via`: each group that gives the access, with who added the person to it, so the approver sees who caused the request.
  */
 export interface GroupPending {
-  folderId: string; userId: string; name: string; email: string; publicKey: string; membershipKey: string | null; permission: Permission; groups: string[]; declined: boolean;
+  folderId: string; userId: string; name: string; email: string; publicKey: string; kind: UserKind; membershipKey: string | null; permission: Permission; groups: string[]; declined: boolean;
   via: { groupId: string; groupName: string; addedBy: { id: string; name: string } | null }[];
 }
 
@@ -86,7 +87,7 @@ export async function pendingGroupAccess(db: Db, orgId: string, sealerId: string
   if (!mine.length) return [];
   const grants = await db.folderGroup.findMany({ where: { folderId: { in: mine.map((m) => m.folderId) } },
     select: { folderId: true, permission: true, group: { select: { id: true, name: true, members: { where: { user: { status: "active", memberships: { some: { orgId, status: "active" } } } },
-      select: { addedBy: true, user: { select: { id: true, name: true, email: true, publicKey: true } } } } } } } });
+      select: { addedBy: true, user: { select: { id: true, name: true, email: true, publicKey: true, kind: true } } } } } } } });
   const adderIds = [...new Set(grants.flatMap((g) => g.group.members.map((m) => m.addedBy)).filter((x): x is string => !!x))];
   const adders = new Map((adderIds.length ? await db.user.findMany({ where: { id: { in: adderIds } }, select: { id: true, name: true } }) : []).map((u) => [u.id, u]));
   const members = await db.folderMember.findMany({ where: { folderId: { in: mine.map((m) => m.folderId) } }, select: { folderId: true, userId: true } });
@@ -99,10 +100,13 @@ export async function pendingGroupAccess(db: Db, orgId: string, sealerId: string
     const via = { groupId: g.group.id, groupName: g.group.name, addedBy: addedBy ? adders.get(addedBy) ?? null : null };
     const cur = out.get(k);
     if (cur) { cur.permission = maxPermission(cur.permission, g.permission)!; cur.groups.push(g.group.name); cur.via.push(via); }
-    else out.set(k, { folderId: g.folderId, userId: user.id, name: user.name, email: user.email, publicKey: user.publicKey, membershipKey: null, permission: g.permission, groups: [g.group.name], declined: declined.has(k), via: [via] });
+    else out.set(k, { folderId: g.folderId, userId: user.id, name: user.name, email: user.email, publicKey: user.publicKey, kind: user.kind, membershipKey: null, permission: g.permission, groups: [g.group.name], declined: declined.has(k), via: [via] });
   }
   const list = [...out.values()];
   const keys = await currentKeys(db, orgId, list.map((p) => p.userId));
-  for (const p of list) p.membershipKey = keys.get(p.userId) ?? null;
+  for (const p of list) {
+    p.membershipKey = keys.get(p.userId) ?? null;
+    if (p.kind === "agent") p.permission = "use"; // what approval will give it (addViaGroups caps it)
+  }
   return list;
 }

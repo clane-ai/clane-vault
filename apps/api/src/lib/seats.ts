@@ -10,13 +10,14 @@ export class SeatLimitError extends Error {
 /**
  * The distinct lower-cased addresses holding a seat: active members, pending invitations, and live invitations to
  * existing accounts (an `invited` membership; hosted mode has no invite row for those). One address is one seat.
+ * Agents are never seats (their own limit is agentLimit).
  */
 async function seatEmails(db: Db, orgId: string, now: Date): Promise<Set<string>> {
   const rows = await db.$queryRaw<{ e: string }[]>`
-    SELECT lower(u.email) AS e FROM "Membership" m JOIN "User" u ON u.id = m."userId" WHERE m."orgId" = ${orgId}::uuid AND m.status = 'active'
+    SELECT lower(u.email) AS e FROM "Membership" m JOIN "User" u ON u.id = m."userId" WHERE m."orgId" = ${orgId}::uuid AND m.status = 'active' AND u.kind = 'person'
     UNION SELECT lower(email) FROM "Invite" WHERE "orgId" = ${orgId}::uuid AND "acceptedAt" IS NULL AND "expiresAt" > ${now}
     UNION SELECT lower(u.email) FROM "Membership" m JOIN "User" u ON u.id = m."userId"
-      WHERE m."orgId" = ${orgId}::uuid AND m.status = 'invited' AND m."createdAt" > ${new Date(now.getTime() - INVITE_TTL_MS)}`;
+      WHERE m."orgId" = ${orgId}::uuid AND m.status = 'invited' AND u.kind = 'person' AND m."createdAt" > ${new Date(now.getTime() - INVITE_TTL_MS)}`;
   return new Set(rows.map((r) => r.e));
 }
 

@@ -64,7 +64,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
       LEFT JOIN owned_n o ON o."userId" = m."userId"
       LEFT JOIN seen s ON s."userId" = m."userId"
       LEFT JOIN "HealthReport" h ON h."orgId" = m."orgId" AND h."userId" = m."userId"
-      WHERE m."orgId" = ${orgId}::uuid AND m.status = 'active'
+      WHERE m."orgId" = ${orgId}::uuid AND m.status = 'active' AND u.kind = 'person'
       ORDER BY m."createdAt" ASC, u.id ASC`;
     return rows;
   }
@@ -77,8 +77,8 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const [rows, invited, joined] = await Promise.all([
       app.prisma.invite.findMany({ where: { orgId, acceptedAt: null, expiresAt: { gt: now } }, select: { email: true, role: true, createdAt: true, expiresAt: true }, orderBy: { createdAt: "desc" } }),
-      app.prisma.membership.findMany({ where: { orgId, status: "invited", createdAt: { gt: new Date(now.getTime() - INVITE_TTL_MS) } }, select: { role: true, createdAt: true, user: { select: { email: true } } } }),
-      app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" } }, select: { user: { select: { email: true } } } }),
+      app.prisma.membership.findMany({ where: { orgId, status: "invited", user: { kind: "person" }, createdAt: { gt: new Date(now.getTime() - INVITE_TTL_MS) } }, select: { role: true, createdAt: true, user: { select: { email: true } } } }),
+      app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" }, user: { kind: "person" } }, select: { user: { select: { email: true } } } }),
     ]);
     const done = new Set(joined.map((m) => m.user.email));
     const out = new Map<string, { email: string; role: string; createdAt: Date; expiresAt: Date }>();

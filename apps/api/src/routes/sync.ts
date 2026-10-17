@@ -40,7 +40,7 @@ export const syncRoutes: FastifyPluginAsync = async (app) => {
     const [folders, members, access, grants] = await Promise.all([
       // A session confined to one org (trusted IdP MFA, no TOTP yet) gets no private folders or records of its own.
       app.prisma.folder.findMany({ where: { OR: [...(locked || orgOnly ? [] : [{ ownerId: userId, kind: "private" as const }]), { id: { in: teamIds } }] }, orderBy: { createdAt: "asc" } }),
-      app.prisma.folderMember.findMany({ where: { folderId: { in: teamIds } }, include: { user: { select: { name: true, email: true, publicKey: true } } }, orderBy: { createdAt: "asc" } }),
+      app.prisma.folderMember.findMany({ where: { folderId: { in: teamIds } }, include: { user: { select: { name: true, email: true, publicKey: true, kind: true } } }, orderBy: { createdAt: "asc" } }),
       // Only rows that name me (my owner rows, and shares made in this org), or a team folder of this org I am a member
       // of, are ever read: nothing else can reach the response.
       app.prisma.recordAccess.findMany({ where: { state: "active", OR: [
@@ -105,7 +105,7 @@ export const syncRoutes: FastifyPluginAsync = async (app) => {
           wrappedFolderKey: memberships.find((m) => m.folderId === f.id)!.wrappedFolderKey,
           sealedTo: memberships.find((m) => m.folderId === f.id)!.sealedTo,
           myPermission: myFolderPerm.get(f.id)!,
-          members: (membersOf.get(f.id) ?? []).map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, publicKey: m.user.publicKey, membershipKey: memberKeys.get(m.userId) ?? null, permission: m.permission, directPermission: m.directPermission,
+          members: (membersOf.get(f.id) ?? []).map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, publicKey: m.user.publicKey, kind: m.user.kind, membershipKey: memberKeys.get(m.userId) ?? null, permission: m.permission, directPermission: m.directPermission,
             ...(needsAccess(m.sealedTo, live) ? { needsAccess: true } : {}) })),
           groups: grants.filter((g) => g.folderId === f.id).map((g) => ({ id: g.group.id, name: g.group.name, permission: g.permission, memberIds: g.group.members.map((x) => x.userId) })),
         } : {}),
