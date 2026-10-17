@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export class HttpError extends Error {
-  constructor(public status: number, public code: string) { super(code); }
+  constructor(public status: number, public code: string, public headers: Record<string, string> = {}) { super(code); }
 }
 
 export const send = (res: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}) => {

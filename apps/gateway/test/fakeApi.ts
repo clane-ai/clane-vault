@@ -15,7 +15,8 @@ import type { UseEvent } from "../src/apiClient.js";
  * sealed to the agent's key, bodies encrypted, ES256 access tokens and a JWKS. Routes live under `${url}/api/v1`.
  */
 export async function startFakeApi(o: { kek: Kek; aud?: string }) {
-  const orgId = randomUUID(), agentId = randomUUID(), ownerId = randomUUID();
+  const orgId = randomUUID(), agentId = randomUUID(), ownerId = randomUUID(), tokenId = randomUUID();
+  const agent2 = { id: randomUUID() }; // a second agent of the org: its tokens verify, it holds nothing
   const kp = await generateX25519();
   const publicKey = b64url.encode(kp.publicKey);
   const wrappedPrivateKey = await wrapAgentKey(o.kek, { orgId, agentId, publicKey }, kp.privateKey);
@@ -24,16 +25,21 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   const jwk = { ...(await exportJWK(signing.publicKey)), alg: "ES256", use: "sig" };
   jwk.kid = await calculateJwkThumbprint(jwk);
   const token = randomBytes(32).toString("base64url"); // X-Gateway-Token
-  const staticToken = `cvat_${randomUUID()}_${randomBytes(32).toString("base64url")}`;
+  const staticToken = `cvat_${tokenId}_${randomBytes(32).toString("base64url")}`;
   const aud = o.aud ?? "https://gw.test/mcp";
   const folders: { id: string; name: string; key: Uint8Array; encName: string; wrappedFolderKey: string }[] = [];
   const records: Record<string, unknown>[] = [];
   const events: UseEvent[] = [];
+  const bodies: string[] = []; // every request body the API received
   let revoked = false, expired = false, syncCalls = 0, tokenCalls = 0;
   let url = "";
 
-  const issueToken = () => new SignJWT({ scope: "agent", org: orgId, grant: randomUUID() }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
-    .setSubject(agentId).setAudience(aud).setIssuer(url).setJti(randomUUID()).setIssuedAt().setExpirationTime("15m").sign(signing.privateKey);
+  /** `over` replaces claims (undefined removes one); `sub` and `exp` (a jose time span or epoch seconds) too. */
+  const issueToken = (over: Record<string, unknown> & { sub?: string; exp?: string | number } = {}) => {
+    const { sub = agentId, exp = "15m", ...claims } = over;
+    return new SignJWT({ scope: "agent", org: orgId, grant: randomUUID(), ...claims }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
+      .setSubject(sub).setAudience(aud).setIssuer(url).setJti(randomUUID()).setIssuedAt().setExpirationTime(exp).sign(signing.privateKey);
+  };
 
   const record = (id: string, body: RecordBody, encBody: string, holder: Record<string, unknown>) => ({
     id, type: serverRecordType(body), encBody, revision: 1, updatedAt: new Date().toISOString(), deletedAt: null, permission: "use",
@@ -70,7 +76,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   const send = (res: ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, { "content-type": "application/json" }).end(body === undefined ? undefined : JSON.stringify(body));
   };
-  const read = async (req: IncomingMessage) => { let s = ""; for await (const c of req) s += c; return s; };
+  const read = async (req: IncomingMessage) => { let s = ""; for await (const c of req) s += c; bodies.push(s); return s; };
   // requireAgent's order: gateway token, access token, agent state, expiry.
   async function agentAuth(req: IncomingMessage): Promise<number | null> {
     if (req.headers["x-gateway-token"] !== token) return 401;
@@ -88,7 +94,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
       const f = new URLSearchParams(await read(req));
       if (f.get("grant_type") !== "urn:clane:agent-token") return send(res, 400, { error: "unsupported_grant_type" });
       if (f.get("token") !== staticToken || revoked) return send(res, 400, { error: "invalid_grant" });
-      return send(res, 200, { access_token: await issueToken(), token_type: "Bearer", expires_in: 900 });
+      return send(res, 200, { access_token: await issueToken({ grant: tokenId }), token_type: "Bearer", expires_in: 900 });
     }
     if (path === "/agent/sync" || path === "/agent/events") {
       const refused = await agentAuth(req);
@@ -102,7 +108,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
-    url, token, staticToken, events, agent: { id: agentId, orgId, publicKey },
+    url, token, staticToken, events, bodies, kid: jwk.kid!, agent: { id: agentId, orgId, publicKey }, agent2,
     addFolderRecord, addSharedRecord, issueToken,
     get syncCalls() { return syncCalls; },
     get tokenCalls() { return tokenCalls; },

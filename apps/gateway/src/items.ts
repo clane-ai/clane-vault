@@ -10,6 +10,9 @@ export interface ItemSummary {
   methods?: AgentMethod[]; paths?: string[];
 }
 type SyncRecord = AgentSync["records"][number];
+
+/** An item, or every item, would not open (no folder key, no folder, a dead agent key); a CryptoError is the other kind. */
+export class ItemUnopenable extends Error { override name = "ItemUnopenable"; }
 type Refusal = { error: "refused"; reason: "not_found" | "no_policy" };
 
 /** Lower-case, runs outside [a-z0-9] → "-", trimmed, at most 60 characters. */
@@ -24,7 +27,7 @@ function opener(sync: AgentSync, keys: MembershipKeys) {
     let k = folderKeys.get(id);
     if (!k) {
       const f = sync.folders.find((x) => x.id === id);
-      if (!f?.wrappedFolderKey) throw new Error("no folder key");
+      if (!f?.wrappedFolderKey) throw new ItemUnopenable("no folder key");
       k = await openOrgFolderKey(f.wrappedFolderKey, { orgId: sync.orgId, folderId: id }, keys);
       folderKeys.set(id, k);
     }
@@ -37,7 +40,7 @@ function opener(sync: AgentSync, keys: MembershipKeys) {
       let p = prefixes.get(id);
       if (p === undefined) {
         const f = sync.folders.find((x) => x.id === id);
-        if (!f) throw new Error("no folder");
+        if (!f) throw new ItemUnopenable("no folder");
         p = slug(await decryptFolderName(id, f.encName, await folderKey(id))) || "folder";
         prefixes.set(id, p);
       }
@@ -87,7 +90,7 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
   } finally {
     o.close();
   }
-  if (failed > 0 && opened === 0) throw new Error("none of the agent's items could be opened");
+  if (failed > 0 && opened === 0) throw new ItemUnopenable("none of the agent's items could be opened");
   return out;
 }
 

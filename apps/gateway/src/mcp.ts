@@ -1,11 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentMethod, MembershipKeys } from "@clane-vault/crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import { AGENT_METHODS, CryptoError, type AgentMethod, type MembershipKeys } from "@clane-vault/crypto";
 import { ApiRefused, type AgentSync, type ApiClient, type UseEvent } from "./apiClient.js";
-import type { AgentPrincipal, bearerAuth } from "./auth.js";
+import type { AgentPrincipal, BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
-import { readJson, send } from "./http.js";
-import { listItems, withItem, type ItemSummary } from "./items.js";
+import { HttpError, readJson, send } from "./http.js";
+import { ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
 import type { AgentKeyCache, SyncCache } from "./keys.js";
 import type { HeldSecrets, Logger } from "./log.js";
 import { performRequest, type OutboundInput } from "./outbound/request.js";
@@ -13,13 +18,17 @@ import { parseCidrs, type Resolver } from "./outbound/ssrf.js";
 import type { RateLimiter } from "./rateLimit.js";
 
 export interface McpDeps {
-  cfg: GatewayConfig; api: ApiClient; auth: ReturnType<typeof bearerAuth>; keys: AgentKeyCache; syncs: SyncCache; events: EventQueue;
+  cfg: GatewayConfig; api: ApiClient; auth: BearerAuth; keys: AgentKeyCache; syncs: SyncCache; events: EventQueue;
   limiter: RateLimiter; log: Logger; held: HeldSecrets; resolve: Resolver;
+  /** Test hook: a session idle this long is closed (default 30 min). */
+  sessionIdleMs?: number;
 }
 
 const MAX_BODY = 1024 * 1024 + 64 * 1024;
 const MINUTE = 60_000;
-export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20;
+export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER_MINUTE = 10;
+const IDLE_MS = 30 * MINUTE;
+const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
 
 export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths">;
 export type HttpRequestInput = OutboundInput & { item: string };
@@ -34,8 +43,9 @@ export function clientAddress(req: IncomingMessage, hops: number): string {
 }
 
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
+const classOf = (e: unknown) => (e instanceof Error ? e.name : typeof e);
 
-/** The tools' work, outside MCP (Task 11b registers them on the transport). Every call runs as the verified principal's agent only. */
+/** The tools' work, outside MCP. Every call runs as the verified principal's agent only. */
 export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" | "log" | "held" | "resolve">) {
   const allow = parseCidrs(d.cfg.allowPrivateCidrs);
 
@@ -79,9 +89,10 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
           }, d.log);
         } catch (e) {
           if (ran) throw e;
-          // The item would not open (a decrypt failure): to the agent it does not exist.
-          d.log.error({ event: "item_unopenable", class: e instanceof Error ? e.name : typeof e });
-          return { error: "refused", reason: "not_found" } as Refusal;
+          // The item would not open (a decrypt failure): to the agent it does not exist. Anything else is our fault.
+          const unopenable = e instanceof CryptoError || e instanceof ItemUnopenable;
+          d.log.error({ event: unopenable ? "item_unopenable" : "item_error", class: classOf(e) });
+          return { error: "refused", reason: unopenable ? "not_found" : "upstream_error" } as Refusal;
         }
       });
       if (!ran && "error" in r) d.events.push(p, event("refused", req.method, hostOf(req.url), { reason: r.reason }));
@@ -91,30 +102,123 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
   };
 }
 
+const httpRequestInput = {
+  item: z.string().max(200),
+  method: z.enum(AGENT_METHODS),
+  url: z.string().max(4096),
+  headers: z.record(z.string(), z.string().max(8192)).refine((h) => Object.keys(h).length <= 50, "at most 50 headers").optional(),
+  body: z.string().optional(),
+};
+
+interface Session { agentId: string; transport: WebStandardStreamableHTTPServerTransport; busy: boolean; timer?: NodeJS.Timeout }
+/** One per HTTP request, handed to the tools through the transport's authInfo. */
+interface Call { principal: AgentPrincipal; refused: boolean }
+
+const asResult = (x: object) => ({ content: [{ type: "text" as const, text: JSON.stringify(x) }], structuredContent: x as Record<string, unknown> });
+
+/** One McpServer per session with exactly the two tools; a session runs one tool call at a time. */
+function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentTools>, log: Logger) {
+  const server = new McpServer({ name: "clane-vault-gateway", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  const run = async (extra: { authInfo?: { extra?: Record<string, unknown> } }, f: (p: AgentPrincipal) => Promise<object>) => {
+    const call = extra.authInfo?.extra?.call as Call;
+    if (s.busy) return asResult({ error: "refused", reason: "busy" });
+    s.busy = true;
+    try {
+      return asResult(await f(call.principal));
+    } catch (e) {
+      if (e instanceof ApiRefused) call.refused = true; // the handler answers HTTP 401 instead of this result
+      // Class only: a message could carry a secret that is no longer held for redaction.
+      else log.error({ event: "tool_error", class: classOf(e) });
+      return { ...asResult({ error: "internal_error" }), isError: true };
+    } finally {
+      s.busy = false;
+    }
+  };
+  server.registerTool("list_secrets", { description: "The items you may use: handles, hosts and how the credential is injected. Never a secret." },
+    (extra) => run(extra, async (p) => ({ secrets: await tools.listSecrets(p) })));
+  server.registerTool("http_request", {
+    description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id).",
+    inputSchema: httpRequestInput,
+  }, (input, extra) => run(extra, (p) => tools.httpRequest(p, input)));
+  return server;
+}
+
 /**
- * The MCP route: per-address limit, bearer auth, the body, then per-agent tool limits, all before the transport.
- * Rate-limit keys use the verified agent id only.
+ * The MCP route: per-address limit, bearer auth (exchange misses limited per address), the body, then per-agent tool limits,
+ * all before the transport. Rate-limit keys and session binding use the verified agent id only.
  */
 export function mcpHandler(deps: McpDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { cfg, auth, limiter } = deps;
+  const tools = agentTools(deps);
+  const idleMs = deps.sessionIdleMs ?? IDLE_MS;
+  const sessions = new Map<string, Session>();
   const limited = (res: ServerResponse, key: string, limit: number) => {
     const r = limiter.take(key, limit, MINUTE);
     if (r.ok) return false;
     send(res, 429, { error: "rate_limited" }, { "retry-after": String(r.retryAfterSeconds) });
     return true;
   };
+  const touch = (s: Session) => {
+    clearTimeout(s.timer);
+    s.timer = setTimeout(() => void s.transport.close(), idleMs).unref();
+  };
+
+  async function open(agentId: string): Promise<Session> {
+    const s = { agentId, busy: false } as Session;
+    s.transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: randomUUID,
+      enableJsonResponse: true, // the response is complete before it is written, so an API refusal can still become HTTP 401
+      onsessioninitialized: (id) => { sessions.set(id, s); touch(s); },
+    });
+    s.transport.onclose = () => { clearTimeout(s.timer); if (s.transport.sessionId) sessions.delete(s.transport.sessionId); };
+    await sessionServer(s, tools, deps.log).connect(s.transport);
+    return s;
+  }
+
   return async (req, res) => {
-    if (limited(res, `addr:${clientAddress(req, cfg.trustProxy)}`, ADDRESS_PER_MINUTE)) return;
-    const p = await auth(req.headers.authorization);
+    const addr = clientAddress(req, cfg.trustProxy);
+    if (limited(res, `addr:${addr}`, ADDRESS_PER_MINUTE)) return;
+    const p = await auth(req.headers.authorization, () => {
+      const r = limiter.take(`xchg:${addr}`, EXCHANGE_MISSES_PER_MINUTE, MINUTE);
+      if (!r.ok) throw new HttpError(429, "rate_limited", { "retry-after": String(r.retryAfterSeconds) });
+    });
     if (!p) return send(res, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+    // No server-to-client stream (GET) is offered.
+    if (req.method !== "POST" && req.method !== "DELETE") return send(res, 405, { error: "method_not_allowed" }, { allow: "POST, DELETE" });
     const body = req.method === "POST" ? await readJson(req, MAX_BODY) : undefined;
-    for (const m of Array.isArray(body) ? body : [body]) {
+    const msgs = Array.isArray(body) ? body : [body];
+    for (const m of msgs) {
       const msg = m as { method?: unknown; params?: { name?: unknown } } | null;
       if (msg?.method !== "tools/call") continue;
       if (msg.params?.name === "http_request" && limited(res, `http:${p.agentId}`, cfg.agentRatePerMinute)) return;
       if (msg.params?.name === "list_secrets" && limited(res, `list:${p.agentId}`, LIST_PER_MINUTE)) return;
     }
-    // Task 11b: the Streamable HTTP transport, sessions and the tools (agentTools) go here.
-    send(res, 501, { error: "not_implemented" });
+
+    const sid = req.headers["mcp-session-id"];
+    let s: Session | undefined;
+    if (typeof sid === "string") {
+      s = sessions.get(sid);
+      if (!s) return send(res, 404, { error: "session_not_found" });
+      if (s.agentId !== p.agentId) return send(res, 403, { error: "forbidden" });
+      touch(s);
+    } else if (req.method === "POST" && msgs.some((m) => isInitializeRequest(m))) {
+      s = await open(p.agentId);
+    } else {
+      return send(res, 400, { error: "invalid_request" });
+    }
+
+    const call: Call = { principal: p, refused: false };
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) for (const x of [v ?? []].flat()) headers.append(k, x);
+    const r = await s.transport.handleRequest(new Request(new URL(req.url ?? "/", "http://gateway"), { method: req.method, headers }), {
+      parsedBody: body,
+      authInfo: { token: p.accessToken, clientId: p.agentId, scopes: ["agent"], expiresAt: p.exp, extra: { call } },
+    });
+    if (call.refused) {
+      // Revoked or expired: every cache of the agent's goes at once, so its static token is checked at the API again.
+      deps.keys.drop(p.agentId); deps.syncs.drop(p.agentId); auth.drop(p.agentId);
+      return send(res, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+    }
+    res.writeHead(r.status, Object.fromEntries(r.headers)).end(Buffer.from(await r.arrayBuffer()));
   };
 }

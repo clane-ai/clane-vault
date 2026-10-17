@@ -16,7 +16,7 @@ import { mcpHandler } from "./mcp.js";
 import { defaultResolver, type Resolver } from "./outbound/ssrf.js";
 import { RateLimiter } from "./rateLimit.js";
 
-export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver }
+export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number }
 
 const MAX_BODY = 16 * 1024;
 const enrolBody = z.object({ agentId: z.string().uuid(), orgId: z.string().uuid() });
@@ -28,8 +28,9 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const ttlMs = cfg.cacheTtlSeconds * 1000;
   const keys = new AgentKeyCache({ ttlMs, kek, now: deps.now });
   const syncs = new SyncCache({ ttlMs, api, now: deps.now });
-  const mcp = mcpHandler({ cfg, api, auth: bearerAuth(cfg, api, deps.now), keys, syncs, events: new EventQueue(api, log), limiter: new RateLimiter(deps.now),
-    log, held, resolve: deps.resolve ?? defaultResolver });
+  const auth = bearerAuth(cfg, api, deps.now);
+  const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter: new RateLimiter(deps.now),
+    log, held, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
   const mcpPath = new URL(cfg.publicUrl).pathname;
   // Hashing first gives equal lengths, so the compare is timing-safe whatever the caller sends.
   const digest = (s: string) => createHash("sha256").update(s).digest();
@@ -65,6 +66,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
       if (!UUID.test(id)) return send(res, 400, { error: "invalid_request" });
       keys.drop(id);
       syncs.drop(id);
+      auth.drop(id);
       return send(res, 204);
     }
     return send(res, 404, { error: "not_found" });
@@ -72,7 +74,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
 
   const handle = (fn: (req: IncomingMessage, res: ServerResponse) => Promise<void>) => (req: IncomingMessage, res: ServerResponse) => {
     fn(req, res).catch((e: unknown) => {
-      if (e instanceof HttpError) return send(res, e.status, { error: e.code });
+      if (e instanceof HttpError) return send(res, e.status, { error: e.code }, e.headers);
       log.error({ event: "request_error", ...safeError(e, held) });
       if (!res.headersSent) send(res, 500, { error: "internal_error" });
       else res.destroy();
