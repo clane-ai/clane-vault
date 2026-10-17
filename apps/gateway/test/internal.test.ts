@@ -15,7 +15,7 @@ const TOKEN = "t".repeat(40);
 const cfg: GatewayConfig = {
   apiUrl: "http://localhost:3001", apiToken: TOKEN, publicUrl: "http://localhost:3002/mcp", kek: "file:x", identityKeyFile: "x",
   cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [],
-  port: 0, internalPort: 0, trustProxy: 0,
+  port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0,
 };
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); });

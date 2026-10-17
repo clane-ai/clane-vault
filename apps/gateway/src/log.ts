@@ -51,10 +51,15 @@ export function installCrashHandlers(proc: Pick<NodeJS.Process, "on">, log: Logg
   proc.on("unhandledRejection", crash);
 }
 
-const DEBUG_FLAG = /^--(inspect|heapsnapshot|heap-prof|cpu-prof)/;
+// Unanchored within NODE_OPTIONS (Node strips quotes there), so any quoting fails closed. "report-" covers the
+// --report-on-* flags: diagnostic reports include the environment, GATEWAY_API_TOKEN among it.
+const DEBUG_FLAG = /(^|[\s"'])--(inspect|heapsnapshot|heap-prof|cpu-prof|report-)/;
 
-/** A debugger or a heap/CPU profile would expose decrypted keys and secrets, so the gateway refuses to run with one. */
+/** A debugger, a heap/CPU profile or a diagnostic report would expose keys and secrets, so the gateway refuses to run with one. */
 export function assertNoInspector(execArgv: string[], nodeOptions: string | undefined): void {
-  const flag = [...execArgv, ...(nodeOptions ?? "").split(/\s+/)].find((a) => DEBUG_FLAG.test(a));
-  if (flag) throw new Error(`refusing to start with ${flag.split("=")[0]}: it exposes process memory`);
+  // Node treats "_" and "-" alike in flag names.
+  for (const a of [...execArgv, nodeOptions ?? ""]) {
+    const m = DEBUG_FLAG.exec(a.replace(/_/g, "-"));
+    if (m) throw new Error(`refusing to start with --${m[2]}…: it exposes process memory`);
+  }
 }

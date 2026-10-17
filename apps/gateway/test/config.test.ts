@@ -6,11 +6,11 @@ const base = { API_URL: "http://api:3001/api/v1", GATEWAY_API_TOKEN: "t".repeat(
 describe("loadConfig", () => {
   it("applies the defaults", () => {
     expect(loadConfig(base)).toEqual({ apiUrl: base.API_URL, apiToken: base.GATEWAY_API_TOKEN, publicUrl: base.PUBLIC_URL, kek: "file:/k", identityKeyFile: "/id.json",
-      cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [], port: 3002, internalPort: 3003, trustProxy: 0 });
+      cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [], port: 3002, internalPort: 3003, internalHost: "0.0.0.0", trustProxy: 0 });
   });
   it("parses overrides", () => {
-    expect(loadConfig({ ...base, GATEWAY_CACHE_TTL_SECONDS: "0", GATEWAY_ALLOW_PRIVATE_CIDRS: "10.0.0.0/8, fd00::/8", TRUST_PROXY: "1", PUBLIC_URL: "http://localhost:3002/mcp" }))
-      .toMatchObject({ cacheTtlSeconds: 0, allowPrivateCidrs: ["10.0.0.0/8", "fd00::/8"], trustProxy: 1, publicUrl: "http://localhost:3002/mcp" });
+    expect(loadConfig({ ...base, GATEWAY_CACHE_TTL_SECONDS: "0", GATEWAY_ALLOW_PRIVATE_CIDRS: "10.0.0.0/8, fd00::/8", TRUST_PROXY: "1", INTERNAL_HOST: "10.0.0.5", PUBLIC_URL: "http://localhost:3002/mcp" }))
+      .toMatchObject({ cacheTtlSeconds: 0, allowPrivateCidrs: ["10.0.0.0/8", "fd00::/8"], trustProxy: 1, internalHost: "10.0.0.5", publicUrl: "http://localhost:3002/mcp" });
   });
   it("refuses a short token, an http public URL and a missing KEK", () => {
     expect(() => loadConfig({ ...base, GATEWAY_API_TOKEN: "short" })).toThrow();

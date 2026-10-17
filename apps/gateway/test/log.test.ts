@@ -78,6 +78,14 @@ describe("assertNoInspector", () => {
     expect(() => assertNoInspector([], "--heapsnapshot-signal=SIGUSR2")).toThrow();
     expect(() => assertNoInspector([], "--max-old-space-size=512 --cpu-prof")).toThrow();
     expect(() => assertNoInspector(["--heap-prof"], "")).toThrow();
+    expect(() => assertNoInspector(["--heap_prof"], undefined)).toThrow();
+    expect(() => assertNoInspector([], "--cpu_prof")).toThrow();
+    expect(() => assertNoInspector([], '"--inspect"')).toThrow();
+    expect(() => assertNoInspector([], "'--inspect=127.0.0.1:0'")).toThrow();
+    expect(() => assertNoInspector(["--report-on-fatalerror"], undefined)).toThrow();
+    expect(() => assertNoInspector([], "--report_on_signal")).toThrow();
+    expect(() => assertNoInspector([], "--max-old-space-size=512 --report-uncaught-exception")).toThrow();
+    expect(() => assertNoInspector(["--inspect_brk"], undefined)).toThrow();
     expect(() => assertNoInspector([], "")).not.toThrow();
     expect(() => assertNoInspector(["--disable-sigusr1"], "--max-old-space-size=512")).not.toThrow();
   });
