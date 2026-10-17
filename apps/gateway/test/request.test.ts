@@ -284,3 +284,59 @@ describe("performRequest: limits", () => {
     expect(out).toEqual({ ok: false, host: "api.test", reason: "upstream_error" });
   });
 });
+
+describe("performRequest: review round 1", () => {
+  const slow = (ms: number, fastFirst = 0): Resolver => {
+    let n = 0;
+    return () => new Promise((r) => setTimeout(() => r([{ address: "127.0.0.1", family: 4 }]), n++ < fastFirst ? 0 : ms));
+  };
+  it("counts a slow first-hop DNS lookup inside the total timeout", async () => {
+    const t0 = Date.now();
+    const out = await performRequest({ method: "GET", url: "http://api.test:1/" }, ctx(["api.test:1"], { resolve: slow(3000), cfg: { maxResponseBytes: MiB, upstreamTimeoutMs: 300 } }));
+    expect(out).toEqual({ ok: false, host: "api.test", reason: "timeout" });
+    expect(Date.now() - t0).toBeLessThan(800);
+  });
+  it("counts a slow redirect-hop DNS lookup inside the total timeout", async () => {
+    const a = await serve((q, r) => { if (q.url === "/") r.writeHead(302, { location: "/next" }).end(); else r.end("late"); });
+    const t0 = Date.now();
+    const out = await performRequest({ method: "GET", url: `http://api.test:${a.port}/` },
+      ctx([`api.test:${a.port}`], { resolve: slow(3000, 1), cfg: { maxResponseBytes: MiB, upstreamTimeoutMs: 300 } }));
+    expect(out).toEqual({ ok: false, host: "api.test", reason: "timeout" });
+    expect(Date.now() - t0).toBeLessThan(800);
+    expect(a.seen).toHaveLength(1);
+  });
+  it("drops a response header whose name carries the secret, and marks it reflected", async () => {
+    const name = `x-${Buffer.from(SECRET).toString("base64url")}`;
+    const a = await serve((_q, r) => { r.setHeader(name, "1"); r.end("ok"); });
+    const out = await performRequest({ method: "GET", url: `http://api.test:${a.port}/` }, ctx([`api.test:${a.port}`]));
+    expect(out).toMatchObject({ ok: true, reflected: true, result: { body: "ok" } });
+    expect(JSON.stringify(out).toLowerCase()).not.toContain(name.toLowerCase());
+  });
+  it("refuses a body undici left encoded, and accepts identity", async () => {
+    const a = await serve((q, r) => {
+      if (q.url === "/x") r.writeHead(200, { "content-encoding": "gzip, x-custom" }).end(gzipSync(SECRET));
+      else r.writeHead(200, { "content-encoding": "identity" }).end("plain");
+    });
+    expect(await performRequest({ method: "GET", url: `http://api.test:${a.port}/x` }, ctx([`api.test:${a.port}`]))).toEqual({ ok: false, host: "api.test", reason: "upstream_error" });
+    expect(await performRequest({ method: "GET", url: `http://api.test:${a.port}/i` }, ctx([`api.test:${a.port}`]))).toMatchObject({ ok: true, result: { body: "plain" } });
+  });
+  it("strips the agent's Range and If-Range", async () => {
+    const a = await serve();
+    await performRequest({ method: "GET", url: `http://api.test:${a.port}/`, headers: { Range: "bytes=0-3", "If-Range": "x" } }, ctx([`api.test:${a.port}`]));
+    expect(a.seen[0]!.headers.range).toBeUndefined();
+    expect(a.seen[0]!.headers["if-range"]).toBeUndefined();
+  });
+  it("returns a redirect whose Location carries userinfo without following it", async () => {
+    const a = await serve((q, r) => { if (q.url === "/") r.writeHead(302, { location: `http://u:p@api.test:${a.port}/x` }).end(); else r.end("followed"); });
+    const out = await performRequest({ method: "GET", url: `http://api.test:${a.port}/` }, ctx([`api.test:${a.port}`]));
+    expect(out).toMatchObject({ ok: true, result: { status: 302 } });
+    expect(a.seen).toHaveLength(1);
+  });
+  it.each(["GET", "HEAD"] as const)("refuses a body on %s as method, before any lookup or connection", async (method) => {
+    const r = local(), onConnect = vi.fn();
+    expect(await performRequest({ method, url: "https://api.test/", body: "x" }, ctx(["api.test"], { resolve: r, onConnect })))
+      .toEqual({ ok: false, host: "api.test", reason: "method" });
+    expect(r.calls).toEqual([]);
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+});
