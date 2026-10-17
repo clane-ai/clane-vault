@@ -1,3 +1,4 @@
+import { createPrivateKey } from "node:crypto";
 import { Cron } from "croner";
 import { z } from "zod";
 import { AGE_RECIPIENT } from "./lib/backup/age.js";
@@ -245,8 +246,10 @@ function agentConfig(e: z.infer<typeof schema>): AgentConfig | undefined {
   if (set.every((v) => v === undefined)) return undefined;
   if (set.some((v) => v === undefined)) throw new Error("GATEWAY_INTERNAL_URL, GATEWAY_PUBLIC_URL, GATEWAY_API_TOKEN and AGENT_TOKEN_PRIVATE_KEY go together (docs/agents.md)");
   const pem = e.AGENT_TOKEN_PRIVATE_KEY!.replace(/\\n/g, "\n");
-  // shortcut: header check only, not a key parse; the token signer fails on a bad key when it imports it.
-  if (!pem.includes("-----BEGIN PRIVATE KEY-----")) throw new Error("AGENT_TOKEN_PRIVATE_KEY must be a PKCS#8 PEM (-----BEGIN PRIVATE KEY-----) for P-256");
+  try {
+    const k = createPrivateKey(pem);
+    if (k.asymmetricKeyType !== "ec" || k.asymmetricKeyDetails?.namedCurve !== "prime256v1") throw new Error();
+  } catch { throw new Error("AGENT_TOKEN_PRIVATE_KEY must be a P-256 PKCS#8 PEM (-----BEGIN PRIVATE KEY-----)"); }
   return { gatewayInternalUrl: e.GATEWAY_INTERNAL_URL!, gatewayPublicUrl: e.GATEWAY_PUBLIC_URL!, gatewayApiToken: e.GATEWAY_API_TOKEN!,
     tokenPrivateKeyPem: pem, acceptNewGatewayIdentity: e.GATEWAY_ACCEPT_NEW_IDENTITY === "true" };
 }
