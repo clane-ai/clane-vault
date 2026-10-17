@@ -120,8 +120,8 @@ export function matchHost(policyHosts: string[], url: URL): string | null {
 }
 
 // Raw C0/DEL (the URL parser already encodes most) or their percent-encoded forms; also an encoded "/", "\" or ".", which
-// url.pathname keeps encoded but an upstream proxy may decode into another path (/v1/x/..%2f..%2fadmin).
-const REFUSED_PATH = /[\x00-\x1f\x7f]|%(?:[01][0-9a-f]|7f|2f|5c|2e)/i;
+// url.pathname keeps encoded but an upstream proxy may decode into another path (/v1/x/..%2f..%2fadmin); double-encoded (%252f) too.
+const REFUSED_PATH = /[\x00-\x1f\x7f]|%(?:25)?(?:[01][0-9a-f]|7f|2f|5c|2e)/i;
 
 /**
  * Rule 2 after matchHost. A present-but-empty `methods` or `paths` denies every call (fail closed). Paths match by whole

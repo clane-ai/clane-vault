@@ -47,6 +47,9 @@ describe("variantsOf", () => {
     expect(vs).toContain("a<b>&c\\/\\u00e9");
     expect(vs).toContain("a%3cb%3e%26c%2f%c3%a9");
   });
+  it("covers DEL as \\u007f, as Python's ensure_ascii writes it", () => {
+    expect(variantsOf("a\x7fb")).toContain(String.raw`a\u007fb`);
+  });
   it("dedupes and returns nothing for an empty secret", () => {
     expect(variantsOf("abc")).toEqual(["abc", "YWJj", "616263"]);
     expect(new Set(variantsOf("ab/c")).size).toBe(variantsOf("ab/c").length);
@@ -74,5 +77,13 @@ describe("scrub", () => {
   it("scrubs a secret split across chunks once the chunks are joined", () => {
     const chunks = [`{"a":"${S.slice(0, 5)}`, `${S.slice(5)}"}`];
     expect(scrub(chunks.join(""), variantsOf(S)).hits).toBe(1);
+  });
+  it("scrubs 4 MiB holding every form in one pass, well under a second", () => {
+    const vs = variantsOf(S, "bob");
+    const body = "x".repeat(4 * 1024 * 1024) + vs.join("\n");
+    const t = performance.now();
+    const out = scrub(body, vs);
+    expect(performance.now() - t).toBeLessThan(1000);
+    expect(out.hits).toBe(vs.length);
   });
 });

@@ -137,6 +137,12 @@ describe("checkMethodPath", () => {
     expect(checkMethodPath(p({ paths: ["/v1/charges"] }), "GET", u(path))).toBe("path");
     expect(checkMethodPath(p({}), "GET", u(path))).toBe("path");
   });
+  it.each(["/v1/charges/..%252f..%252fadmin", "/v1/charges/%252E%252E", "/v1/charges/a%255cb", "/v1/charges/a%255Cb", "/v1/charges/a%252Fb"])(
+    "refuses a double-encoded slash, backslash or dot: %s", (path) => {
+      expect(checkMethodPath(p({ paths: ["/v1/charges"] }), "GET", u(path))).toBe("path");
+      expect(checkMethodPath(p({}), "GET", u(path))).toBe("path");
+    });
+  it("allows an ordinary %25 in a path", () => expect(checkMethodPath(p({}), "GET", u("/v1/100%25off"))).toBeNull());
   it("refuses a path with control characters, raw or encoded", () => {
     const pol = p({ paths: ["/"] });
     for (const bad of ["/a%00b", "/a%0d%0aX-Injected:1", "/a%1F", "/a%7f"]) expect(checkMethodPath(pol, "GET", u(bad)), bad).toBe("path");
