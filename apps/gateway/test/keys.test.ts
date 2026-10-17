@@ -42,18 +42,64 @@ describe("AgentKeyCache", () => {
     let t = 1_000;
     const cache = new AgentKeyCache({ ttlMs: 60_000, kek, now: () => t });
     const keys = await cache.open(api.agent.id, await syncOf());
+    cache.release(api.agent.id, keys);
     expect(keys.privateKey.some((b) => b !== 0)).toBe(true);
     t += 60_001;
     expect(cache.has(api.agent.id)).toBe(false);
     expect(keys.privateKey.every((b) => b === 0)).toBe(true);
   });
 
+  it("an expiry while the key is in use defers zeroing until release", async () => {
+    let t = 1_000;
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek, now: () => t });
+    const keys = await cache.open(api.agent.id, await syncOf());
+    t += 60_001;
+    expect(cache.has(api.agent.id)).toBe(false);
+    expect(keys.privateKey.some((b) => b !== 0)).toBe(true);
+    cache.release(api.agent.id, keys);
+    expect(keys.privateKey.every((b) => b === 0)).toBe(true);
+  });
+
   it("drop zeroes at once", async () => {
     const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
     const keys = await cache.open(api.agent.id, await syncOf());
+    cache.release(api.agent.id, keys);
     cache.drop(api.agent.id);
     expect(cache.has(api.agent.id)).toBe(false);
     expect(keys.privateKey.every((b) => b === 0)).toBe(true);
+  });
+
+  it("ttlMs 0: release zeroes the key", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 0, kek });
+    const keys = await cache.open(api.agent.id, await syncOf());
+    cache.release(api.agent.id, keys);
+    expect(keys.privateKey.every((b) => b === 0)).toBe(true);
+  });
+
+  it("ttlMs > 0: release leaves the cached key usable", async () => {
+    const sync = await syncOf();
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const a = await cache.open(api.agent.id, sync);
+    cache.release(api.agent.id, a);
+    expect(a.privateKey.some((b) => b !== 0)).toBe(true);
+    const b = await cache.use(api.agent.id, sync, async (k) => k);
+    expect(b).toBe(a);
+    expect(a.privateKey.some((x) => x !== 0)).toBe(true);
+    expect(kek.unwraps).toBe(1);
+  });
+
+  it("zeroes the key that loses a concurrent miss", async () => {
+    const sync = await syncOf();
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const [a, b] = await Promise.all([cache.open(api.agent.id, sync), cache.open(api.agent.id, sync)]);
+    expect(kek.unwraps).toBe(2);
+    cache.release(api.agent.id, a);
+    cache.release(api.agent.id, b);
+    const live = await cache.use(api.agent.id, sync, async (k) => k);
+    const loser = live === a ? b : a;
+    expect(loser.privateKey.every((x) => x === 0)).toBe(true);
+    expect(live.privateKey.some((x) => x !== 0)).toBe(true);
+    expect(kek.unwraps).toBe(2);
   });
 });
 
@@ -64,6 +110,28 @@ describe("SyncCache", () => {
     await syncs.get(api.agent.id, t);
     await syncs.get(api.agent.id, t);
     expect(api.syncCalls).toBe(1);
+  });
+
+  it("ttlMs 0 fetches every time", async () => {
+    const syncs = new SyncCache({ ttlMs: 0, api: client() });
+    const t = await api.issueToken();
+    await syncs.get(api.agent.id, t);
+    await syncs.get(api.agent.id, t);
+    expect(api.syncCalls).toBe(2);
+  });
+
+  it("keeps one entry per token, and drop clears them all", async () => {
+    const syncs = new SyncCache({ ttlMs: 60_000, api: client() });
+    const t1 = await api.issueToken(), t2 = await api.issueToken();
+    await syncs.get(api.agent.id, t1);
+    await syncs.get(api.agent.id, t2);
+    await syncs.get(api.agent.id, t1);
+    await syncs.get(api.agent.id, t2);
+    expect(api.syncCalls).toBe(2);
+    syncs.drop(api.agent.id);
+    await syncs.get(api.agent.id, t1);
+    await syncs.get(api.agent.id, t2);
+    expect(api.syncCalls).toBe(4);
   });
 
   it("throws ApiRefused(401) after revoke and drops the cache", async () => {

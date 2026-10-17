@@ -3,7 +3,7 @@ import type { MembershipKeys, RecordBody } from "@clane-vault/crypto";
 import { apiClient, type AgentSync } from "../src/apiClient.js";
 import { AgentKeyCache } from "../src/keys.js";
 import { listItems, withItem } from "../src/items.js";
-import { HeldSecrets } from "../src/log.js";
+import { HeldSecrets, type Logger } from "../src/log.js";
 import { startFakeApi } from "./fakeApi.js";
 import { fileKek } from "./helpers.js";
 
@@ -13,7 +13,7 @@ const apiKey = (title: string, secret: string, withPolicy = true): RecordBody =>
 });
 
 let api: Awaited<ReturnType<typeof startFakeApi>>;
-let sync: AgentSync, keys: MembershipKeys;
+let sync: AgentSync, keys: MembershipKeys, cache: AgentKeyCache;
 const ids: Record<string, string> = {};
 const SECRETS = ["sk_pay_1", "sk_ops_2", "ghp_3", "sk_pay_4", "sk_nopol_5"];
 
@@ -27,9 +27,10 @@ beforeAll(async () => {
   ids.pay2 = await api.addFolderRecord("Payments", apiKey("Stripe", "sk_pay_4"));
   ids.nopol = await api.addFolderRecord("Ops", apiKey("Legacy", "sk_nopol_5", false));
   sync = await apiClient({ apiUrl: api.url, apiToken: api.token }).sync(await api.issueToken());
-  keys = await new AgentKeyCache({ ttlMs: 60_000, kek }).open(api.agent.id, sync);
+  cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+  keys = await cache.open(api.agent.id, sync);
 });
-afterAll(() => api.close());
+afterAll(async () => { cache.release(api.agent.id, keys); await api.close(); });
 
 describe("listItems", () => {
   it("names items by folder and title, and shared/ for direct shares", async () => {
@@ -60,6 +61,21 @@ describe("listItems", () => {
     const json = JSON.stringify(await listItems(sync, keys, api.agent.id));
     for (const s of SECRETS) expect(json).not.toContain(s);
     expect(json).not.toContain("notes-");
+  });
+
+  it("skips a record that won't open and logs only its id and reason", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const log: Logger = { info: (f) => lines.push(f), error: (f) => lines.push(f) };
+    const bad = { ...sync, records: sync.records.map((r) => (r.id === ids.ops ? { ...r, encBody: r.encBody.slice(0, -8) + "AAAAAAAA" } : r)) };
+    const items = await listItems(bad, keys, api.agent.id, log);
+    expect(items.map((i) => i.recordId)).not.toContain(ids.ops);
+    expect(items).toHaveLength(4);
+    expect(lines).toEqual([{ event: "item_skipped", recordId: ids.ops, reason: expect.any(String) }]);
+  });
+
+  it("throws when no record opens at all (a dead key)", async () => {
+    const dead = { ...keys, privateKey: new Uint8Array(keys.privateKey.length) };
+    await expect(listItems(sync, dead, api.agent.id)).rejects.toThrow("none of the agent's items could be opened");
   });
 
   it("leaves out trashed records", async () => {

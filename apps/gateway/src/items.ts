@@ -1,9 +1,9 @@
 import {
-  agentSecretOf, basicUsername, decryptFolderName, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, unwrapKey,
+  CryptoError, agentSecretOf, basicUsername, decryptFolderName, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, unwrapKey,
   type AgentInject, type AgentMethod, type AgentPolicy, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { AgentSync } from "./apiClient.js";
-import type { HeldSecrets } from "./log.js";
+import type { HeldSecrets, Logger } from "./log.js";
 
 export interface ItemSummary {
   handle: string; recordId: string; title: string; type: RecordType; hosts: string[]; inject: AgentInject | { kind: "none" }; approval: boolean;
@@ -53,17 +53,29 @@ function opener(sync: AgentSync, keys: MembershipKeys) {
   };
 }
 
-/** Summaries in record-id order; `onlyPrefix` decrypts just the records under one handle prefix (collisions never cross prefixes). */
-async function summarize(sync: AgentSync, keys: MembershipKeys, onlyPrefix?: string): Promise<ItemSummary[]> {
+/**
+ * Summaries in record-id order; `onlyPrefix` decrypts just the records under one handle prefix (collisions never cross prefixes).
+ * One record that won't open is skipped and logged; when none opens at all (a dead key), it throws.
+ */
+async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, onlyPrefix?: string): Promise<ItemSummary[]> {
   const o = opener(sync, keys), used = new Set<string>(), out: ItemSummary[] = [];
+  let failed = 0, opened = 0;
   try {
     for (const r of live(sync).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
       let prefix: string, body: RecordBody;
       try {
         prefix = await o.prefix(r);
-        if (onlyPrefix !== undefined && prefix !== onlyPrefix) continue;
+        if (onlyPrefix !== undefined && prefix !== onlyPrefix) {
+          if (r.holderType === "folder") opened++; // its folder key opened: the agent's key works
+          continue;
+        }
         body = await o.body(r);
-      } catch { continue; } // an item the agent can't open is left out, not fatal to the rest
+        opened++;
+      } catch (e) {
+        failed++;
+        log?.error({ event: "item_skipped", recordId: r.id, reason: e instanceof CryptoError ? e.code : "unopenable" });
+        continue;
+      }
       const base = `${prefix}/${slug(body.title) || "item"}`;
       let handle = base;
       for (let n = 2; used.has(handle); n++) handle = `${base}-${n}`;
@@ -75,20 +87,22 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, onlyPrefix?: str
   } finally {
     o.close();
   }
+  if (failed > 0 && opened === 0) throw new Error("none of the agent's items could be opened");
   return out;
 }
 
-export async function listItems(sync: AgentSync, keys: MembershipKeys, _agentId: string): Promise<ItemSummary[]> {
-  return summarize(sync, keys);
+/** `keys` come from `AgentKeyCache.use` (or open + release in finally). */
+export async function listItems(sync: AgentSync, keys: MembershipKeys, _agentId: string, log?: Logger): Promise<ItemSummary[]> {
+  return summarize(sync, keys, log);
 }
 
 /** `item` is a handle or a record id. The secret is held in `held` (scrubbed from logs) only while `f` runs. */
 export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, _agentId: string, item: string, held: HeldSecrets,
-  f: (x: { recordId: string; host: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>): Promise<T | Refusal> {
+  f: (x: { recordId: string; host: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>, log?: Logger): Promise<T | Refusal> {
   let r = live(sync).find((x) => x.id === item);
   const slash = item.indexOf("/");
   if (!r && slash > 0) {
-    const hit = (await summarize(sync, keys, item.slice(0, slash))).find((s) => s.handle === item);
+    const hit = (await summarize(sync, keys, log, item.slice(0, slash))).find((s) => s.handle === item);
     r = hit && live(sync).find((x) => x.id === hit.recordId);
   }
   if (!r) return { error: "refused", reason: "not_found" };
@@ -100,7 +114,8 @@ export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, _agentI
   const username = basicUsername(body);
   const release = held.hold(secret, policy.inject.kind === "basic" ? username : undefined);
   try {
-    return await f({ recordId: r.id, host: policy.hosts[0] ?? "", policy, secret, username });
+    // A policy host can be a wildcard pattern; Task 11 takes the event host from performRequest's outcome.
+    return await f({ recordId: r.id, host: "", policy, secret, username });
   } finally {
     release();
   }
