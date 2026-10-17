@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
-import { calculateJwkThumbprint, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
+import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
   b64url, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, sealOrgFolderKey, sealOrgRecordShare, serverRecordType,
   wrapKey, type RecordBody,
@@ -34,11 +34,16 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   let revoked = false, expired = false, syncCalls = 0, tokenCalls = 0;
   let url = "";
 
-  /** `over` replaces claims (undefined removes one); `sub` and `exp` (a jose time span or epoch seconds) too. */
-  const issueToken = (over: Record<string, unknown> & { sub?: string; exp?: string | number } = {}) => {
+  /** `over` replaces claims (undefined removes one); `sub` (null removes it) and `exp` (a jose time span or epoch seconds) too. */
+  const issueToken = (over: Record<string, unknown> & { sub?: unknown; exp?: string | number } = {}) => {
     const { sub = agentId, exp = "15m", ...claims } = over;
-    return new SignJWT({ scope: "agent", org: orgId, grant: randomUUID(), ...claims }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
-      .setSubject(sub).setAudience(aud).setIssuer(url).setJti(randomUUID()).setIssuedAt().setExpirationTime(exp).sign(signing.privateKey);
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof sub !== "string" && sub !== null) // jose won't sign a non-string sub; sign the payload as is
+      return new CompactSign(new TextEncoder().encode(JSON.stringify({ scope: "agent", org: orgId, sub, aud, iss: url, iat: now, exp: now + 900, ...claims })))
+        .setProtectedHeader({ alg: "ES256", kid: jwk.kid }).sign(signing.privateKey);
+    const j = new SignJWT({ scope: "agent", org: orgId, grant: randomUUID(), ...claims }).setProtectedHeader({ alg: "ES256", kid: jwk.kid });
+    if (sub !== null) j.setSubject(sub);
+    return j.setAudience(aud).setIssuer(url).setJti(randomUUID()).setIssuedAt().setExpirationTime(exp).sign(signing.privateKey);
   };
 
   const record = (id: string, body: RecordBody, encBody: string, holder: Record<string, unknown>) => ({

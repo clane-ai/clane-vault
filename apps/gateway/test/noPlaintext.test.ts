@@ -67,7 +67,10 @@ async function gateway(apiKek: Kek, gwKek: Kek) {
   closers.unshift(() => client.close().catch(() => {}));
   // Every MCP response, including the errors the client throws.
   return async (name: string, args: Record<string, unknown> = {}) => {
-    try { captured.push(JSON.stringify(await client.callTool({ name, arguments: args }))); } catch (e) { captured.push(String(e), JSON.stringify(e)); }
+    let out: string;
+    try { out = JSON.stringify(await client.callTool({ name, arguments: args })); } catch (e) { out = `${String(e)} ${JSON.stringify(e)}`; }
+    captured.push(out);
+    return out;
   };
 }
 
@@ -98,20 +101,22 @@ describe("no plaintext anywhere", () => {
 
     // A bad KEK: the wrapped key is under another file KEK.
     const badKek = await gateway(await fileKek(), kek);
-    await badKek("list_secrets");
-    await badKek("http_request", call("/echo"));
+    for (const r of [await badKek("list_secrets"), await badKek("http_request", call("/echo"))]) {
+      expect(JSON.parse(r)).toMatchObject({ isError: true, structuredContent: { error: "internal_error" } });
+    }
 
     await tool("http_request", call("/hang")); // an upstream timeout
     await tool("http_request", call("/echo")); // a scrub hit
     await tool("http_request", { ...call("/"), url: "https://evil.test/" }); // a refused host
 
     boom.mode = "throw"; // a tool throw: the SDK would put the message in the result
-    await tool("http_request", call("/echo"));
+    expect(JSON.parse(await tool("http_request", call("/echo")))).toMatchObject({ isError: true, structuredContent: { error: "internal_error" } });
 
     // A real uncaught exception, through the crash handlers with a fake exit.
     boom.mode = "uncaught";
-    const saved = process.listeners("uncaughtException");
-    process.removeAllListeners("uncaughtException");
+    const events = ["uncaughtException", "unhandledRejection"] as const;
+    const saved = events.map((ev) => [ev, process.listeners(ev)] as const);
+    for (const ev of events) process.removeAllListeners(ev);
     const proc = { on: (ev: string, f: (e: unknown) => void) => { process.on(ev as "uncaughtException", f); } } as Pick<NodeJS.Process, "on">;
     let exited!: (code: number) => void;
     const exit = new Promise<number>((r) => { exited = r; });
@@ -121,14 +126,15 @@ describe("no plaintext anywhere", () => {
       expect(await exit).toBe(1);
     } finally {
       boom.mode = "";
-      process.removeAllListeners("uncaughtException");
-      process.removeAllListeners("unhandledRejection");
-      for (const l of saved) process.on("uncaughtException", l);
+      for (const [ev, ls] of saved) {
+        process.removeAllListeners(ev);
+        for (const l of ls) process.on(ev, l as never);
+      }
     }
 
     const all = [...captured, ...apis.flatMap((a) => a.bodies)].join("\n");
     // The scenarios ran and were seen.
-    for (const s of ['"reason":"timeout"', '"reflected"', '"reason":"host"', "[clane:redacted]", '"event":"tool_error"', '"event":"crash"', "internal_error"])
+    for (const s of ['"reason":"timeout"', '"reflected"', '"reason":"host"', "[clane:redacted]", '"event":"tool_error"', '"event":"crash"'])
       expect(all).toContain(s);
     for (const f of FORMS) expect(all).not.toContain(f);
   });

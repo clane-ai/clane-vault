@@ -26,7 +26,7 @@ export interface McpDeps {
 
 const MAX_BODY = 1024 * 1024 + 64 * 1024;
 const MINUTE = 60_000;
-export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER_MINUTE = 10;
+export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER_MINUTE = 10, SESSIONS_PER_AGENT = 20;
 const IDLE_MS = 30 * MINUTE;
 const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
 
@@ -99,6 +99,13 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
       await d.events.flush(p);
       return r;
     },
+
+    /** A call refused because the session is running one: one refused event (busy calls are rate-counted, so these are bounded). */
+    async busy(p: AgentPrincipal, input: HttpRequestInput): Promise<Refusal> {
+      d.events.push(p, event("refused", input.method, hostOf(input.url), { reason: "busy" }));
+      await d.events.flush(p);
+      return { error: "refused", reason: "busy" };
+    },
   };
 }
 
@@ -106,7 +113,9 @@ const httpRequestInput = {
   item: z.string().max(200),
   method: z.enum(AGENT_METHODS),
   url: z.string().max(4096),
-  headers: z.record(z.string(), z.string().max(8192)).refine((h) => Object.keys(h).length <= 50, "at most 50 headers").optional(),
+  // Names are RFC 7230 tokens; values carry no CR, LF or NUL.
+  headers: z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/), z.string().max(4096).regex(/^[^\r\n\0]*$/))
+    .refine((h) => Object.keys(h).length <= 50, "at most 50 headers").optional(),
   body: z.string().optional(),
 };
 
@@ -119,9 +128,10 @@ const asResult = (x: object) => ({ content: [{ type: "text" as const, text: JSON
 /** One McpServer per session with exactly the two tools; a session runs one tool call at a time. */
 function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentTools>, log: Logger) {
   const server = new McpServer({ name: "clane-vault-gateway", version: "0.1.0" }, { instructions: INSTRUCTIONS });
-  const run = async (extra: { authInfo?: { extra?: Record<string, unknown> } }, f: (p: AgentPrincipal) => Promise<object>) => {
+  const run = async (extra: { authInfo?: { extra?: Record<string, unknown> } }, f: (p: AgentPrincipal) => Promise<object>,
+    busy: (p: AgentPrincipal) => Promise<object> = async () => ({ error: "refused", reason: "busy" })) => {
     const call = extra.authInfo?.extra?.call as Call;
-    if (s.busy) return asResult({ error: "refused", reason: "busy" });
+    if (s.busy) return asResult(await busy(call.principal));
     s.busy = true;
     try {
       return asResult(await f(call.principal));
@@ -139,7 +149,7 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
   server.registerTool("http_request", {
     description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id).",
     inputSchema: httpRequestInput,
-  }, (input, extra) => run(extra, (p) => tools.httpRequest(p, input)));
+  }, (input, extra) => run(extra, (p) => tools.httpRequest(p, input), (p) => tools.busy(p, input)));
   return server;
 }
 
@@ -147,11 +157,14 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
  * The MCP route: per-address limit, bearer auth (exchange misses limited per address), the body, then per-agent tool limits,
  * all before the transport. Rate-limit keys and session binding use the verified agent id only.
  */
-export function mcpHandler(deps: McpDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) & { dropAgent(agentId: string): void } {
   const { cfg, auth, limiter } = deps;
   const tools = agentTools(deps);
   const idleMs = deps.sessionIdleMs ?? IDLE_MS;
   const sessions = new Map<string, Session>();
+  /** agentId → its live sessions, least recently touched first. */
+  const byAgent = new Map<string, Set<Session>>();
+  const close = (s: Session) => { s.transport.close().catch(() => {}); };
   const limited = (res: ServerResponse, key: string, limit: number) => {
     const r = limiter.take(key, limit, MINUTE);
     if (r.ok) return false;
@@ -159,8 +172,15 @@ export function mcpHandler(deps: McpDeps): (req: IncomingMessage, res: ServerRes
     return true;
   };
   const touch = (s: Session) => {
+    const mine = byAgent.get(s.agentId);
+    mine?.delete(s); mine?.add(s);
     clearTimeout(s.timer);
-    s.timer = setTimeout(() => void s.transport.close(), idleMs).unref();
+    s.timer = setTimeout(() => close(s), idleMs).unref();
+  };
+  /** Revoked or refused: the cached exchange and every session of the agent's go at once. */
+  const dropAgent = (agentId: string) => {
+    auth.drop(agentId);
+    for (const s of [...(byAgent.get(agentId) ?? [])]) close(s);
   };
 
   async function open(agentId: string): Promise<Session> {
@@ -168,14 +188,26 @@ export function mcpHandler(deps: McpDeps): (req: IncomingMessage, res: ServerRes
     s.transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       enableJsonResponse: true, // the response is complete before it is written, so an API refusal can still become HTTP 401
-      onsessioninitialized: (id) => { sessions.set(id, s); touch(s); },
+      onsessioninitialized: (id) => {
+        const mine = byAgent.get(agentId) ?? new Set<Session>();
+        byAgent.set(agentId, mine);
+        // At the cap, the agent's least recently touched session makes room.
+        for (const old of mine) { if (mine.size < SESSIONS_PER_AGENT) break; mine.delete(old); close(old); }
+        sessions.set(id, s); mine.add(s); touch(s);
+      },
     });
-    s.transport.onclose = () => { clearTimeout(s.timer); if (s.transport.sessionId) sessions.delete(s.transport.sessionId); };
+    s.transport.onclose = () => {
+      clearTimeout(s.timer);
+      if (s.transport.sessionId) sessions.delete(s.transport.sessionId);
+      const mine = byAgent.get(agentId);
+      mine?.delete(s);
+      if (mine?.size === 0) byAgent.delete(agentId);
+    };
     await sessionServer(s, tools, deps.log).connect(s.transport);
     return s;
   }
 
-  return async (req, res) => {
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const addr = clientAddress(req, cfg.trustProxy);
     if (limited(res, `addr:${addr}`, ADDRESS_PER_MINUTE)) return;
     const p = await auth(req.headers.authorization, () => {
@@ -215,10 +247,11 @@ export function mcpHandler(deps: McpDeps): (req: IncomingMessage, res: ServerRes
       authInfo: { token: p.accessToken, clientId: p.agentId, scopes: ["agent"], expiresAt: p.exp, extra: { call } },
     });
     if (call.refused) {
-      // Revoked or expired: every cache of the agent's goes at once, so its static token is checked at the API again.
-      deps.keys.drop(p.agentId); deps.syncs.drop(p.agentId); auth.drop(p.agentId);
+      // Revoked or expired (the tool already dropped the key and sync caches): its static token is checked at the API again.
+      dropAgent(p.agentId);
       return send(res, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
     }
     res.writeHead(r.status, Object.fromEntries(r.headers)).end(Buffer.from(await r.arrayBuffer()));
   };
+  return Object.assign(handler, { dropAgent });
 }

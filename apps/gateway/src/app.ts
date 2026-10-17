@@ -66,7 +66,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
       if (!UUID.test(id)) return send(res, 400, { error: "invalid_request" });
       keys.drop(id);
       syncs.drop(id);
-      auth.drop(id);
+      mcp.dropAgent(id);
       return send(res, 204);
     }
     return send(res, 404, { error: "not_found" });

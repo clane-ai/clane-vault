@@ -104,12 +104,13 @@ describe("bearerAuth", () => {
     expect(await bearerAuth(cfgFor(api.url, api.token), client)(`Bearer ${await other.issueToken()}`)).toBeNull();
   });
 
-  it("refuses a JWT with scope other than agent, no org, an expired exp or a non-ES256 alg", async () => {
+  it("refuses a JWT with scope other than agent, no org, no or a non-string sub, an expired exp or a non-ES256 alg", async () => {
     const { api } = await fake();
     const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
     const hs = await new SignJWT({ scope: "agent", org: api.agent.orgId }).setProtectedHeader({ alg: "HS256", kid: api.kid }).setSubject(api.agent.id)
       .setAudience(AUD).setExpirationTime("15m").sign(new Uint8Array(32));
-    for (const jwt of [await api.issueToken({ scope: "user" }), await api.issueToken({ org: undefined }), await api.issueToken({ exp: Math.floor(Date.now() / 1000) - 60 }), hs])
+    for (const jwt of [await api.issueToken({ scope: "user" }), await api.issueToken({ org: undefined }), await api.issueToken({ sub: null }),
+      await api.issueToken({ sub: 42 }), await api.issueToken({ exp: Math.floor(Date.now() / 1000) - 60 }), hs])
       expect(await auth(`Bearer ${jwt}`)).toBeNull();
   });
 
@@ -432,7 +433,12 @@ describe("MCP endpoint", () => {
     const bad = [{ item: "x".repeat(201), method: "GET", url: "https://api.test/" }, { item: "a/b", method: "TRACE", url: "https://api.test/" },
       { item: "a/b", method: "GET", url: `https://api.test/${"x".repeat(4096)}` },
       { item: "a/b", method: "GET", url: "https://api.test/", headers: Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`h${i}`, "v"])) },
-      { item: "a/b", method: "GET", url: "https://api.test/", headers: { h: "v".repeat(8193) } }];
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { h: "v".repeat(4097) } },
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { "bad name": "v" } },
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { "": "v" } },
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { ["h".repeat(65)]: "v" } },
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { h: "v\r\nx-injected: 1" } },
+      { item: "a/b", method: "GET", url: "https://api.test/", headers: { h: "v\u0000" } }];
     for (const args of bad) expect((await client.callTool({ name: "http_request", arguments: args })).isError).toBe(true);
     expect(api.events).toEqual([]);
   });
@@ -472,6 +478,27 @@ describe("MCP endpoint", () => {
     const args = { item: "payments/stripe", method: "GET", url: `http://api.test:${port}/` };
     const rs = (await Promise.all([client.callTool({ name: "http_request", arguments: args }), client.callTool({ name: "http_request", arguments: args })])).map(result);
     expect(rs).toEqual(expect.arrayContaining([expect.objectContaining({ status: 200, body: "slow" }), { error: "refused", reason: "busy" }]));
+    expect(api.events).toEqual(expect.arrayContaining([{ at: expect.any(String), action: "refused", host: "api.test", method: "GET", reason: "busy" },
+      expect.objectContaining({ action: "use" })]));
+    expect(api.events).toHaveLength(2);
+  });
+
+  it("an agent holds at most 20 sessions; the least recently touched makes room", async () => {
+    const { api, url } = await start();
+    const cs = [];
+    for (let i = 0; i < 20; i++) cs.push((await connect(url, api.staticToken)).client);
+    await cs[0]!.listTools(); // the first is now the most recently touched; the second the least
+    await connect(url, api.staticToken);
+    await expect(cs[1]!.listTools()).rejects.toMatchObject({ code: 404 });
+    for (const c of [cs[0]!, ...cs.slice(2)]) await c.listTools();
+  });
+
+  it("the internal DELETE closes every session of the agent's", async () => {
+    const { api, url, int } = await start();
+    const jwt = await api.issueToken(); // verifies without the API, so only a closed session can refuse it
+    const a = (await connect(url, jwt)).client, b = (await connect(url, jwt)).client;
+    await fetch(`${int}/internal/agents/${api.agent.id}`, { method: "DELETE", headers: { "x-gateway-token": api.token } });
+    for (const c of [a, b]) await expect(c.listTools()).rejects.toMatchObject({ code: 404 });
   });
 
   it("a session belongs to one agent: another agent's token on it is 403", async () => {
