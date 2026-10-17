@@ -22,6 +22,7 @@ const MESSAGES: Record<string, string> = {
   invalid_credentials: "That master password is not right.",
   totp_invalid: "That code didn't work. Check the time on your phone and try the newest code.",
   rate_limited: "Too many attempts. Wait a minute and try again.",
+  seat_limit: "This organisation has no free seats. Ask an admin of the organisation to add seats.",
 };
 
 /** Reads the proof from the URL fragment (never sent to a server). */
@@ -85,7 +86,8 @@ export default function SsoComplete() {
       nav("/setup-2fa", { state: { setupToken }, replace: true });
     } catch (e) {
       if (e instanceof ApiError && e.code === "sso_proof_invalid") { setInvalid(true); return; }
-      setError(e instanceof ApiError && e.code === "invalid_request" ? "Use a plain name (up to 60 characters, no links or email addresses)." : "Couldn't create your account. Try again.");
+      setError(e instanceof ApiError && e.code === "invalid_request" ? "Use a plain name (up to 60 characters, no links or email addresses)."
+        : (e instanceof ApiError && MESSAGES[e.code]) || "Couldn't create your account. Try again.");
     } finally { setBusy(false); }
   }
 

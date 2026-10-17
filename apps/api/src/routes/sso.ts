@@ -6,7 +6,7 @@ import { logEvent } from "../lib/events.js";
 import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
 import { displayName, cleanName, nameProblem } from "../lib/names.js";
-import { assertSeat } from "../lib/seats.js";
+import { assertSeat, SeatLimitError } from "../lib/seats.js";
 import { linkAndJoin } from "../lib/ssoLink.js";
 import { secretBox } from "../lib/secretBox.js";
 import {
@@ -27,7 +27,7 @@ const MFA_AMR = new Set(["mfa", "otp", "hwk", "swk", "fido", "sms"]);
 const slug = z.string().trim().toLowerCase().regex(/^[a-z0-9-]{1,80}$/);
 
 /** Codes the sign-in page explains (`/sign-in?sso_error=…`). */
-type SsoError = "sso_state" | "sso_denied" | "sso_failed" | "sso_email_unverified" | "sso_domain" | "sso_not_member" | "sso_no_account" | "sso_identity_mismatch";
+type SsoError = "sso_state" | "sso_denied" | "sso_failed" | "sso_email_unverified" | "sso_domain" | "sso_not_member" | "sso_no_account" | "sso_identity_mismatch" | "sso_org_full";
 
 /**
  * Single sign-on through OpenID Connect (docs/sso.md). The identity provider proves the email address; the master
@@ -126,6 +126,9 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
     if (!dom) return fail(req, reply, "sso_domain", login.orgId);
     // Anything new (joining, a new account) only for a domain still verified (TXT re-checked at most daily).
     const verifiedNow = () => domainStillVerified(app.prisma, app.ssoDeps, login.orgId, dom.domain);
+    // Checked here as well so a full org sends the person back to sign-in with a reason; the join itself checks again.
+    const seatFree = () => app.config.billingMode !== "hosted" ? Promise.resolve(true)
+      : app.prisma.$transaction((tx) => assertSeat(tx, app.config, login.orgId, 1, e)).then(() => true, (err) => { if (err instanceof SeatLimitError) return false; throw err; });
     // When the IdP says how the person authenticated, trusting its MFA needs a second factor among them.
     const idpMfa = !Array.isArray(claims.amr) || claims.amr.some((m) => MFA_AMR.has(String(m).toLowerCase()));
 
@@ -143,6 +146,7 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
       const m = await app.prisma.membership.findUnique({ where: { orgId_userId: { orgId: login.orgId, userId: user.id } }, select: { status: true } });
       if (!m) {
         if (!(sso.autoJoin && await verifiedNow())) return fail(req, reply, "sso_not_member", login.orgId);
+        if (!(await seatFree())) return fail(req, reply, "sso_org_full", login.orgId);
         jit = true;
       } else if (m.status === "disabled") return fail(req, reply, "sso_not_member", login.orgId, "membership disabled");
     } else {
@@ -150,6 +154,7 @@ export const ssoAuthRoutes: FastifyPluginAsync = async (app) => {
       const inv = await app.prisma.invite.findFirst({ where: { orgId: login.orgId, email: e, acceptedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" }, select: { id: true } });
       if (!inv && !sso.autoJoin) return fail(req, reply, "sso_no_account", login.orgId);
       if (!(await verifiedNow())) return fail(req, reply, "sso_no_account", login.orgId, "domain not verified");
+      if (!inv && !(await seatFree())) return fail(req, reply, "sso_org_full", login.orgId);
       mode = "register"; inviteId = inv?.id ?? null; jit = !inv;
     }
     const proof = randomToken();
