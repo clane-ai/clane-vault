@@ -1,5 +1,15 @@
 # Security policy
 
+## Status
+
+**Pre-audit, use for evaluation.** Clane Vault hasn't had an external security audit or penetration test. Run it to
+evaluate it, with test data. Don't store production secrets in it or roll it out across an organisation until an
+audit has been done and its findings fixed; this section will say when.
+
+Known limits that an audit would look at first are listed under *Trust limits* in [docs/sharing.md](docs/sharing.md):
+in short, a compromised server can't read secrets, but it can hand out the wrong public key for a person you have never
+shared with from that browser, plant fake shared folders or records, and hide or roll back data.
+
 ## Reporting a vulnerability
 
 Report it privately through GitHub (the repository's **Security** tab → **Report a vulnerability**), or email

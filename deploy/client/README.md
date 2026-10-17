@@ -2,6 +2,9 @@
 
 Clane Vault is a zero-knowledge team password manager. This bundle runs it as a single container (API plus web app). You supply Postgres, either your own or the optional bundled one.
 
+> **Security status: pre-audit, use for evaluation.** No external security audit has been done. Don't store
+> production secrets in it or roll it out across a company until one has. See [SECURITY.md](../../SECURITY.md#status).
+
 ## Requirements
 
 - Docker with Compose v2 (Linux, macOS or Windows).

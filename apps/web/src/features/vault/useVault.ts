@@ -7,7 +7,7 @@ import { ApiError, forOrg } from "@/lib/api";
 import { useSession, type Org } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
 import { dropSync, loadSync, orgKey, saveSync } from "@/lib/offline";
-import { myMembershipKey, pinKey, sealFolderKeyTo, sealShareTo } from "@/lib/orgKeys";
+import { assertPinned, myMembershipKey, pinKey, sealFolderKeyTo, sealShareTo } from "@/lib/orgKeys";
 import { decryptSync } from "./decrypt";
 import type { FolderMember, Grant, Permission, Person, SyncResponse, VaultFolder, VaultRecord } from "./types";
 
@@ -157,6 +157,7 @@ export function useVault() {
     if (!org) throw new Error("No organisation");
     for (const { person, permission } of people) {
       await toRecipient(person, async (p) => {
+        if (user) assertPinned(user.id, org.id, p);
         const sealed = await sealFolderKeyTo(folderKey, { orgId: org.id, folderId }, p);
         assertOpen();
         await oapi.post(`/folders/${folderId}/members`, { userId: p.id, permission, ...sealed });
@@ -216,6 +217,7 @@ export function useVault() {
     withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
       if (!org) throw new Error("No organisation");
       return toRecipient(v.person, async (p) => {
+        if (user) assertPinned(user.id, org.id, p);
         const sealed = await sealShareTo(rk, { orgId: org.id, recordId: v.r.id }, p);
         assertOpen();
         const res = await oapi.post(`/records/${v.r.id}/shares`, { userId: p.id, permission: v.permission, ...sealed });
@@ -232,6 +234,7 @@ export function useVault() {
     withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
       const there = forOrg(v.in.id);
       const send = async (p: Person) => {
+        if (user) assertPinned(user.id, v.in.id, p);
         const sealed = await sealShareTo(rk, { orgId: v.in.id, recordId: v.r.id }, p);
         assertOpen();
         const res = await there.post(`/records/${v.r.id}/shares`, { userId: p.id, permission: v.permission, ...sealed });

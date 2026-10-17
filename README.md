@@ -1,5 +1,8 @@
 # Clane Vault
 
+> **Security status: pre-audit, use for evaluation.** No external security audit has been done. Don't store
+> production secrets in it or roll it out across a company until one has. See [SECURITY.md](SECURITY.md#status).
+
 A team password manager you run on your own servers. Passwords, notes, fields and files are encrypted in the
 browser before they're sent, so the server can't read them. Sign-in needs an authenticator code, or, for single
 sign-on organisations that choose it, the provider's two-step check.
@@ -49,8 +52,9 @@ backups, updates and attachment storage, is in [deploy/client/README.md](deploy/
 - The master password never leaves the device. It is stretched with Argon2id (64 MiB, 3 iterations) in the browser.
 - Every item and every file has its own random key and is encrypted with AES-256-GCM.
 - Keys are shared between browsers with X25519 sealed boxes, so the server relays keys it can't open. Public keys
-  aren't verified automatically yet: a compromised server could hand out its own key in place of a colleague's for a
-  new share. The app shows each key's fingerprint so people can compare them; see [docs/sharing.md](docs/sharing.md).
+  come from the server. Each browser pins the key it first shares to for each colleague and refuses to share to a
+  changed key until someone compares the new fingerprint and accepts it. The first share to a colleague trusts what the
+  server lists, so compare fingerprints out of band before sharing anything sensitive; see [docs/sharing.md](docs/sharing.md).
 - An authenticator code is required at sign-in, unless an organisation trusts its Entra ID or Google two-step check.
   Ten failed attempts (password, authenticator code or recovery code) lock an account for 15 minutes.
 - Each person gets a recovery kit. Admin recovery is off by default, needs two admins, and covers one organisation,
@@ -58,7 +62,7 @@ backups, updates and attachment storage, is in [deploy/client/README.md](deploy/
 - Stored in plain text: member names and emails, organisation and group names, record categories (login or item)
   and the event log.
 
-No external security audit has been done yet. The designs are in [docs/design/](docs/design/), and
+**Pre-audit: use for evaluation.** No external security audit has been done yet. The designs are in [docs/design/](docs/design/), and
 [docs/sharing.md](docs/sharing.md) describes what a compromised server could and couldn't do. To report a
 vulnerability, see [SECURITY.md](SECURITY.md).
 

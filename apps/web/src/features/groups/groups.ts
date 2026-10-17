@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "@/lib/session";
 import { useOrgApi, useScope } from "@/lib/scope";
-import { pinKey, sealFolderKeyTo, type Recipient } from "@/lib/orgKeys";
+import { pinKey, pinStatus, sealFolderKeyTo, type Recipient } from "@/lib/orgKeys";
 import type { Grant, Person, VaultFolder } from "@/features/vault/types";
 
 /** A group of the active org with its active members' keys (any member can read them, to share a folder). */
@@ -28,13 +28,18 @@ export function useAdminGroups() {
   return useQuery({ queryKey: ["admin-groups", useScope()], queryFn: () => oapi.get<{ groups: AdminGroup[] }>("/admin/groups").then((r) => r.groups) });
 }
 
-/** Seals a folder key to each person's key in this org (copying the folder key first, so a lock mid-way never seals zeros). */
-async function sealAll(orgId: string, folder: VaultFolder, people: Recipient[], assertOpen: () => void, me?: string) {
+/**
+ * Seals a folder key to each person's key in this org (copying the folder key first, so a lock mid-way never seals zeros).
+ * `accepted`: the user approved these people with their fingerprints and key-change warnings in view, so a changed key is
+ * re-pinned. Otherwise a person whose key changed is skipped: with no wrap they wait in the approval queue, which warns.
+ */
+async function sealAll(orgId: string, folder: VaultFolder, people: Recipient[], assertOpen: () => void, me?: string, accepted = false) {
   if (!folder.folderKey) throw new Error("This folder's key isn't available");
   const fk = folder.folderKey.slice();
   try {
     const out: { userId: string; wrappedFolderKey: string; sealedTo: string | null }[] = [];
     for (const p of people) {
+      if (me && !accepted && pinStatus(me, orgId, p.id, p.membershipKey, p.publicKey).status === "changed") continue;
       out.push({ userId: p.id, ...(await sealFolderKeyTo(fk, { orgId, folderId: folder.id }, p)) });
       if (me) pinKey(me, orgId, p.id, p.membershipKey, p.publicKey);
       assertOpen();
@@ -80,7 +85,7 @@ export function useGroupAccess(folders: VaultFolder[]) {
     const folder = holders.find((f) => f.id === v.folderId);
     if (!folder) throw new Error("This folder's key isn't available");
     const gen = generation();
-    const wraps = await sealAll(org!.id, folder, v.people.map((p) => ({ id: p.userId, publicKey: p.publicKey, membershipKey: p.membershipKey })), () => { if (generation() !== gen) throw new Error("Vault locked"); }, user?.id);
+    const wraps = await sealAll(org!.id, folder, v.people.map((p) => ({ id: p.userId, publicKey: p.publicKey, membershipKey: p.membershipKey })), () => { if (generation() !== gen) throw new Error("Vault locked"); }, user?.id, true);
     return oapi.post<{ added: string[]; skipped: number }>(`/folders/${v.folderId}/group-access`, { wraps });
   }, onSettled: refresh });
   const decline = useMutation({ mutationFn: (v: { folderId: string; userIds: string[] }) => oapi.post<{ declined: number }>(`/folders/${v.folderId}/group-access/decline`, { userIds: v.userIds }), onSettled: refresh });

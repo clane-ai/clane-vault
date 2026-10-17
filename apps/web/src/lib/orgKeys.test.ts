@@ -6,7 +6,7 @@ import {
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import { forOrg } from "./api";
-import { myMembershipKey, pinKey, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys } from "./orgKeys";
+import { assertPinned, KeyChangedError, myMembershipKey, pinKey, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys } from "./orgKeys";
 
 configureKdfFloor({ m: 1024, t: 1 });
 const FAST: KdfParams = { alg: "argon2id", m: 1024, t: 1, p: 1 };
@@ -32,6 +32,16 @@ describe("sealing to a recipient", () => {
     pinKey("me", ORG, "u1", "K1");
     expect(pinStatus("me", ORG, "u1", "K1").status).toBe("same");
     expect(pinStatus("me", ORG, "u1", "K2")).toEqual({ status: "changed", previous: "K1" });
+  });
+
+  it("refuses to seal to a changed key until it's accepted (re-pinned); a first contact goes through", () => {
+    expect(() => assertPinned("me", ORG, { id: "u1", publicKey: "A", membershipKey: "K1" })).not.toThrow();
+    pinKey("me", ORG, "u1", "K1", "A");
+    expect(() => assertPinned("me", ORG, { id: "u1", publicKey: "A", membershipKey: "K1" })).not.toThrow();
+    expect(() => assertPinned("me", ORG, { id: "u1", publicKey: "A", membershipKey: "EVIL" })).toThrow(KeyChangedError);
+    expect(() => assertPinned("me", ORG, { id: "u1", publicKey: "EVIL", membershipKey: null })).toThrow(KeyChangedError);
+    pinKey("me", ORG, "u1", "K2", "A");
+    expect(() => assertPinned("me", ORG, { id: "u1", publicKey: "A", membershipKey: "K2" })).not.toThrow();
   });
 
   it("flags a pinned membership key that the server now drops (sealing would go to an account key it names)", () => {

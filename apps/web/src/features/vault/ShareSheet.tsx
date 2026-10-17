@@ -154,7 +154,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                   </div>
                   {total > 0 && <ul aria-label="Shared with" className="overflow-hidden rounded-[12px] border border-border-default bg-card">
                     {ownerId && ownerName && (
-                      <AccessRow id={ownerId} name={ownerName} email={personOf(ownerId)?.email} publicKey={personOf(ownerId)?.publicKey} via="Owner"
+                      <AccessRow id={ownerId} name={ownerName} email={personOf(ownerId)?.email} publicKey={personOf(ownerId)?.membershipKey ?? personOf(ownerId)?.publicKey} via="Owner"
                         badge={ownerId === user?.id ? <Chip>You</Chip> : undefined}>
                         <PermissionChip permission="owner" />
                         <span className="size-8" aria-hidden="true" />
@@ -180,7 +180,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                       );
                     })}
                     {viaFolder.map((m) => (
-                      <AccessRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.publicKey} via={`via ${teamFolder!.name}`}
+                      <AccessRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.membershipKey ?? m.publicKey} via={`via ${teamFolder!.name}`}
                         badge={m.userId === user?.id ? <Chip>You</Chip> : undefined}>
                         <PermissionChip permission={m.permission} />
                         <span className="size-8" aria-hidden="true" />

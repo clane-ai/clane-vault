@@ -74,6 +74,17 @@ export function pinKey(me: string, orgId: string, userId: string, key: string | 
   pins[`${orgId}:${userId}`] = v;
   writePins(me, pins);
 }
+/** Sealing refused: the server lists another key for this person than the one this device pinned. */
+export class KeyChangedError extends Error {
+  constructor(readonly userId: string) { super("Their key changed since this device last shared with them"); this.name = "KeyChangedError"; }
+}
+/**
+ * Called before sealing to someone. A changed key is refused until the user accepts it after comparing fingerprints
+ * (`pinKey` from the picker, *Give access again*, or approving a group request, which all show the new fingerprint).
+ */
+export function assertPinned(me: string, orgId: string, to: Recipient) {
+  if (pinStatus(me, orgId, to.id, to.membershipKey, to.publicKey).status === "changed") throw new KeyChangedError(to.id);
+}
 export const fingerprintOf = async (keyB64: string) => keyFingerprint(b64url.decode(keyB64));
 
 // ---- The membership job ----

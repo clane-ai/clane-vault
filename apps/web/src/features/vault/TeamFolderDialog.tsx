@@ -38,7 +38,7 @@ export function TeamFolderDialog({ open, onSave, onCancel }: { open: boolean; on
             {people.length > 0 && (
               <ul className="rounded-[12px] border border-border-default px-3">
                 {people.map(({ person, permission }) => (
-                  <PersonRow key={person.id} id={person.id} name={person.name} email={person.email} publicKey={person.publicKey}>
+                  <PersonRow key={person.id} id={person.id} name={person.name} email={person.email} publicKey={person.membershipKey ?? person.publicKey}>
                     <PermissionSelect value={permission} label={`Permission for ${person.name}`} onChange={(p) => setPeople((xs) => xs.map((x) => (x.person.id === person.id ? { ...x, permission: p } : x)))} />
                     <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${person.name}`} onClick={() => setPeople((xs) => xs.filter((x) => x.person.id !== person.id))}><X className="size-4" /></Button>
                   </PersonRow>
