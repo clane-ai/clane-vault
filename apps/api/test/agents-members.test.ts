@@ -115,6 +115,19 @@ describe("agents hold use only", () => {
   });
 });
 
+describe("agents hold use only: a direct add while a group grant is pending", () => {
+  it("A in a group with edit and no row yet, added directly with use, is stored as use", async () => {
+    const { owner, A } = await setup();
+    const f = await teamFolder(owner);
+    const g = (await call(owner, "POST", "/admin/groups", { name: "Bots" })).json().id as string;
+    expect((await call(owner, "POST", `/admin/groups/${g}/members`, { userIds: [A.id] })).statusCode).toBe(201);
+    expect((await call(owner, "POST", `/folders/${f}/groups`, { groupId: g, permission: "edit", wraps: [] })).statusCode).toBe(201);
+    expect(await permOf(f, A.id)).toBeUndefined();
+    expect((await call(owner, "POST", `/folders/${f}/members`, { userId: A.id, permission: "use", ...sealTo(A) })).statusCode).toBe(201);
+    expect(await permOf(f, A.id)).toBe("use");
+  });
+});
+
 describe("agents are not people", () => {
   it("People, risk and password health list people only; GET /org memberCount counts people", async () => {
     const { owner, A, B } = await setup();

@@ -107,7 +107,7 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
         // Someone with access only through a group gets a direct grant on top (their key is already sealed).
         if (cur && cur.directPermission !== null) return "exists";
         if (cur) await tx.folderMember.update({ where: { folderId_userId: { folderId: id, userId: b.userId } }, data: { directPermission: b.permission } });
-        else await tx.folderMember.create({ data: { folderId: id, userId: b.userId, permission: maxPermission(b.permission, await groupPermission(tx, id, b.userId))!, directPermission: b.permission, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
+        else await tx.folderMember.create({ data: { folderId: id, userId: b.userId, permission: await capForAgent(tx, b.userId, maxPermission(b.permission, await groupPermission(tx, id, b.userId))!), directPermission: b.permission, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
         await recomputeMember(tx, folder, b.userId);
         // Added directly: a pending entry for the same person (bulk migration) is done.
         const u = await tx.user.findUnique({ where: { id: b.userId }, select: { email: true } });
