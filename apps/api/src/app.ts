@@ -45,6 +45,8 @@ import { DEMO_SWEEP_INTERVAL_MS, sweepExpiredDemos } from "./lib/demo.js";
 import { gatewayClient, GatewayIdentityChanged, GatewayUnavailable, type GatewayClient } from "./lib/gateway.js";
 import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
+import { registerAgent } from "./plugins/agent.js";
+import { agentApiRoutes } from "./routes/agentApi.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -111,6 +113,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
   await app.register(rateLimit, { max: opts.config.rateLimitPerMinute ?? 300, timeWindow: "1 minute" });
   registerAuth(app);
   registerOrg(app);
+  if (opts.config.agents) registerAgent(app);
   app.setErrorHandler((err: FastifyError, _req, reply) => {
     if (err instanceof ZodError) return reply.code(400).send({ error: "invalid_request", issues: err.issues.map((i) => i.path.join(".")) });
     if (err instanceof SeatLimitError) return reply.code(402).send({ error: "seat_limit", used: err.used, allowed: err.allowed });
@@ -157,6 +160,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     if (opts.config.agents) {
       await api.register(agentAdminRoutes, { prefix: "/admin/agents" });
       await api.register(orgAgentRoutes);
+      await api.register(agentApiRoutes);
     }
   }, { prefix: apiPrefix(opts.config) });
   if (opts.webDist) await registerWeb(app, opts.webDist, opts.config.basePath ?? "");

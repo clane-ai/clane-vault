@@ -1,6 +1,6 @@
-import { createHash, randomBytes } from "node:crypto";
-import { SignJWT, jwtVerify } from "jose";
-import type { Config } from "../config.js";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
+import { SignJWT, calculateJwkThumbprint, exportJWK, jwtVerify } from "jose";
+import type { AgentConfig, Config } from "../config.js";
 
 const key = (cfg: Config) => new TextEncoder().encode(cfg.jwtSecret);
 
@@ -43,6 +43,41 @@ export async function verifyToken(cfg: Config, token: string, scope: "access" | 
   if (payload.scope !== scope || typeof payload.sub !== "string") throw new Error("wrong token scope");
   return { sub: payload.sub, sid: payload.sid as string | undefined,
     via: payload.via as string | undefined, ref: payload.ref as string | undefined, rid: payload.rid as string | undefined, sso: payload.sso as string | undefined, ssoProof: payload.ssop as string | undefined };
+}
+
+/**
+ * Agent access tokens (docs/agents.md): ES256, signed with AGENT_TOKEN_PRIVATE_KEY, `kid` the JWK thumbprint.
+ * node:crypto parses the key, so the SEC1 PEMs config accepts work too (jose's importPKCS8 doesn't take them).
+ */
+const agentKeys = new WeakMap<AgentConfig, Promise<{ priv: KeyObject; pub: KeyObject; jwk: JsonWebKey & { kid: string } }>>();
+export function agentSigningKey(a: AgentConfig) {
+  let k = agentKeys.get(a);
+  if (!k) {
+    k = (async () => {
+      const priv = createPrivateKey(a.tokenPrivateKeyPem), pub = createPublicKey(priv);
+      const { kty, crv, x, y } = await exportJWK(pub);
+      const jwk = { kty, crv, x, y };
+      return { priv, pub, jwk: { ...jwk, kid: await calculateJwkThumbprint(jwk), alg: "ES256", use: "sig" } as JsonWebKey & { kid: string } };
+    })();
+    agentKeys.set(a, k);
+  }
+  return k;
+}
+
+export async function signAgentAccess(cfg: Config, p: { agentId: string; orgId: string; grant: string }): Promise<{ token: string; expiresIn: 900 }> {
+  const { priv, jwk } = await agentSigningKey(cfg.agents!);
+  const token = await new SignJWT({ scope: "agent", org: p.orgId, grant: p.grant }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
+    .setSubject(p.agentId).setAudience(cfg.agents!.gatewayPublicUrl).setIssuer(cfg.publicUrl).setJti(randomUUID())
+    .setIssuedAt().setExpirationTime("15m").sign(priv);
+  return { token, expiresIn: 900 };
+}
+
+/** ES256 only (an HS256 person token never passes), audience and issuer checked. Throws otherwise. */
+export async function verifyAgentAccess(cfg: Config, token: string): Promise<{ sub: string; org: string; grant: string; jti: string }> {
+  const { pub } = await agentSigningKey(cfg.agents!);
+  const { payload: p } = await jwtVerify(token, pub, { algorithms: ["ES256"], audience: cfg.agents!.gatewayPublicUrl, issuer: cfg.publicUrl });
+  if (p.scope !== "agent" || typeof p.sub !== "string" || typeof p.org !== "string" || typeof p.grant !== "string" || typeof p.jti !== "string") throw new Error("not an agent token");
+  return { sub: p.sub, org: p.org, grant: p.grant, jti: p.jti };
 }
 
 export const hashToken = (secret: string) => createHash("sha256").update(secret).digest("hex");
