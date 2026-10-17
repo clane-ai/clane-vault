@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { verifyAgentAttestation } from "@clane-vault/crypto";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { EnvelopeError } from "../src/envelope.js";
@@ -23,6 +23,18 @@ describe("gateway identity", () => {
     const kek = await fileKek(dir);
     const [a, b] = await Promise.all([loadOrCreateIdentity(join(dir, "id.json"), kek), loadOrCreateIdentity(join(dir, "id.json"), kek)]);
     expect(a.publicKey).toBe(b.publicKey);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  });
+  it("refuses a torn or empty file and leaves it in place", async () => {
+    const dir = tempDir();
+    const kek = await fileKek(dir);
+    const file = join(dir, "identity.json");
+    const whole = JSON.stringify({ v: 1, publicKey: (await loadOrCreateIdentity(join(dir, "other.json"), kek)).publicKey, sealed: "k1.x" });
+    for (const torn of [whole.slice(0, 20), ""]) {
+      writeFileSync(file, torn);
+      await expect(loadOrCreateIdentity(file, kek)).rejects.toBeInstanceOf(EnvelopeError);
+      expect(readFileSync(file, "utf8")).toBe(torn);
+    }
   });
   it("refuses a file sealed under another KEK", async () => {
     const dir = tempDir();

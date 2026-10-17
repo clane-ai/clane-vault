@@ -18,7 +18,7 @@ const b64 = (u8: Uint8Array) => Buffer.from(u8).toString("base64");
 export async function loadKek(spec: string, deps: KekDeps = {}): Promise<Kek> {
   const i = spec.indexOf(":");
   const kind = i < 0 ? "" : spec.slice(0, i), arg = spec.slice(i + 1);
-  if (kind === "file") return fileKek(new Uint8Array(await (deps.readFile ?? fsReadFile)(arg)));
+  if (kind === "file") return fileKek(await (deps.readFile ?? fsReadFile)(arg)); // no copy: the caller can zero what it holds
   if (kind === "aws-kms" && arg) return awsKek(arg, deps.aws ?? await realAws());
   if (kind === "gcp-kms" && arg) return gcpKek(arg, deps.fetch ?? fetch);
   throw new Error("GATEWAY_KEK must be aws-kms:<key arn>, gcp-kms:<resource name> or file:<path>");
@@ -52,7 +52,7 @@ function awsKek(arn: string, aws: AwsKmsLike): Kek {
     async unwrap(wrapped, ctx) {
       const r = await aws.decrypt({ KeyId: arn, CiphertextBlob: b64url.decode(wrapped), EncryptionContext: ctx });
       if (!r.Plaintext) throw new Error("KMS Decrypt returned no plaintext");
-      return new Uint8Array(r.Plaintext);
+      return r.Plaintext; // no copy, so the caller's fill(0) zeroes the only plaintext
     },
   };
 }
@@ -63,7 +63,7 @@ function gcpKek(resource: string, f: typeof fetch): Kek {
   let token: { value: string; until: number } | undefined;
   async function bearer() {
     if (token && Date.now() < token.until) return token.value;
-    const r = await f(METADATA_TOKEN, { headers: { "Metadata-Flavor": "Google" } });
+    const r = await f(METADATA_TOKEN, { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(10_000) });
     if (!r.ok) throw new Error(`GCP metadata token request failed (${r.status})`);
     const j = await r.json() as { access_token?: string; expires_in?: number };
     if (!j.access_token) throw new Error("GCP metadata server returned no token");
@@ -72,7 +72,7 @@ function gcpKek(resource: string, f: typeof fetch): Kek {
   }
   async function call(op: "encrypt" | "decrypt", body: Record<string, string>) {
     const r = await f(`https://cloudkms.googleapis.com/v1/${resource}:${op}`, {
-      method: "POST", headers: { authorization: `Bearer ${await bearer()}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      method: "POST", signal: AbortSignal.timeout(10_000), headers: { authorization: `Bearer ${await bearer()}`, "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!r.ok) throw new Error(`Cloud KMS ${op} failed (${r.status})`);
     return await r.json() as { ciphertext?: string; plaintext?: string };
   }
@@ -86,7 +86,8 @@ function gcpKek(resource: string, f: typeof fetch): Kek {
     async unwrap(wrapped, ctx) {
       const j = await call("decrypt", { ciphertext: b64(b64url.decode(wrapped)), additionalAuthenticatedData: b64(Buffer.from(canonical(ctx))) });
       if (!j.plaintext) throw new Error("Cloud KMS decrypt returned no plaintext");
-      return new Uint8Array(Buffer.from(j.plaintext, "base64"));
+      const b = Buffer.from(j.plaintext, "base64");
+      return new Uint8Array(b.buffer, b.byteOffset, b.length); // a view, not a copy, as for AWS
     },
   };
 }

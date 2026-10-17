@@ -49,6 +49,12 @@ describe("aws-kms KEK", () => {
     expect(aws.encrypt).toHaveBeenCalledWith(expect.objectContaining({ KeyId: "arn:aws:kms:eu-west-1:1:key/k", EncryptionContext: { orgId: "o", agentId: "a" } }));
     expect(aws.decrypt).toHaveBeenCalledWith(expect.objectContaining({ EncryptionContext: { orgId: "o", agentId: "a" } }));
   });
+  it("returns the SDK's plaintext buffer itself, so zeroing it leaves no copy", async () => {
+    const plain = dek();
+    const aws: AwsKmsLike = { encrypt: async () => ({ CiphertextBlob: new Uint8Array(4) }), decrypt: async () => ({ Plaintext: plain }) };
+    const kek = await loadKek("aws-kms:arn:aws:kms:eu-west-1:1:key/k", { aws });
+    expect(await kek.unwrap("AAAA", ctx)).toBe(plain);
+  });
 });
 
 describe("gcp-kms KEK", () => {
@@ -57,7 +63,9 @@ describe("gcp-kms KEK", () => {
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url);
       urls.push(u);
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       if (u.includes("metadata")) return Response.json({ access_token: "t", expires_in: 3600 });
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer t");
       const b = JSON.parse(String(init?.body));
       expect(Buffer.from(b.additionalAuthenticatedData, "base64").toString()).toBe("agentId=a;orgId=o");
