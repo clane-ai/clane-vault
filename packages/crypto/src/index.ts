@@ -14,3 +14,4 @@ export * from "./sharing.js";
 export * from "./recovery.js";
 export * from "./orgKeys.js";
 export * from "./rekey.js";
+export * from "./agents.js";

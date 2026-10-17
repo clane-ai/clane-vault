@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  encryptNewRecord, decryptRecord, encryptRecordBody, encryptFolderName, decryptFolderName, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8,
+  encryptNewRecord, decryptRecord, encryptRecordBody, decryptRecordBody, normalizeRecordBody, encryptFolderName, decryptFolderName, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8,
 } from "../src/index.js";
 
 const body: RecordBody = { type: "login", title: "AWS root", username: "ops@clane.ai", password: "Tg7#qL2v!Rm9zW4x", url: "console.aws.amazon.com", notes: "Rotate 90d" };
@@ -78,5 +78,40 @@ describe("records", () => {
     expect((await rt({ ...body, passwordChangedAt: at })).passwordChangedAt).toBe(at);
     expect((await rt({ ...body, passwordChangedAt: "soon" })).passwordChangedAt).toBeUndefined();
     expect((await rt({ type: "note", title: "n", passwordChangedAt: at })).passwordChangedAt).toBeUndefined();
+  });
+});
+
+describe("record agentPolicy", () => {
+  const key = randomBytes(32);
+  const rid = crypto.randomUUID();
+  const policy = { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } };
+  const apiKey: RecordBody = { v: 2, type: "apiKey", title: "Stripe", data: { secret: "sk_test_1" }, agentPolicy: policy };
+
+  it("round-trips unchanged", async () => {
+    const enc = await encryptNewRecord(rid, apiKey, key);
+    expect((await decryptRecord(rid, enc.encBody, enc.wrappedRecordKey, key)).body).toEqual(apiKey);
+  });
+
+  it("refuses a type change that leaves the policy without a secret, naming the policy", () => {
+    expect(() => normalizeRecordBody({ ...apiKey, type: "note", data: undefined })).toThrow(/agent policy/);
+  });
+
+  it("refuses a policy naming a removed field, naming the policy", () => {
+    const b: RecordBody = { v: 2, type: "note", title: "N", agentPolicy: { ...policy, secret: "field:f1" } };
+    expect(() => normalizeRecordBody(b)).toThrow(/agent policy/);
+  });
+
+  it("refuses an invalid policy on write", async () => {
+    const bad = { ...apiKey, agentPolicy: { ...policy, hosts: [] } };
+    expect(() => normalizeRecordBody(bad)).toThrow(/agent policy/);
+    await expect(encryptRecordBody(rid, bad, key)).rejects.toThrow(/agent policy/);
+  });
+
+  it("drops an invalid stored policy on read instead of making the record unreadable", async () => {
+    const bad = { ...apiKey, agentPolicy: { ...policy, hosts: ["10.0.0.5"] } };
+    const ct = await aeadEncrypt(key, utf8.encode(JSON.stringify(bad)), `record-body:${rid}`);
+    const dec = await decryptRecordBody(rid, ct, key);
+    expect(dec.agentPolicy).toBeUndefined();
+    expect(dec.data).toEqual({ secret: "sk_test_1" });
   });
 });
