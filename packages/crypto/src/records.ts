@@ -146,6 +146,8 @@ export async function decryptRecordBody(recordId: string, encBody: string, recor
     return validate(JSON.parse(utf8.decode(plaintext)), true);
   } catch {
     throw new CryptoError("bad_envelope");
+  } finally {
+    plaintext.fill(0); // the body's secrets as bytes; the gateway relies on this zeroing
   }
 }
 
