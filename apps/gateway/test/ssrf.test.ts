@@ -19,11 +19,12 @@ const BLOCKED = [
   "0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "0:0:0:0:0:0:0:1", "::7f00:1", "::127.0.0.1",
   "fd00:ec2::254", "FD00:EC2::254", "fd12:3456::1", "fe80::1%eth0", "fec0::1", "ff05::2",
   "64:ff9b::a9fe:a9fe", "64:ff9b::10.0.0.1", "2002:a9fe:a9fe::1", "2002:7f00:1::", "2001:0:4136:e378::1", "2001:db8::1", "100::1", "64:ff9b:1::1",
+  "::ffff:0:a9fe:a9fe", "0:0:0:0:ffff:0:7f00:1", "::ffff:0:127.0.0.1", "::ffff:0:10.0.0.1", "2001:2::1", "3fff::1", "5f00::1",
   "192.0.0.8", "192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "240.0.0.1",
   // Not IP literals at all (decimal, octal, hex IPv4 forms and junk): fail closed.
   "2130706433", "0x7f000001", "0177.0.0.1", "0x7f.0.0.1", "127.1", "", "1.2.3.4.5", "999.1.1.1",
 ];
-const PUBLIC = ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808", "2002:808:808::1", "172.32.0.1", "100.128.0.1"];
+const PUBLIC = ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808", "::ffff:0:808:808", "2002:808:808::1", "172.32.0.1", "100.128.0.1"];
 
 const stub = (map: Record<string, string[]>): Resolver & { calls: string[] } => {
   const calls: string[] = [];
@@ -130,6 +131,11 @@ describe("checkMethodPath", () => {
     for (const bad of ["/v1/chargesX", "/v1", "/files", "/v1/x/../../admin", "/v1/charges/%2e%2e/%2e%2e/admin", "/V1/charges"])
       expect(checkMethodPath(pol, "GET", u(bad)), bad).toBe("path");
     expect(checkMethodPath(p({ paths: ["/"] }), "GET", u("/anything"))).toBeNull();
+  });
+  it.each(["/v1/charges/%2e%2e%2fadmin", "/v1/charges/..%2f..%2fadmin", "/v1/charges/%2E%2E%2Fadmin", "/v1/charges/..%5cadmin", "/v1/charges/..%5Cadmin",
+    "/v1/charges/x%2Ey", "/v1/charges/a%2Fb"])("refuses an encoded slash, backslash or dot: %s", (path) => {
+    expect(checkMethodPath(p({ paths: ["/v1/charges"] }), "GET", u(path))).toBe("path");
+    expect(checkMethodPath(p({}), "GET", u(path))).toBe("path");
   });
   it("refuses a path with control characters, raw or encoded", () => {
     const pol = p({ paths: ["/"] });

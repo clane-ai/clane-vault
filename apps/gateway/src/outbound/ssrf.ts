@@ -69,11 +69,11 @@ export function parseCidrs(list: string[]): Cidr[] {
   });
 }
 
-const MAPPED = parseCidrs(["::ffff:0:0/96"])[0]!, NAT64 = parseCidrs(["64:ff9b::/96"])[0]!, SIX_TO_FOUR = parseCidrs(["2002::/16"])[0]!;
+const [MAPPED, SIIT, NAT64, SIX_TO_FOUR] = parseCidrs(["::ffff:0:0/96", "::ffff:0:0:0/96", "64:ff9b::/96", "2002::/16"]) as [Cidr, Cidr, Cidr, Cidr];
 const MASK32 = 0xffffffffn;
-/** IPv6 forms that carry an IPv4 address (mapped, NAT64, 6to4) become that IPv4 address. */
+/** IPv6 forms that carry an IPv4 address (mapped, SIIT IPv4-translated per RFC 2765, NAT64, 6to4) become that IPv4 address. */
 function embedded(a: Addr): Addr {
-  if (a.family === 6 && (inCidr(a, MAPPED) || inCidr(a, NAT64))) return { family: 4, bits: a.bits & MASK32 };
+  if (a.family === 6 && (inCidr(a, MAPPED) || inCidr(a, SIIT) || inCidr(a, NAT64))) return { family: 4, bits: a.bits & MASK32 };
   if (a.family === 6 && inCidr(a, SIX_TO_FOUR)) return { family: 4, bits: (a.bits >> 80n) & MASK32 };
   return a;
 }
@@ -81,8 +81,9 @@ function embedded(a: Addr): Addr {
 // Cloud metadata endpoints (AWS/GCP/Azure, AWS IPv6, ECS task metadata, Azure wireserver, Alibaba): never lifted by `allow`.
 const METADATA = parseCidrs(["169.254.169.254/32", "fd00:ec2::254/128", "169.254.170.2/32", "168.63.129.16/32", "100.100.100.200/32"]);
 // Ranges isPrivateAddress misses: IPv4-compatible/unspecified/loopback ::/96, site-local, Teredo, documentation, discard,
-// local NAT64, IETF protocol assignments, IPv4 documentation and benchmarking nets.
-const EXTRA = parseCidrs(["::/96", "fec0::/10", "2001::/32", "2001:db8::/32", "100::/64", "64:ff9b:1::/48",
+// local NAT64, v6 benchmarking (2001:2::/48), v6 documentation (3fff::/20), SRv6 SIDs (5f00::/16), IETF protocol
+// assignments, IPv4 documentation and benchmarking nets.
+const EXTRA = parseCidrs(["::/96", "fec0::/10", "2001::/32", "2001:db8::/32", "100::/64", "64:ff9b:1::/48", "2001:2::/48", "3fff::/20", "5f00::/16",
   "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24"]);
 
 const fmt = (a: Addr) => a.family === 4 ? v4str(a.bits) : Array.from({ length: 8 }, (_, i) => ((a.bits >> BigInt(112 - 16 * i)) & 0xffffn).toString(16)).join(":");
@@ -100,6 +101,7 @@ export function isBlockedAddress(ip: string, allow: Cidr[]): boolean {
   const a = embedded(raw);
   if (METADATA.some((c) => inCidr(a, c) || inCidr(raw, c))) return true;
   if (allow.some((c) => inCidr(a, c))) return false;
+  // fmt() writes uncompressed v6 ("0:0:0:0:0:0:0:1"), so isPrivateAddress misses ::1 and ::; EXTRA's ::/96 catches them.
   return isPrivateAddress(fmt(a)) || EXTRA.some((c) => inCidr(a, c) || inCidr(raw, c));
 }
 
@@ -117,17 +119,19 @@ export function matchHost(policyHosts: string[], url: URL): string | null {
   return null;
 }
 
-// Raw C0/DEL (the URL parser already encodes most) or their percent-encoded forms.
-const CONTROL = /[\x00-\x1f\x7f]|%(?:[01][0-9a-f]|7f)/i;
+// Raw C0/DEL (the URL parser already encodes most) or their percent-encoded forms; also an encoded "/", "\" or ".", which
+// url.pathname keeps encoded but an upstream proxy may decode into another path (/v1/x/..%2f..%2fadmin).
+const REFUSED_PATH = /[\x00-\x1f\x7f]|%(?:[01][0-9a-f]|7f|2f|5c|2e)/i;
 
 /**
  * Rule 2 after matchHost. A present-but-empty `methods` or `paths` denies every call (fail closed). Paths match by whole
- * segments ("/v1" covers "/v1" and "/v1/x", not "/v1x"; "/files/" covers "/files/a"). A path with control characters is refused.
+ * segments ("/v1" covers "/v1" and "/v1/x", not "/v1x"; "/files/" covers "/files/a"). A path with control characters or an encoded
+ * "/", "\" or "." is refused, with or without `paths`.
  */
 export function checkMethodPath(policy: Pick<AgentPolicy, "methods" | "paths">, method: AgentMethod, url: URL): "method" | "path" | null {
   if (policy.methods && !policy.methods.includes(method)) return "method";
   const path = url.pathname;
-  if (CONTROL.test(path)) return "path";
+  if (REFUSED_PATH.test(path)) return "path";
   if (policy.paths && !policy.paths.some((p) => path === p || path.startsWith(p.endsWith("/") ? p : `${p}/`))) return "path";
   return null;
 }

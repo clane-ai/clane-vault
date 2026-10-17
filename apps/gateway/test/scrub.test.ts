@@ -25,8 +25,31 @@ describe("variantsOf", () => {
     expect(vs).toContain('sk_live/ab+c d\\"\\u00e9!*\'');
     expect(vs).toContain('sk_live\\/ab+c d\\"é!*\'');
   });
+  it("covers PHP-escaped base64, base64url, Basic and URL-encoded forms", () => {
+    const sec = "????ü";
+    const b64 = Buffer.from(sec).toString("base64"), b64u = Buffer.from(sec).toString("base64url"), basic = Buffer.from(`bob:${sec}`).toString("base64");
+    expect(b64).toBe("Pz8/P8O8");
+    expect(basic).toBe("Ym9iOj8/Pz/DvA==");
+    // PHP json_encode defaults: "/" → "\/", non-ASCII → \uXXXX (lower-case hex)
+    const php = (x: string) => JSON.stringify(x).slice(1, -1).replaceAll("/", "\\/").replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    expect(php(b64)).toBe("Pz8\\/P8O8");
+    expect(php(sec)).toBe("????\\u00fc");
+    const body = `{"a":"${php(b64)}","b":"${php(basic)}","c":"${php(sec)}","d":"${php(b64u)}","e":"${php(encodeURIComponent(sec))}"}`;
+    const out = scrub(body, variantsOf(sec, "bob"));
+    expect(out.hits).toBe(5);
+    expect(out.text).toBe(`{"a":"${REDACTED}","b":"${REDACTED}","c":"${REDACTED}","d":"${REDACTED}","e":"${REDACTED}"}`);
+  });
+  it("covers Go's <>& escapes, upper-case \\uXXXX and lower-case %xx", () => {
+    const sec = "a<b>&c/é";
+    const vs = variantsOf(sec);
+    expect(vs).toContain("a\\u003cb\\u003e\\u0026c/é");
+    expect(vs).toContain("a<b>&c/\\u00E9");
+    expect(vs).toContain("a<b>&c\\/\\u00e9");
+    expect(vs).toContain("a%3cb%3e%26c%2f%c3%a9");
+  });
   it("dedupes and returns nothing for an empty secret", () => {
     expect(variantsOf("abc")).toEqual(["abc", "YWJj", "616263"]);
+    expect(new Set(variantsOf("ab/c")).size).toBe(variantsOf("ab/c").length);
     expect(variantsOf("")).toEqual([]);
   });
 });
