@@ -3,6 +3,7 @@ import { canEdit, capForAgent, maxPermission, type Db } from "./access.js";
 import { removeFolderMember } from "./folderMembers.js";
 import { revokeLinksOfLostAccess } from "./links.js";
 import { currentKeys } from "./membershipKeys.js";
+import { agentAttestations } from "./agents.js";
 
 /**
  * Groups (docs/groups.md). A team folder shared with a group gives each group member access at the group's permission;
@@ -75,6 +76,8 @@ export async function recomputeGroupFolders(tx: Db, folderIds: string[], userIds
  */
 export interface GroupPending {
   folderId: string; userId: string; name: string; email: string; publicKey: string; kind: UserKind; membershipKey: string | null; permission: Permission; groups: string[]; declined: boolean;
+  /** Agents only: the gateway's attestation of the key, verified by the browser before sealing (R41). */
+  attestation?: string; gatewayKeyId?: string;
   via: { groupId: string; groupName: string; addedBy: { id: string; name: string } | null }[];
 }
 
@@ -104,8 +107,10 @@ export async function pendingGroupAccess(db: Db, orgId: string, sealerId: string
   }
   const list = [...out.values()];
   const keys = await currentKeys(db, orgId, list.map((p) => p.userId));
+  const att = await agentAttestations(db, list.filter((p) => p.kind === "agent").map((p) => p.userId));
   for (const p of list) {
     p.membershipKey = keys.get(p.userId) ?? null;
+    Object.assign(p, att.get(p.userId));
     if (p.kind === "agent") p.permission = "use"; // what approval will give it (addViaGroups caps it)
   }
   return list;

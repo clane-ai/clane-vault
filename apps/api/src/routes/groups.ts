@@ -6,6 +6,7 @@ import { groupPermission, lockFolder, lockGroup, pendingGroupAccess, recomputeFo
 import { displayName } from "../lib/names.js";
 import { isAdminRole } from "../lib/orgs.js";
 import { currentKeys, isPublicKeyB64, recipientKeyOk } from "../lib/membershipKeys.js";
+import { agentAttestations } from "../lib/agents.js";
 
 const sealed = z.string().startsWith("s1.").max(4096);
 const grantable = z.enum(["edit", "view", "use"]);
@@ -30,9 +31,10 @@ export const groupRoutes: FastifyPluginAsync = async (app) => {
   app.get("/groups", async (req) => {
     const groups = await app.prisma.group.findMany({ where: { orgId: orgId(req) }, orderBy: { name: "asc" },
       select: { id: true, name: true, members: { where: { user: { status: "active", memberships: { some: { orgId: orgId(req), status: "active" } } } },
-        select: { user: { select: { id: true, name: true, email: true, publicKey: true } } } } } });
+        select: { user: { select: { id: true, name: true, email: true, publicKey: true, kind: true } } } } } });
     const keys = await currentKeys(app.prisma, orgId(req), groups.flatMap((g) => g.members.map((m) => m.user.id)));
-    return { groups: groups.map((g) => ({ id: g.id, name: g.name, members: g.members.map((m) => ({ ...m.user, membershipKey: keys.get(m.user.id) ?? null })) })) };
+    const att = await agentAttestations(app.prisma, groups.flatMap((g) => g.members.filter((m) => m.user.kind === "agent").map((m) => m.user.id)));
+    return { groups: groups.map((g) => ({ id: g.id, name: g.name, members: g.members.map((m) => ({ ...m.user, membershipKey: keys.get(m.user.id) ?? null, ...att.get(m.user.id) })) })) };
   });
 
   /**
