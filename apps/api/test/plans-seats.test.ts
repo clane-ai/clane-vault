@@ -129,12 +129,14 @@ describe("seat limits on self-service joins", () => {
     try {
       expect(await requestDomainJoin(t.app, "new@acme.test", t.app.log)).toBe("seat_limit");
       expect(await t.prisma.invite.count({ where: { email: "new@acme.test" } })).toBe(0);
+      expect(await t.prisma.event.findFirst({ where: { orgId: owner.orgId!, action: "org.domain_join_refused" }, select: { meta: true } }))
+        .toEqual({ meta: { domain: "acme.test", reason: "seat_limit" } });
       await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { seatsPaid: 2 } });
       expect(await requestDomainJoin(t.app, "new@acme.test", t.app.log)).toBe("sent");
     } finally { vi.restoreAllMocks(); delete t.config.resendApiKey; delete t.config.emailFrom; }
   });
 
-  it("SSO just-in-time register at a full org is 402 seat_limit", async () => {
+  it("SSO just-in-time register at a full org: sent back to sign-in with a reason, or 402 if the seat goes in between", async () => {
     const owner = await createActiveUser(t, { role: "owner", email: "boss@acme.test" });
     await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { plan: "business", seatsPaid: 5 } });
     const h = (m: M, u: string, p?: unknown) => call(owner, m, u, p);
@@ -147,11 +149,22 @@ describe("seat limits on self-service joins", () => {
     await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { seatsPaid: 1 } });
     idp.addUser({ sub: "n1", email: "new@acme.test", email_verified: true, name: "New" });
     const pub = (u: string, p: unknown, cookie?: string) => t.app.inject({ method: "POST", url: `/api/v1${u}`, payload: p as object, remoteAddress: ip(), ...(cookie ? { cookies: { cv_sso: cookie } } : {}) });
-    const start = await pub("/auth/sso/start", { org: "default", email: "new@acme.test" });
-    const cookie = start.cookies.find((x) => x.name === "cv_sso")!.value;
-    const back = new URL((await fetch(new URL(start.json().url), { redirect: "manual" })).headers.get("location")!);
-    const cb = await t.app.inject({ method: "GET", url: `${back.pathname}${back.search}`, remoteAddress: ip(), cookies: { cv_sso: cookie } });
-    const proof = new URLSearchParams(String(cb.headers.location).split("#")[1] ?? "").get("proof");
+    const signIn = async () => {
+      const start = await pub("/auth/sso/start", { org: "default", email: "new@acme.test" });
+      const cookie = start.cookies.find((x) => x.name === "cv_sso")!.value;
+      const back = new URL((await fetch(new URL(start.json().url), { redirect: "manual" })).headers.get("location")!);
+      const cb = await t.app.inject({ method: "GET", url: `${back.pathname}${back.search}`, remoteAddress: ip(), cookies: { cv_sso: cookie } });
+      return { cookie, location: String(cb.headers.location) };
+    };
+    // Full at the identity provider's callback: a redirect with a reason, logged for the org's admins.
+    expect((await signIn()).location).toBe(`${t.config.publicUrl}/sign-in?sso_error=sso_org_full`);
+    expect(await t.prisma.event.count({ where: { orgId: owner.orgId!, action: "sso.callback_failed", meta: { path: ["reason"], equals: "sso_org_full" } } })).toBe(1);
+    // A seat free at the callback but gone by the time the account is made: 402, and nothing is created.
+    await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { seatsPaid: 2 } });
+    const { cookie, location } = await signIn();
+    const proof = new URLSearchParams(location.split("#")[1] ?? "").get("proof");
+    expect(proof).toBeTruthy();
+    await t.prisma.organization.update({ where: { id: owner.orgId! }, data: { seatsPaid: 1 } });
     const acct = await createAccount("a new master password", FAST_KDF);
     const reg = await pub("/auth/sso/register", { proof, name: "New", authKey: acct.authKey, material: acct.material }, cookie);
     expect([reg.statusCode, reg.json()]).toEqual([402, { error: "seat_limit", used: 1, allowed: 1 }]);

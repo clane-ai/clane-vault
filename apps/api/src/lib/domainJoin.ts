@@ -84,7 +84,11 @@ export async function requestDomainJoin(app: FastifyInstance, email: string, log
     await addPendingGroups(tx, t.orgId, email, groups, null);
     return false;
   }).catch((e) => { if (e instanceof SeatLimitError) return true; throw e; }); // the caller still gets the same 202
-  if (full) return "seat_limit";
+  if (full) {
+    // The requester still gets the same answer; this tells the org's admins someone was turned away.
+    await logEvent(app.prisma, { orgId: t.orgId, action: "org.domain_join_refused", meta: { domain: t.domain, reason: "seat_limit" }, ...meta });
+    return "seat_limit";
+  }
   await logEvent(app.prisma, { orgId: t.orgId, action: "org.domain_join_request", meta: { domain: t.domain }, ...meta });
   const productName = await app.brand.productName();
   const sent = user

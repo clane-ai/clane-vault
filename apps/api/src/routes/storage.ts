@@ -77,7 +77,7 @@ export const instanceStorageRoutes: FastifyPluginAsync = async (app) => {
       enabled: cfg.enabled, backend: cfg.storage, s3: app.attachmentStores.s3?.describe() ?? null,
       used, quota, warn: quota > 0 && used > 0.8 * quota,
       quotas: { orgMb: cfg.orgQuotaMb, userMb: cfg.userQuotaMb, instanceMb: cfg.instanceQuotaMb, dailyUploadMb: cfg.dailyUploadMb, maxFileMb: cfg.maxFileMb },
-      perOrg: perOrg.map((o) => ({ ...o, quota: cfg.orgQuotaMb * MIB })), personal: personal[0] ?? { files: 0, bytes: 0 },
+      perOrg: await Promise.all(perOrg.map(async (o) => ({ ...o, quota: await chargeQuota(app.prisma, cfg, { kind: "org", orgId: o.orgId }) }))), personal: personal[0] ?? { files: 0, bytes: 0 },
       // Each row says where its chunks are: files still in the database after switching to S3 need attachments-move.
       rows: { db: count("db"), s3: count("s3"), uploading: rows.filter((r) => r.state === "uploading").reduce((a, r) => a + r._count._all, 0), pendingDelete: rows.filter((r) => r.state === "deleted").reduce((a, r) => a + r._count._all, 0) },
       tombstones: await app.prisma.attachmentTombstone.count(),

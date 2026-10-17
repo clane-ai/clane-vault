@@ -9,6 +9,7 @@ Upgrading: migration `20261025000000_org_plans` runs on start (two enums, seven 
 - Hosted plans (docs/plans.md): with `BILLING_MODE=hosted` each organisation is on Team or Business, with seat, link, storage and event log limits and Business-only features. A new organisation gets a 14-day Business trial. Off by default: self-hosted servers are unchanged.
 - The web app shows "Available on the Business plan." in place of Business-only forms, a "Business trial: n days left" line for owners and admins, and plain messages when an invite, link or upload hits a limit.
 - `npm run set-plan -- --org <id> --plan team|business [--seats N]` sets a plan by hand.
+- With hosted plans, SSO sign-in to an organisation with no free seat goes back to the sign-in page with "This organisation has no free seats" (event `sso.callback_failed`, reason `sso_org_full`) instead of failing later. A domain auto-join request turned away for lack of seats logs `org.domain_join_refused`. The server storage page shows each organisation's enforced limit.
 
 ## 1.7.3 — 2026-10-15
 

@@ -29,6 +29,7 @@ export const SSO_ERRORS: Record<string, string> = {
   sso_not_member: "Your account isn't a member of this organisation. Ask an admin to invite you.",
   sso_no_account: "There's no account for this address yet. Ask an admin of the organisation to invite you.",
   sso_identity_mismatch: "This address is linked to a different account at your identity provider. Ask your admin for help.",
+  sso_org_full: "This organisation has no free seats. Ask an admin of the organisation to add seats.",
   sso_not_configured: "That organisation doesn't use single sign-on. Check the organisation ID.",
   sso_unavailable: "The organisation's identity provider isn't reachable right now. Try again, or use your master password.",
 };
