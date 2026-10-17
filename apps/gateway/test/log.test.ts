@@ -49,8 +49,8 @@ describe("secret-aware logger", () => {
 
 describe("variantsOf", () => {
   it("lists every encoded form", () => {
-    expect(variantsOf("a b", "u")).toEqual(["a b", "YSBi", "a%20b", "612062", btoa("u:a b")]);
-    expect(variantsOf("ÿ?")).toEqual(["ÿ?", "w78/", "w78_", "%C3%BF%3F", "c3bf3f", "C3BF3F"]);
+    expect(variantsOf("a b", "u")).toEqual(["a b", "YSBi", "a%20b", "612062", "a+b", btoa("u:a b")]);
+    expect(variantsOf("ÿ?")).toEqual(["ÿ?", "w78/", "w78_", "%C3%BF%3F", "c3bf3f", "C3BF3F", "\\u00ff?"]);
     expect(variantsOf("")).toEqual([]);
   });
 });

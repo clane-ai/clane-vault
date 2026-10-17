@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseCidrs } from "./outbound/ssrf.js";
 
 export interface GatewayConfig {
   apiUrl: string; apiToken: string; publicUrl: string; kek: string; identityKeyFile: string; cacheTtlSeconds: number; agentRatePerMinute: number;
@@ -34,10 +35,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   const pub = new URL(e.PUBLIC_URL);
   if (pub.protocol !== "https:" && !(pub.protocol === "http:" && LOCAL.has(pub.hostname)))
     throw new Error("PUBLIC_URL must be https (http only for localhost)");
+  const cidrs = e.GATEWAY_ALLOW_PRIVATE_CIDRS.split(",").map((s) => s.trim()).filter(Boolean);
+  try { parseCidrs(cidrs); } catch (x) { throw new Error(`GATEWAY_ALLOW_PRIVATE_CIDRS: ${(x as Error).message}`); }
   return {
     apiUrl: e.API_URL, apiToken: e.GATEWAY_API_TOKEN, publicUrl: e.PUBLIC_URL, kek: e.GATEWAY_KEK, identityKeyFile: e.GATEWAY_IDENTITY_KEY_FILE,
     cacheTtlSeconds: e.GATEWAY_CACHE_TTL_SECONDS, agentRatePerMinute: e.GATEWAY_AGENT_RATE_PER_MINUTE, maxResponseBytes: e.GATEWAY_MAX_RESPONSE_BYTES,
-    upstreamTimeoutMs: e.GATEWAY_UPSTREAM_TIMEOUT_MS, allowPrivateCidrs: e.GATEWAY_ALLOW_PRIVATE_CIDRS.split(",").map((s) => s.trim()).filter(Boolean),
+    upstreamTimeoutMs: e.GATEWAY_UPSTREAM_TIMEOUT_MS, allowPrivateCidrs: cidrs,
     port: e.PORT, internalPort: e.INTERNAL_PORT, internalHost: e.INTERNAL_HOST, trustProxy: e.TRUST_PROXY,
   };
 }

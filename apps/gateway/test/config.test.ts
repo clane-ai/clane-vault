@@ -17,6 +17,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, PUBLIC_URL: "http://vault.example/mcp" })).toThrow(/https/);
     expect(() => loadConfig({ ...base, GATEWAY_KEK: "" })).toThrow();
   });
+  it("refuses a GATEWAY_ALLOW_PRIVATE_CIDRS entry that isn't a CIDR", () => {
+    for (const bad of ["10.0.0.0", "10.0.0.0/8,nope", "10.0.0.0/33", "fd00::/200", "example.com/24"])
+      expect(() => loadConfig({ ...base, GATEWAY_ALLOW_PRIVATE_CIDRS: bad }), bad).toThrow(/GATEWAY_ALLOW_PRIVATE_CIDRS/);
+  });
   it("never echoes the token in an error", () => {
     const tok = "secret-token-value";
     expect(() => loadConfig({ ...base, GATEWAY_API_TOKEN: tok })).toThrow();
