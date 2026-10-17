@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { TRIAL_MS } from "./plans.js";
 import type { FastifyInstance } from "fastify";
 import type { Db } from "./access.js";
 import { ownerInviteEmail, sendEmail } from "./email.js";
@@ -94,7 +95,7 @@ export async function createCustomerOrg(app: FastifyInstance, o: { name: string;
   if (hosted && !(await app.mail.configured(null))) return { ok: false, error: "email_required" };
   const now = new Date();
   const { org, token } = await app.prisma.$transaction(async (tx) => {
-    const org = await tx.organization.create({ data: { name: o.name, slug: slugFor(o.name), customerOwnerEmail: email, customerCreatedById: o.actorId }, select: { id: true, name: true } });
+    const org = await tx.organization.create({ data: { name: o.name, slug: slugFor(o.name), customerOwnerEmail: email, customerCreatedById: o.actorId, ...(app.config.billingMode === "hosted" ? { trialEndsAt: new Date(Date.now() + TRIAL_MS) } : {}) }, select: { id: true, name: true } });
     const token = await writeOwnerInvitation(tx, { orgId: org.id, email, actorId: o.actorId, existingId: existing?.id ?? null, hosted, now });
     // Its own log (the owner sees who set it up) and the instance's.
     await logEvent(tx, { orgId: org.id, actorId: o.actorId, action: "org.create", ...o.meta, meta: { for: "customer" } });

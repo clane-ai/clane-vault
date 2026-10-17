@@ -1,7 +1,9 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { Config } from "../config.js";
 import type { Db } from "./access.js";
 import { logEvent } from "./events.js";
+import { getEntitlements, PLAN_SELECT, type OrgPlanFields } from "./plans.js";
 
 /** An approved admin recovery link works for 24 hours, once. */
 export const RECOVERY_LINK_TTL_MS = 24 * 3600e3;
@@ -25,10 +27,14 @@ export function secretValueMatches(storedHex: string | null | undefined, given: 
 export const BURN_REQUEST = { wrappedMembershipKey: null, proofHash: null } as const;
 
 /** Whether this organisation's admin recovery is on (no org: whether any organisation has it on). */
-export async function adminRecoveryEnabled(prisma: Db, orgId?: string): Promise<boolean> {
-  if (orgId) return (await prisma.organization.findUnique({ where: { id: orgId }, select: { adminRecoveryEnabled: true } }))?.adminRecoveryEnabled ?? false;
-  return !!(await prisma.organization.findFirst({ where: { adminRecoveryEnabled: true }, select: { id: true } }));
+export async function adminRecoveryEnabled(prisma: Db, cfg: Pick<Config, "billingMode">, orgId?: string): Promise<boolean> {
+  if (orgId) { const o = await prisma.organization.findUnique({ where: { id: orgId }, select: { ...PLAN_SELECT, adminRecoveryEnabled: true } }); return !!o && adminRecoveryOn(cfg, o); }
+  // Hosted: the plan condition mirrors getEntitlements (Business, or a Team trial still running).
+  const plan: Prisma.OrganizationWhereInput = cfg.billingMode === "hosted" ? { OR: [{ plan: "business" }, { plan: "team", billingStatus: "free", trialEndsAt: { gt: new Date() } }] } : {};
+  return !!(await prisma.organization.findFirst({ where: { adminRecoveryEnabled: true, ...plan }, select: { id: true } }));
 }
+/** The stored flag counts only while the plan includes admin recovery (a downgrade leaves the flag, and the escrows, alone). */
+export const adminRecoveryOn = (cfg: Pick<Config, "billingMode">, o: OrgPlanFields & { adminRecoveryEnabled: boolean }) => o.adminRecoveryEnabled && getEntitlements(cfg, o).features.adminRecovery;
 
 /** When this account became an admin (or owner) of the org, if it still is an active one there. */
 export async function adminSinceIn(prisma: Db, orgId: string, userId: string | null): Promise<{ adminSince: Date | null } | null> {

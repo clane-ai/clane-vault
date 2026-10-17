@@ -323,6 +323,21 @@ describe("disclosure and prompts", () => {
     await waitFor(() => expect(screen.getByRole("switch", { name: "Admin account recovery" })).toBeChecked());
   });
 
+  it("on Team admins get the lock line and a turn-off, never the switch", async () => {
+    mockSession({ user: { ...member, role: "admin" } });
+    let put: unknown = null;
+    server.use(
+      http.get("/api/v1/org/plan", () => HttpResponse.json({ entitlements: { features: { adminRecovery: false } } })),
+      http.get("/api/v1/admin/settings", () => HttpResponse.json({ adminRecovery: { enabled: false, changedAt: null, changedBy: null }, escrows: { total: 0, members: 0 } })),
+      http.put("/api/v1/admin/settings/admin-recovery", async ({ request }) => { put = await request.json(); return HttpResponse.json({ adminRecovery: { enabled: false, changedAt: null, changedBy: null }, escrows: { total: 0, members: 0 } }); }),
+    );
+    wrap(<AdminRecoverySection />);
+    expect(await screen.findByText("Available on the Business plan.")).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Turn off admin recovery" }));
+    await waitFor(() => expect(put).toEqual({ enabled: false }));
+  });
+
   it("a blocking notice asks members to acknowledge admin recovery per organisation, and says what it covers", async () => {
     mockSession({ user: member });
     let acked = false;

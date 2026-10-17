@@ -14,6 +14,8 @@ import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useReloadOrgs } from "@/features/orgs/orgs";
+import { LockLine } from "@/features/admin/PlanLock";
+import { useLocked } from "@/features/admin/plan";
 
 /** The full policy set as admins edit it (docs/policies.md); members only ever see the client part. */
 export interface AdminPolicies {
@@ -45,6 +47,7 @@ export function OrgPoliciesSection() {
   const oapi = useOrgApi();
   const qc = useQueryClient();
   const reload = useReloadOrgs();
+  const locked = useLocked("policyEdit");
   const KEY = ["admin-policies", useScope()];
   const q = useQuery({ queryKey: KEY, queryFn: () => oapi.get<PoliciesView>("/admin/settings/policies") });
   const [p, setP] = useState<AdminPolicies | null>(null);
@@ -79,8 +82,10 @@ export function OrgPoliciesSection() {
   return (
     <section className="flex flex-col gap-3" aria-label="Policies">
       <div><h2 className={h2}>Policies</h2><p className="text-[13px] text-text-secondary">Rules for everyone in {org.name}. Apps enforce them; the server enforces links and the IP allowlist.</p></div>
+      {locked && <LockLine />}
       {!p ? <p className="text-[14px] text-text-secondary">{q.error ? "Couldn't load the policies." : "Loading…"}</p> : (
         <form onSubmit={save} className={cn(card, "flex flex-col gap-4")} noValidate>
+          <fieldset disabled={locked} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="flex flex-col gap-1.5"><Label htmlFor="pol-lock">Auto-lock after (minutes idle)</Label>
               <Input id="pol-lock" inputMode="numeric" placeholder="15 (default)" value={p.autoLockMinutes ?? ""} onChange={(e) => set("autoLockMinutes", e.target.value.trim() === "" ? null : Number(e.target.value.replace(/\D/g, "")) || 0)} /></div>
@@ -140,8 +145,9 @@ export function OrgPoliciesSection() {
           <div className="flex flex-wrap items-center gap-3 border-t border-border-default pt-3">
             <p className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[11.5px] text-text-tertiary"><ShieldCheck className="size-3.5" />
               {q.data?.changedAt ? `Changed ${relativeTime(q.data.changedAt)}${q.data.changedBy ? ` by ${q.data.changedBy.name}` : ""}` : "Defaults"}</p>
-            <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save policies"}</Button>
+            {!locked && <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save policies"}</Button>}
           </div>
+          </fieldset>
         </form>
       )}
     </section>

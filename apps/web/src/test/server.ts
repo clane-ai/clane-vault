@@ -21,6 +21,8 @@ export const server = setupServer(
   http.get("/api/v1/admin/health", () => HttpResponse.json({ members: [] })),
   http.get("/api/v1/admin/events", () => HttpResponse.json({ events: [], nextBefore: null })),
   http.get("/api/v1/admin/events/actions", () => HttpResponse.json({ actions: [] })),
+  // Billing is off unless a test says so (hosted plans: docs/plans.md).
+  http.get("/api/v1/org/plan", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   // Provisioning (docs/provisioning.md): no invitations, no checklist and domain auto-join off unless a test says so.
   http.get("/api/v1/admin/invites", () => HttpResponse.json({ invites: [], cap: { perDay: 50, sentToday: 0, remaining: 50 }, counts: { pending: 0, expired: 0 }, emailConfigured: false, hostedMode: false })),
   http.get("/api/v1/admin/onboarding", () => HttpResponse.json({ show: false, dismissed: false, done: 0, total: 5, steps: [] })),

@@ -4,10 +4,11 @@ import { z } from "zod";
 import { logEvent } from "../lib/events.js";
 import { INVITE_TTL_MS } from "../lib/invites.js";
 import { isInstanceAdmin } from "../lib/orgs.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies, readRiskIgnored, RISK_IGNORED } from "../lib/policies.js";
 import { isPublicMailDomain } from "../lib/publicMailDomains.js";
 import { ALERTS, alertDef, computeBenchmarks, computeScore, DAY_MS, HEALTH_AT_RISK_SCORE, INACTIVE_ADMIN_DAYS, isBenchmarkKey, STORAGE_ALERT_RATIO, trendPercent, WIDE_DOWNLOAD_ALERT, WINDOW_DAYS } from "../lib/risk.js";
-import { attachmentConfig, MIB, orgUsage } from "../lib/attachments/quota.js";
+import { attachmentConfig, chargeQuota, orgUsage } from "../lib/attachments/quota.js";
 import { csvCell } from "./events.js";
 
 /** One active member of the org, as the dashboard sees them: metadata and counts only. */
@@ -123,7 +124,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const [ms, inv, org, ssoDomains, orgEmail, emailAny, instanceAdmin, alertRows] = await Promise.all([
       members(orgId), pendingInvites(orgId),
-      app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { policies: true, adminRecoveryEnabled: true, sso: { select: { id: true } } } }),
+      app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { ...PLAN_SELECT, policies: true, adminRecoveryEnabled: true, sso: { select: { id: true } } } }),
       app.prisma.ssoDomain.findMany({ where: { orgId }, select: { verifiedAt: true } }),
       app.prisma.emailSettings.findUnique({ where: { orgId }, select: { provider: true, m365AuthMode: true, m365ReconnectAt: true } }),
       app.mail.configured(orgId),
@@ -134,9 +135,9 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     const storageUsed = att.enabled ? await orgUsage(app.prisma, orgId) : 0;
     const storageFiles = att.enabled ? Number((await app.prisma.$queryRaw<{ n: bigint }[]>`SELECT COUNT(a.id)::bigint AS n FROM "Attachment" a JOIN "Record" r ON r.id = a."recordId"
       JOIN "Folder" f ON f.id = r."folderId" WHERE a.state = 'ready' AND f.kind = 'team' AND f."orgId" = ${orgId}::uuid`)[0]?.n ?? 0) : 0;
-    const storage = { used: storageUsed, quota: att.orgQuotaMb * MIB, files: storageFiles, alertRatio: STORAGE_ALERT_RATIO, enabled: att.enabled };
+    const storage = { used: storageUsed, quota: await chargeQuota(app.prisma, att, { kind: "org", orgId }), files: storageFiles, alertRatio: STORAGE_ALERT_RATIO, enabled: att.enabled };
     const lastBackup = instanceAdmin ? await app.prisma.backupRun.findFirst({ where: { status: "success" }, orderBy: { startedAt: "desc" }, select: { finishedAt: true, startedAt: true, bytes: true, attachmentBytes: true } }) : null;
-    const policies = readPolicies(org.policies);
+    const policies = readPolicies(org.policies, getEntitlements(app.config, org));
     const ignored = readRiskIgnored(org.policies);
     const d30 = since(WINDOW_DAYS, now.getTime()), d90 = since(INACTIVE_ADMIN_DAYS, now.getTime());
     const admins = ms.filter((m) => m.role !== "member");
@@ -192,10 +193,10 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
     health: m.score === null ? null : { score: m.score, weak: m.weak, reused: m.reused, old: m.old, breached: m.breached, reportedAt: iso(m.reportedAt), recent: m.reportedAt! >= d30 },
   });
 
-  app.get("/", async (req) => overview(req));
+  app.get("/", { preHandler: app.requireEntitlement("risk") }, async (req) => overview(req));
 
   /** The tiles' drill-down: every active member with their metrics, and the pending invitations. */
-  app.get("/members", async (req) => {
+  app.get("/members", { preHandler: app.requireEntitlement("risk") }, async (req) => {
     const orgId = req.org!.id;
     const d30 = since(WINDOW_DAYS);
     const [ms, inv] = await Promise.all([members(orgId), pendingInvites(orgId)]);
@@ -210,7 +211,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
       .send([header.join(","), ...rows.map((r) => r.map(csvCell).join(","))].join("\r\n") + "\r\n");
 
   /** A tile's drill-down as CSV (`tile`, and `has` = yes/no to keep only the members with or without it). */
-  app.get("/members.csv", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/members.csv", { preHandler: app.requireEntitlement("risk"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const q = csvQuery.parse(req.query);
     const orgId = req.org!.id;
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "admin.risk_export", ip: req.ip, meta: { what: "members", ...q } });
@@ -228,7 +229,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** The alerts table as CSV. */
-  app.get("/alerts.csv", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/alerts.csv", { preHandler: app.requireEntitlement("risk"), config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const orgId = req.org!.id;
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "admin.risk_export", ip: req.ip, meta: { what: "alerts" } });
     const rows = await alerts(orgId, new Date());
@@ -237,7 +238,7 @@ export const riskAdminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** One alert in the last 30 days, per person: how often they did it (actor) and how often it was done to them (target). */
-  app.get("/alerts/:action/members", async (req, reply) => {
+  app.get("/alerts/:action/members", { preHandler: app.requireEntitlement("risk") }, async (req, reply) => {
     const { action } = z.object({ action: z.string().max(64) }).parse(req.params);
     const def = alertDef(action);
     if (!def) return reply.code(404).send({ error: "not_found" });

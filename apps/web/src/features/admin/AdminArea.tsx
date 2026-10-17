@@ -26,6 +26,7 @@ import { OrgStorageSection, ServerStorageSection } from "./StoragePages";
 import RiskPage from "./risk/RiskPage";
 import { CustomerOrgsSection } from "./CustomerOrgs";
 import { ResetAuthenticatorCard } from "./ResetAuthenticator";
+import { PlanGate, TrialLine } from "./PlanLock";
 
 /**
  * The Admin sub-navigation: the active org's pages (/o/:org/admin/...) for its owners and admins, Server (/server/...)
@@ -95,7 +96,7 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
   }
   if (section === null && !mobile) return <Navigate to={first.to} replace />;
   const back = section === "people" && detailId ? { to: paths.admin("people"), label: "People" } : section === "groups" && detailId ? { to: paths.admin("groups"), label: "Groups" } : undefined;
-  const page = section === "risk" ? <RiskPage />
+  const page = section === "risk" ? <PlanGate feature="risk"><RiskPage /></PlanGate>
     : section === "people" ? (detailId ? <MemberPage key={detailId} userId={detailId} folders={folders} /> : <PeoplePage pendingReady={pendingReady} onOpenMigrate={() => navigate(paths.admin("migrate"))} />)
     : section === "groups" ? (detailId ? <GroupPage key={detailId} groupId={detailId} folders={folders} /> : <SectionPage title="Groups"><GroupsSection /></SectionPage>)
     : section === "events" ? <EventLogPage />
@@ -114,5 +115,5 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
     : section === "server/storage" ? <SectionPage title="Storage" sub="This server" wide><ServerStorageSection /></SectionPage>
     : section === "server/backups" ? <BackupsPage /> : null;
   // The sub-navigation marks the list for its detail pages (a member is under People).
-  return <SectionLayout title="Admin" base={org && orgAdmin ? paths.admin() : "/server"} groups={groups} active={section} mobile={mobile} back={back}>{page}</SectionLayout>;
+  return <SectionLayout title="Admin" base={org && orgAdmin ? paths.admin() : "/server"} groups={groups} active={section} mobile={mobile} back={back}>{orgAdmin && section && !isServerSection(section) && <TrialLine />}{page}</SectionLayout>;
 }

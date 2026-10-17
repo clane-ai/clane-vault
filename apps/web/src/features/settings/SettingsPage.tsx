@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, HeartPulse, KeyRound, LifeBuoy, MonitorSmartphone, Puzzle, ShieldAlert, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { LockLine } from "@/features/admin/PlanLock";
+import { useOrgPlan } from "@/features/admin/plan";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { ApiError } from "@/lib/api";
@@ -246,6 +248,20 @@ export function AdminRecoverySection() {
     onSuccess: (d) => { qc.setQueryData(KEY, d); void qc.invalidateQueries({ queryKey: ["security"] }); void qc.invalidateQueries({ queryKey: ["admin-recovery-requests"] }); },
   });
   const s = q.data?.adminRecovery;
+  const plan = useOrgPlan();
+  if (plan.isPending) return null;
+  // The server reads a stored "on" as off on Team, so offer the always-allowed turn-off rather than a switch.
+  if (plan.data?.entitlements.features.adminRecovery === false) return (
+    <section className="flex flex-col gap-3" aria-label="Admin account recovery">
+      <h2 className={h2}>Account recovery in this organisation</h2>
+      <div className={cn(card, "flex flex-col gap-3")}>
+        <LockLine />
+        <p className="text-[13px] text-text-secondary">If admin recovery was switched on before, you can still turn it off. That deletes every escrowed key and ends open reset requests.</p>
+        <div><Button type="button" variant="outline" size="sm" disabled={set.isPending}
+          onClick={() => set.mutate(false, { onSuccess: () => toast.success("Admin account recovery is off; escrows deleted"), onError: () => toast.error("Couldn't change the setting. Try again.") })}>Turn off admin recovery</Button></div>
+      </div>
+    </section>
+  );
   return (
     <section className="flex flex-col gap-3" aria-label="Admin account recovery">
       <h2 className={h2}>Account recovery in this organisation</h2>

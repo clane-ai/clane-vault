@@ -5,6 +5,7 @@ import { logEvent } from "../lib/events.js";
 import { privateLockGuard } from "../lib/privateLock.js";
 import { revokeLinksForRecords, revokeLinksOfLostAccess } from "../lib/links.js";
 import { isPublicKeyB64, liveKeys, needsAccess, recipientKeyOk } from "../lib/membershipKeys.js";
+import { seatOverage } from "../lib/seats.js";
 import { attachmentConfig, checkQuota, lockQuota, recordUsage, type Charge, type QuotaRefusal } from "../lib/attachments/quota.js";
 import { tombstoneAttachments } from "../lib/attachments/sweep.js";
 
@@ -51,6 +52,8 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     if (team) {
       if (!canEdit(team.permission)) return reply.code(403).send({ error: "forbidden" });
       if (!b.ownerWrappedRecordKey) return reply.code(400).send({ error: "invalid_request", issues: ["ownerWrappedRecordKey"] });
+      const over = ctx(req) ? await seatOverage(app.prisma, app.config, ctx(req)!) : null;
+      if (over) return reply.code(402).send({ error: "seat_limit", ...over });
     } else if (!(await ownFolder(b.folderId, userId))) return reply.code(404).send({ error: "folder_not_found" });
     if (await app.prisma.record.findUnique({ where: { id: b.id } })) return reply.code(409).send({ error: "exists" });
     const access = team
@@ -152,6 +155,9 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
       if (!b.folderWrappedRecordKey) return reply.code(400).send({ error: "invalid_request", issues: ["folderWrappedRecordKey"] });
     } else if (!(await ownFolder(b.folderId, userId))) return reply.code(404).send({ error: "folder_not_found" });
     if (fromOrg && !team) return reply.code(409).send({ error: "org_record" });
+    // Into a team folder from outside one adds a record to the org's shared space.
+    const seatOver = team && !fromOrg ? await seatOverage(app.prisma, app.config, ctx(req)!) : null;
+    if (seatOver) return reply.code(402).send({ error: "seat_limit", ...seatOver });
     // Into a team folder the record joins that org: direct shares made in other orgs (or none) end.
     const foreign = team ? { recordId: id, holderType: "user" as const, permission: { not: "owner" as const }, OR: [{ orgId: null }, { orgId: { not: ctx(req)! } }] } : null;
     // Files are charged to the record's org (team folder) or its owner: a move re-charges them, and is refused when the

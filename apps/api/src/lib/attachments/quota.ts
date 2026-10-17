@@ -1,5 +1,6 @@
 import { DEFAULT_ATTACHMENTS, demoAttachments, type AttachmentConfig, type Config } from "../../config.js";
 import type { Db } from "../access.js";
+import { getPersonalEntitlements, orgEntitlements } from "../plans.js";
 
 /**
  * Attachment quotas and accounting (docs/design/2026-10-12-attachments.md §3.5). Usage is SUM(size) of
@@ -12,8 +13,8 @@ export const MIB = 1024 * 1024;
 export const QUOTA_LOCK = 7342;
 
 /** The attachment settings in force: a demo instance's are capped small (docs/demo.md). */
-export const attachmentConfig = (c: Pick<Config, "attachments" | "demo">): AttachmentConfig => {
-  const a = c.attachments ?? DEFAULT_ATTACHMENTS;
+export const attachmentConfig = (c: Pick<Config, "attachments" | "demo" | "billingMode">): AttachmentConfig => {
+  const a = { ...(c.attachments ?? DEFAULT_ATTACHMENTS), billingMode: c.billingMode };
   return c.demo ? demoAttachments(a) : a;
 };
 
@@ -70,6 +71,16 @@ export async function lockQuota(tx: Db, charge: Charge): Promise<void> {
   else await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${charge.userId}::uuid FOR UPDATE`;
 }
 
+/** Bytes a charge may hold: the env per-org / per-user cap, or under hosted plans the pooled plan storage instead (per active member for an org, per user otherwise). */
+export async function chargeQuota(db: Db, cfg: AttachmentConfig, charge: Charge): Promise<number> {
+  const cap = (charge.kind === "org" ? cfg.orgQuotaMb : cfg.userQuotaMb) * MIB;
+  if (cfg.billingMode !== "hosted") return cap;
+  const perSeat = charge.kind === "org" ? (await orgEntitlements(db, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
+  if (perSeat === null) return cap;
+  const seats = charge.kind === "org" ? Math.max(1, await db.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
+  return perSeat * seats;
+}
+
 export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }
 
 /**
@@ -78,8 +89,8 @@ export interface QuotaRefusal { scope: QuotaScope; used: number; quota: number }
  */
 export async function checkQuota(tx: Db, cfg: AttachmentConfig, charge: Charge, add: number, o: { instance?: boolean } = {}): Promise<QuotaRefusal | null> {
   const [used, quota, scope] = charge.kind === "org"
-    ? [await orgUsage(tx, charge.orgId), cfg.orgQuotaMb * MIB, "org" as const]
-    : [await userUsage(tx, charge.userId), cfg.userQuotaMb * MIB, "user" as const];
+    ? [await orgUsage(tx, charge.orgId), await chargeQuota(tx, cfg, charge), "org" as const]
+    : [await userUsage(tx, charge.userId), await chargeQuota(tx, cfg, charge), "user" as const];
   if (used + add > quota) return { scope, used, quota };
   if (o.instance === false) return null;
   const all = await instanceUsage(tx);

@@ -3,6 +3,7 @@ import { privateLockGuard } from "../lib/privateLock.js";
 import { z } from "zod";
 import { canEdit } from "../lib/access.js";
 import { isUniqueViolation } from "../lib/links.js";
+import { seatOverage } from "../lib/seats.js";
 import { recordType } from "./records.js";
 
 const envelope = z.string().startsWith("v1.").max(65536);
@@ -41,6 +42,8 @@ export const recordBatchRoutes: FastifyPluginAsync = async (app) => {
       }
       if (mine.length + teams.size !== folderIds.length) return reply.code(404).send({ error: "folder_not_found" });
     }
+    const over = teams.size ? await seatOverage(app.prisma, app.config, req.org!.id) : null;
+    if (over) return reply.code(402).send({ error: "seat_limit", ...over });
     const missingOwnerWrap = records.findIndex((r) => r.folderId && teams.has(r.folderId) && !r.ownerWrappedRecordKey);
     if (missingOwnerWrap >= 0) return reply.code(400).send({ error: "invalid_request", issues: [`records.${missingOwnerWrap}.ownerWrappedRecordKey`] });
     if (await app.prisma.record.count({ where: { id: { in: ids } } })) return reply.code(409).send({ error: "exists" });

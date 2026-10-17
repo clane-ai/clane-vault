@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { logEvent } from "../lib/events.js";
+import { orgEntitlements } from "../lib/plans.js";
 
 const filters = z.object({
   actor: z.string().uuid().optional(),
@@ -14,11 +15,12 @@ const filters = z.object({
 const page = filters.extend({ before: z.string().regex(/^\d{1,19}$/).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
 
 type Filters = z.infer<typeof filters>;
-const whereOf = (orgId: string, f: Filters): Prisma.EventWhereInput => ({
+/** Events older than the plan's retention stay stored but aren't shown: `from` is clamped to `minAt`. */
+const whereOf = (orgId: string, f: Filters, minAt: Date | null): Prisma.EventWhereInput => ({
   orgId,
   ...(f.actor ? { actorId: f.actor } : {}),
   ...(f.action ? (f.action.endsWith(".") ? { action: { startsWith: f.action } } : { action: f.action }) : {}),
-  ...(f.from || f.to ? { at: { ...(f.from ? { gte: new Date(f.from) } : {}), ...(f.to ? { lte: new Date(f.to) } : {}) } } : {}),
+  ...(f.from || f.to || minAt ? { at: { ...(f.from || minAt ? { gte: new Date(Math.max(f.from ? Date.parse(f.from) : 0, minAt?.getTime() ?? 0)) } : {}), ...(f.to ? { lte: new Date(f.to) } : {}) } } : {}),
 });
 
 const select = { id: true, at: true, action: true, actorId: true, targetUserId: true, recordId: true, folderId: true, ip: true, userAgent: true, meta: true } as const;
@@ -39,9 +41,14 @@ export const eventAdminRoutes: FastifyPluginAsync = async (app) => {
     return new Map((await app.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true } })).map((u) => [u.id, u]));
   }
 
+  const minAtOf = async (orgId: string) => {
+    const days = (await orgEntitlements(app.prisma, app.config, orgId)).eventLogDays;
+    return days === null ? null : new Date(Date.now() - days * 864e5);
+  };
+
   app.get("/", async (req) => {
     const q = page.parse(req.query);
-    const rows = await app.prisma.event.findMany({ where: { ...whereOf(req.org!.id, q), ...(q.before ? { id: { lt: BigInt(q.before) } } : {}) }, orderBy: { id: "desc" }, take: q.limit + 1, select });
+    const rows = await app.prisma.event.findMany({ where: { ...whereOf(req.org!.id, q, await minAtOf(req.org!.id)), ...(q.before ? { id: { lt: BigInt(q.before) } } : {}) }, orderBy: { id: "desc" }, take: q.limit + 1, select });
     const more = rows.length > q.limit;
     const list = rows.slice(0, q.limit);
     const who = await people(list);
@@ -54,14 +61,14 @@ export const eventAdminRoutes: FastifyPluginAsync = async (app) => {
 
   /** The actions that occur in this org's log (for the filter). */
   app.get("/actions", async (req) => {
-    const rows = await app.prisma.event.findMany({ where: { orgId: req.org!.id }, distinct: ["action"], select: { action: true }, orderBy: { action: "asc" } });
+    const rows = await app.prisma.event.findMany({ where: whereOf(req.org!.id, {}, await minAtOf(req.org!.id)), distinct: ["action"], select: { action: true }, orderBy: { action: "asc" } });
     return { actions: rows.map((r) => r.action) };
   });
 
   /** Streams the filtered log as CSV, newest first, in pages (no size limit, constant memory). */
-  app.get("/export.csv", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/export.csv", { preHandler: app.requireEntitlement("eventExport"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const f = filters.parse(req.query);
-    const where = whereOf(req.org!.id, f);
+    const where = whereOf(req.org!.id, f, await minAtOf(req.org!.id));
     await logEvent(app.prisma, { orgId: req.org!.id, actorId: req.auth.userId, action: "admin.events_export", ip: req.ip, meta: { ...f } });
     async function* lines() {
       yield `${HEADER.join(",")}\r\n`;

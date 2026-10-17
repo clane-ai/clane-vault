@@ -3,8 +3,10 @@ import { z } from "zod";
 import { accessFor, canEdit, isUniqueViolation } from "../lib/access.js";
 import { logEvent } from "../lib/events.js";
 import { BURN } from "../lib/links.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { privateLockGuard } from "../lib/privateLock.js";
+import { seatOverage } from "../lib/seats.js";
 import { attachmentConfig, chargeOf, checkQuota, dailyUploaded, lockQuota, MIB, recordUsage, type QuotaRefusal } from "../lib/attachments/quota.js";
 import { sha256Hex, storeFor } from "../lib/attachments/store.js";
 import { UPLOAD_TTL_MS } from "../lib/attachments/sweep.js";
@@ -116,7 +118,8 @@ export const attachmentRoutes: FastifyPluginAsync = async (app) => {
     const plain = plaintextSize(b.size, b.chunkCount);
     if (plain === null) return reply.code(400).send({ error: "invalid_request", issues: ["size"] });
     // The org the access comes through decides (like one-time links); a private record of the caller's own: none.
-    const policy = a.orgId ? readPolicies((await app.prisma.organization.findUnique({ where: { id: a.orgId }, select: { policies: true } }))?.policies).attachments : null;
+    const po = a.orgId ? await app.prisma.organization.findUnique({ where: { id: a.orgId }, select: { ...PLAN_SELECT, policies: true } }) : null;
+    const policy = a.orgId ? readPolicies(po?.policies, po ? getEntitlements(app.config, po) : undefined).attachments : null;
     if (policy && !policy.allowed) return reply.code(403).send({ error: "attachments_disabled" });
     const maxMb = Math.min(cfg.maxFileMb, policy?.maxFileMb ?? Infinity);
     if (plain > maxMb * MIB) return reply.code(413).send({ error: "file_too_large", max: maxMb });
@@ -132,6 +135,8 @@ export const attachmentRoutes: FastifyPluginAsync = async (app) => {
         if (!charge) { refused = { code: 404, body: { error: "not_found" } }; return; }
         charged = charge;
         await lockQuota(tx, charge);
+        const over = charge.kind === "org" ? await seatOverage(tx, app.config, charge.orgId) : null;
+        if (over) { refused = { code: 402, body: { error: "seat_limit", ...over } }; return; }
         if (await tx.attachment.findUnique({ where: { id: b.id }, select: { id: true } })) { refused = { code: 409, body: { error: "exists" } }; return; }
         const usage = await recordUsage(tx, id);
         if (usage.files >= cfg.maxPerRecord) { refused = { code: 409, body: { error: "too_many_files", max: cfg.maxPerRecord } }; return; }

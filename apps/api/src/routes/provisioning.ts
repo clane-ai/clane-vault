@@ -6,6 +6,7 @@ import { logEvent } from "../lib/events.js";
 import { requestDomainJoin } from "../lib/domainJoin.js";
 import { dailyInviteCap, INVITE_TTL_MS, invitesSentToday, resendInvite, sendNewInvite, type ResendResult } from "../lib/invites.js";
 import { cleanName, nameProblem } from "../lib/names.js";
+import { SeatLimitError } from "../lib/seats.js";
 import { csvCell } from "./events.js";
 
 /**
@@ -20,7 +21,7 @@ const MAX_BULK = 500;
 const idParam = z.object({ id: z.string().uuid() });
 
 /** Each row's outcome. `valid` only in a dry run (the preview); `invited` after sending. */
-export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "failed";
+export type BulkStatus = "valid" | "invited" | "invalid_email" | "invalid_role" | "unknown_group" | "duplicate" | "member" | "already_invited" | "cooldown" | "over_cap" | "seat_limit" | "failed";
 
 const bulkBody = z.object({
   rows: z.array(z.object({
@@ -156,7 +157,10 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
           if (out.already) { r.status = "member"; continue; }
           r.status = "invited"; r.emailed = out.emailed;
           if (!app.config.hostedMode && out.inviteUrl) r.inviteUrl = out.inviteUrl;
-        } catch (e) { req.log.warn({ err: e }, "bulk invite row failed"); r.status = "failed"; }
+        } catch (e) {
+          if (e instanceof SeatLimitError) { r.status = "seat_limit"; continue; }
+          req.log.warn({ err: e }, "bulk invite row failed"); r.status = "failed";
+        }
       }
     }
     const counts: Partial<Record<BulkStatus, number>> = {};
@@ -196,11 +200,12 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
     const orgId = orgOf(req);
     if (app.config.hostedMode && !(await app.mail.configured(orgId))) return reply.code(409).send({ error: "email_required" });
     const list = (await pendingInvites(orgId)).filter((i) => b.includeExpired || !i.expired).sort((a, c) => (a.lastSentAt ?? "").localeCompare(c.lastSentAt ?? ""));
-    const results: { id: string; email: string; status: "resent" | "too_soon" | "invite_limit" | "not_found" | "email_required"; emailed?: boolean; inviteUrl?: string }[] = [];
+    const results: { id: string; email: string; status: "resent" | "seat_limit" | "too_soon" | "invite_limit" | "not_found" | "email_required"; emailed?: boolean; inviteUrl?: string }[] = [];
     let capped = false;
     for (const i of list) {
       if (capped) { results.push({ id: i.id, email: i.email, status: "invite_limit" }); continue; }
-      const r = await resendInvite(app, orgId, i.id, req.auth.userId, req.log);
+      const r = await resendInvite(app, orgId, i.id, req.auth.userId, req.log).catch((e) => { if (e instanceof SeatLimitError) return "seat_limit" as const; throw e; });
+      if (r === "seat_limit") { results.push({ id: i.id, email: i.email, status: "seat_limit" }); continue; }
       if (r.ok) results.push({ id: r.id, email: r.email, status: "resent", emailed: r.emailed, ...(r.inviteUrl ? { inviteUrl: r.inviteUrl } : {}) });
       else { results.push({ id: i.id, email: i.email, status: r.error }); if (r.error === "invite_limit") capped = true; }
     }
@@ -267,6 +272,7 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/settings/domain-join", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     if (req.org!.role !== "owner") return reply.code(403).send({ error: "owner_only" });
     const b = z.object({ enabled: z.boolean(), groupIds: z.array(z.string().uuid()).max(50).default([]) }).parse(req.body);
+    if (b.enabled && !(await app.hasEntitlement(req, reply, "domains"))) return;
     const orgId = orgOf(req);
     const ids = [...new Set(b.groupIds)];
     if (ids.length && (await app.prisma.group.count({ where: { orgId, id: { in: ids } } })) !== ids.length) return reply.code(400).send({ error: "group_not_found" });

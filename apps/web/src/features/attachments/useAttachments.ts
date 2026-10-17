@@ -62,6 +62,7 @@ export function useAttach(record: VaultRecord | null) {
   const qc = useQueryClient();
   const scope = useScope();
   const limits = useAttachmentLimits();
+  const member = useSession().org?.role === "member";
   const pending = useUploads(record?.id);
   return useCallback((files: File[]) => {
     if (!record) return;
@@ -74,9 +75,9 @@ export function useAttach(record: VaultRecord | null) {
         existingBytes: existing.reduce((s, a) => s + plainSize(a), 0), pending: queued });
       if (why) { toast.error(why); continue; }
       queued.push({ size: file.size });
-      startUpload({ api: oapi, recordId: record.id, recordKey: record.recordKey, file, onDone: () => { void qc.invalidateQueries({ queryKey: ["vault", scope] }); } });
+      startUpload({ api: oapi, recordId: record.id, recordKey: record.recordKey, file, member, onDone: () => { void qc.invalidateQueries({ queryKey: ["vault", scope] }); } });
     }
-  }, [record, limits, pending, oapi, qc, scope]);
+  }, [record, limits, member, pending, oapi, qc, scope]);
 }
 
 /** The source of one file's chunks on a record (unwrapping its key under the record key). */

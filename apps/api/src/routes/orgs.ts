@@ -7,9 +7,13 @@ import { applyPendingGroups, coolDown, dropPendingGroups, INVITE_TTL_MS, invited
 import { displayName } from "../lib/names.js";
 import { defaultOrg, dropInstanceAdminIfGone, isInstanceAdmin, lockUser, offboard, orgsOf, slugFor } from "../lib/orgs.js";
 import { startAdminAge } from "./auth.js";
+import { getEntitlements, PLAN_SELECT } from "../lib/plans.js";
 import { readPolicies } from "../lib/policies.js";
 import { logoVersion } from "../lib/images.js";
 import { rawImageBodies, readLogo, sendLogo } from "./brand.js";
+import { TRIAL_MS } from "../lib/plans.js";
+import planRoutes from "./plan.js";
+import { assertSeat, lockSeats } from "../lib/seats.js";
 import { hashToken } from "../lib/tokens.js";
 
 const orgName = displayName;
@@ -27,14 +31,14 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
   app.get("/me/orgs", async (req) => {
     const me = req.auth.userId;
     const invited = await app.prisma.membership.findMany({ where: { userId: me, status: "invited", ...liveInvitation() }, orderBy: { createdAt: "asc" },
-      select: { role: true, createdAt: true, invitedById: true, org: { select: { id: true, name: true, policies: true } } } });
+      select: { role: true, createdAt: true, invitedById: true, org: { select: { ...PLAN_SELECT, id: true, name: true, policies: true } } } });
     const inviters = new Map((await app.prisma.user.findMany({ where: { id: { in: invited.map((m) => m.invitedById).filter((x): x is string => !!x) } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
     const instanceAdmin = await isInstanceAdmin(app.prisma, app.config, me);
     return {
-      orgs: await orgsOf(app.prisma, me),
+      orgs: await orgsOf(app.prisma, app.config, me),
       invitations: invited.map((m) => {
         // The org's master password rule: the app checks it before accepting (docs/policies.md).
-        const p = readPolicies(m.org.policies);
+        const p = readPolicies(m.org.policies, getEntitlements(app.config, m.org));
         return { orgId: m.org.id, orgName: m.org.name, role: m.role, invitedBy: m.invitedById ? inviters.get(m.invitedById) ?? null : null, invitedAt: m.createdAt.toISOString(),
           passwordPolicy: { minLength: p.minPasswordLength, minScore: p.minPasswordScore } };
       }),
@@ -52,9 +56,11 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const me = req.auth.userId;
     const u = await app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { id: true, name: true, email: true } });
     const ended = await app.prisma.$transaction(async (tx) => {
+      await lockSeats(tx, app.config, orgId);
       await lockUser(tx, me);
       const inv = await tx.membership.findFirst({ where: { orgId, userId: me, status: "invited", ...liveInvitation() }, select: { role: true } });
       if (!inv) return null;
+      await assertSeat(tx, app.config, orgId, 1, u.email); // a no-op while the invitation still holds its seat
       let role = inv.role;
       if (role === "owner") {
         // An owner invitation (a customer organisation, docs/provisioning.md): one owner per organisation, so it counts
@@ -73,7 +79,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     if (ended === "org_limit") return reply.code(409).send({ error: "org_limit" });
     await startAdminAge(app, u, req.log);
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "org.join" });
-    return { orgs: await orgsOf(app.prisma, req.auth.userId) };
+    return { orgs: await orgsOf(app.prisma, app.config, req.auth.userId) };
   });
 
   /**
@@ -89,9 +95,11 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const inv = await app.prisma.invite.findUnique({ where: { tokenHash: hashToken(token) }, select: { id: true, orgId: true, email: true, role: true, invitedById: true, source: true, acceptedAt: true, expiresAt: true, org: { select: { name: true } } } });
     if (!inv || inv.acceptedAt || inv.expiresAt < new Date() || inv.email !== me.email) return reply.code(404).send({ error: "not_found" });
     const state = await app.prisma.$transaction(async (tx) => {
+      await lockSeats(tx, app.config, inv.orgId);
       await lockUser(tx, me.id);
       const m = await tx.membership.findUnique({ where: { orgId_userId: { orgId: inv.orgId, userId: me.id } }, select: { status: true } });
       if (m?.status === "disabled") return "disabled" as const;
+      await assertSeat(tx, app.config, inv.orgId, 1, me.email);
       const now = new Date();
       // Single use: a link claimed twice (or raced) counts once.
       const n = await tx.invite.updateMany({ where: { id: inv.id, acceptedAt: null }, data: { acceptedAt: now, emailCodeHash: null } });
@@ -147,7 +155,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const org = await app.prisma.$transaction(async (tx) => {
       await lockUser(tx, me);
-      return tx.organization.create({ data: { name, slug: slugFor(name),
+      return tx.organization.create({ data: { name, slug: slugFor(name), ...(app.config.billingMode === "hosted" ? { trialEndsAt: new Date(+now + TRIAL_MS) } : {}),
         memberships: { create: { userId: me, role: "owner", status: "active", adminSince: now, joinedAt: now } } } });
     });
     await logEvent(app.prisma, { orgId: org.id, actorId: req.auth.userId, action: "org.create" });
@@ -166,6 +174,8 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
       if (req.org?.role !== "owner" && req.org?.role !== "admin") await reply.code(403).send({ error: "forbidden" });
     };
     const meta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
+
+    if (app.config.billingMode === "hosted") await o.register(planRoutes);
 
     o.get("/org", async (req) => {
       const id = req.org!.id;
@@ -192,7 +202,7 @@ export const orgRoutes: FastifyPluginAsync = async (app) => {
     /** Owners and admins set the org's logo: PNG, JPEG or WebP bytes as the request body (docs/branding.md). */
     await o.register(async (logo) => {
       rawImageBodies(logo);
-      logo.put("/org/logo", { preHandler: ownerOrAdmin, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+      logo.put("/org/logo", { preHandler: [ownerOrAdmin, app.requireEntitlement("orgLogo")], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
         const up = await readLogo(req, reply);
         if (!up) return;
         const orgId = req.org!.id;

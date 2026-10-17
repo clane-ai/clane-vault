@@ -4,7 +4,7 @@ import { z } from "zod";
 import { secretBox } from "../lib/secretBox.js";
 import { logEvent } from "../lib/events.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
-import { adminRecoveryEnabled, adminSinceIn, approverOldEnough, BURN_REQUEST, expireOpenRequests, hashSecretValue, OPEN, RECOVERY_LINK_TTL_MS, sweepRecoveryRequests } from "../lib/recovery.js";
+import { adminRecoveryEnabled, adminRecoveryOn, adminSinceIn, approverOldEnough, BURN_REQUEST, expireOpenRequests, hashSecretValue, OPEN, RECOVERY_LINK_TTL_MS, sweepRecoveryRequests } from "../lib/recovery.js";
 import { signApproval, verifyToken } from "../lib/tokens.js";
 import { consumeTotp } from "../lib/totp.js";
 import { adminRecoveryOnEmail, recoveryAdminActionEmail, sendEmail } from "../lib/email.js";
@@ -30,7 +30,7 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
       app.prisma.membershipEscrow.count({ where: { orgId } }),
       app.prisma.membershipEscrow.groupBy({ by: ["userId"], where: { orgId } }).then((g) => g.length),
     ]);
-    return { adminRecovery: { enabled: s?.adminRecoveryEnabled ?? false, changedAt: s?.adminRecoveryChangedAt?.toISOString() ?? null, changedBy: by }, escrows: { total: escrows, members } };
+    return { adminRecovery: { enabled: !!s && adminRecoveryOn(app.config, s), changedAt: s?.adminRecoveryChangedAt?.toISOString() ?? null, changedBy: by }, escrows: { total: escrows, members } };
   };
 
   app.get("/settings", async (req) => settingsView(req.org!.id));
@@ -41,9 +41,10 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
    */
   app.put("/settings/admin-recovery", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { enabled, code, authKey } = z.object({ enabled: z.boolean(), code: z.string().max(10).optional(), authKey: z.string().max(4096).optional() }).parse(req.body);
+    if (enabled && !(await app.hasEntitlement(req, reply, "adminRecovery"))) return;
     const me = await app.prisma.user.findUniqueOrThrow({ where: { id: req.auth.userId } });
     const orgId = req.org!.id;
-    if (enabled && !(await adminRecoveryEnabled(app.prisma, orgId))) {
+    if (enabled && !(await adminRecoveryEnabled(app.prisma, app.config, orgId))) {
       const locked = lockedFor(me);
       if (locked) return reply.code(423).send({ error: "locked", retryAfterSeconds: locked });
       if (!authKey || !(await argon2.verify(me.authHash, authKey).catch(() => false))) {
@@ -111,7 +112,7 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
     const { code } = z.object({ code: z.string().max(10) }).parse(req.body);
     const me = req.auth.userId;
     const orgId = req.org!.id;
-    if (!(await adminRecoveryEnabled(app.prisma, orgId))) return reply.code(409).send({ error: "policy_off" });
+    if (!(await adminRecoveryEnabled(app.prisma, app.config, orgId))) return reply.code(409).send({ error: "policy_off" });
     const r = await app.prisma.recoveryRequest.findFirst({ where: { id, orgId }, include: { user: { select: { id: true, status: true, email: true, totpResetBy: true, totpResetAt: true } } } });
     if (!r) return reply.code(404).send({ error: "not_found" });
     if (r.status !== "pending") return reply.code(409).send({ error: "not_pending" });
@@ -153,7 +154,7 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
       if (t.sub !== me || t.rid !== id) throw new Error("wrong approval");
     } catch { return reply.code(401).send({ error: "approval_expired" }); }
     const orgId = req.org!.id;
-    if (!(await adminRecoveryEnabled(app.prisma, orgId))) return reply.code(409).send({ error: "policy_off" });
+    if (!(await adminRecoveryEnabled(app.prisma, app.config, orgId))) return reply.code(409).send({ error: "policy_off" });
     const target = await app.prisma.recoveryRequest.findFirst({ where: { id, orgId }, select: { userId: true, user: { select: { status: true, totpResetBy: true, totpResetAt: true } } } });
     if (!target) return reply.code(409).send({ error: "not_pending" });
     // The key this admin's escrow held (what the link will restore).

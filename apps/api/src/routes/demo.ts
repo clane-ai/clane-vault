@@ -76,6 +76,6 @@ export const demoRoutes: FastifyPluginAsync = async (app) => {
     await startAdminAge(app, active, req.log, meta(req));
     await logEvent(app.prisma, { orgId: own.orgId, actorId: user.id, action: "demo.session", ...meta(req), meta: { colleagues: colleagues.length } });
     const { accessToken } = await createSession(app, reply, active, meta(req).userAgent);
-    return { ...(await authView(app.prisma, accessToken, active)), colleagues };
+    return { ...(await authView(app.prisma, app.config, accessToken, active)), colleagues };
   });
 };

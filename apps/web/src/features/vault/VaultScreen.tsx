@@ -23,6 +23,7 @@ import { useAttachmentLimits, useRecordDrop } from "@/features/attachments/useAt
 import { precheck, startUpload } from "@/features/attachments/uploader";
 import { useOrgApi } from "@/lib/scope";
 import { useSpacePaths } from "@/lib/space";
+import { planMessage } from "@/features/admin/plan";
 
 type Editing = ({ mode: "create" } & NewRecordStart) | { mode: "edit"; id: string; newPassword?: string } | null;
 
@@ -75,7 +76,7 @@ export default function VaultScreen() {
       if (editing?.mode === "create") {
         const files = queue;
         const created = await v.createRecord({ folderId, body, onCreated: (id, recordKey) => {
-          for (const file of files) startUpload({ api: oapi, recordId: id, recordKey, file, onDone: () => { void v.refresh(); } });
+          for (const file of files) startUpload({ api: oapi, recordId: id, recordKey, file, member: org?.role === "member", onDone: () => { void v.refresh(); } });
         } });
         toast.success(files.length ? `Saved. Uploading ${files.length} ${files.length === 1 ? "file" : "files"}…` : "Saved");
         // The record's panel shows the uploads' progress.
@@ -93,6 +94,8 @@ export default function VaultScreen() {
     } catch (e) {
       if (e instanceof ConflictError) { toast.error(e.message); return; }
       if (e instanceof ApiError && e.code === "in_trash") { toast.error("This record is in the trash."); return; }
+      const pm = planMessage(e, org?.role === "member");
+      if (pm) throw new Error(pm);
       // The body's own limits (crypto validate): shown in the editor as they are.
       if (e instanceof Error && /too large|too long|at most \d+/.test(e.message)) throw new Error("This record is too large. Shorten long fields or notes, or remove some custom fields.");
       throw new Error("Couldn't save. Check your connection and try again.");

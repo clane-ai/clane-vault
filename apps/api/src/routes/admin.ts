@@ -4,7 +4,9 @@ import { sendEmail, twoFactorResetEmail } from "../lib/email.js";
 import { logEvent } from "../lib/events.js";
 import { canManageAccount, dropInstanceAdminIfGone, isInstanceAdmin, lockUser, offboard } from "../lib/orgs.js";
 import { coolDown, coolingDown, dailyInviteCap, dropPendingGroups, INVITE_TTL_MS, invitesSentToday, sendNewInvite } from "../lib/invites.js";
-import { expireOpenRequests } from "../lib/recovery.js";
+import { adminRecoveryOn, expireOpenRequests } from "../lib/recovery.js";
+import { PLAN_SELECT } from "../lib/plans.js";
+import { assertSeat } from "../lib/seats.js";
 import { backupRoutes } from "./backups.js";
 import { adminRecoveryRoutes } from "./adminRecovery.js";
 import { startAdminAge } from "./auth.js";
@@ -171,6 +173,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
     // A globally disabled account (from before organisations) is the account itself: same rule as a 2FA reset.
     if (globallyDisabled && !(await canManageAccount(app.prisma, app.config, req.auth.userId, id))) return reply.code(403).send({ error: "other_orgs" });
     await app.prisma.$transaction(async (tx) => {
+      await assertSeat(tx, app.config, orgId(req), 1, t.user.email);
       await lockUser(tx, id);
       // Admin age starts again: a re-enabled admin is a new approver for admin recovery.
       await tx.membership.update({ where: { orgId_userId: { orgId: orgId(req), userId: id } }, data: { status: "active", ...(t.role !== "member" ? { adminSince: new Date() } : {}) } });
@@ -217,7 +220,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
         select: { folderId: true, permission: true, directPermission: true, folder: { select: { ownerId: true } } } }),
       app.prisma.healthReport.findUnique({ where: { orgId_userId: { orgId: org, userId } }, select: { score: true, total: true, weak: true, reused: true, old: true, breached: true, reportedAt: true } }),
       app.prisma.membershipEscrow.count({ where: { orgId: org, userId } }),
-      app.prisma.organization.findUnique({ where: { id: org }, select: { adminRecoveryEnabled: true } }),
+      app.prisma.organization.findUnique({ where: { id: org }, select: { ...PLAN_SELECT, adminRecoveryEnabled: true } }),
       app.prisma.recoveryRequest.count({ where: { orgId: org, userId, status: "pending" } }),
     ]);
     return {
@@ -226,7 +229,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
       groups: groups.map((g) => g.group),
       folders: folders.map((f) => ({ id: f.folderId, permission: f.permission, direct: f.directPermission, owner: f.folder.ownerId === userId })),
       health: report ? { ...report, reportedAt: report.reportedAt.toISOString() } : null,
-      recovery: { enabled: o?.adminRecoveryEnabled ?? false, acknowledged: !!m.adminRecoveryAckAt, escrowed: escrows > 0, pendingRequest: requests > 0 },
+      recovery: { enabled: !!o && adminRecoveryOn(app.config, o), acknowledged: !!m.adminRecoveryAckAt, escrowed: escrows > 0, pendingRequest: requests > 0 },
     };
   });
 

@@ -14,6 +14,7 @@ import { useOrgApi, useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import { Chip } from "@/features/vault/people";
 import { MAX_INVITE_ROWS, rowsFromCsv, rowsFromPaste, type InviteRowInput } from "./inviteCsv";
+import { planMessage } from "./plan";
 import { STATUS_LABEL, type BulkResponse, type BulkRow } from "./provisioning";
 
 type Role = "member" | "admin";
@@ -24,7 +25,7 @@ const ERRORS: Record<string, string> = {
   group_not_found: "One of the chosen groups no longer exists. Reopen the dialog and choose again.",
   rate_limited: "Too many requests. Wait a minute and try again.",
 };
-const errorText = (e: unknown) => (e instanceof ApiError ? ERRORS[e.code] : undefined) ?? "Couldn't check the list. Try again.";
+const errorText = (e: unknown) => planMessage(e) ?? (e instanceof ApiError ? ERRORS[e.code] : undefined) ?? "Couldn't check the list. Try again.";
 
 function StatusChip({ r }: { r: BulkRow }) {
   const s = r.status === "invited" && r.emailed ? { label: "Emailed", tone: "green" as const } : STATUS_LABEL[r.status];
@@ -117,7 +118,7 @@ export function InviteDialog({ open, onOpenChange, onSent }: { open: boolean; on
       setResult(r); setStep("results"); onSent?.(r);
       const n = r.counts.invited ?? 0;
       toast.success(n === 1 ? "1 invitation sent" : `${n} invitations sent`);
-    } catch (e) { setError(e instanceof ApiError && ERRORS[e.code] ? ERRORS[e.code]! : "Couldn't send the invitations. Try again."); }
+    } catch (e) { setError(planMessage(e) ?? (e instanceof ApiError && ERRORS[e.code] ? ERRORS[e.code]! : "Couldn't send the invitations. Try again.")); }
     finally { setBusy(false); }
   }
 

@@ -76,6 +76,15 @@ describe("Org policies section", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("leaves out your own address (127.0.0.1)");
   });
 
+  it("on Team shows the policies in force read-only under the lock line", async () => {
+    server.use(http.get("/api/v1/org/plan", () => HttpResponse.json({ entitlements: { features: { policyEdit: false } } })));
+    wrap(<OrgPoliciesSection />);
+    expect(await screen.findByText("Available on the Business plan.")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Master password: minimum length")).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Offline copies" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save policies" })).toBeNull();
+  });
+
   it("is hidden from members", () => {
     session.mockReturnValueOnce({ org: { ...ORG, role: "member" }, orgs: [ORG], user: { id: "m1", name: "Mia", role: "member" } } as never);
     const { container } = wrap(<OrgPoliciesSection />);

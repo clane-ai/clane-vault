@@ -5,7 +5,8 @@ import { secretBox } from "../lib/secretBox.js";
 import { logEvent } from "../lib/events.js";
 import { lockedFor, registerFailure } from "../lib/lockout.js";
 import { recoveryRequestedEmail, recoveryUsedEmail, sendEmail } from "../lib/email.js";
-import { adminRecoveryEnabled, adminSinceIn, BURN_REQUEST, expireOpenRequests, hashSecretValue, linkIsOnlyFactor, approverOldEnough, MAX_PROOF_ATTEMPTS, OPEN, resetDelayLeft, secretValueMatches, twoPersonOk } from "../lib/recovery.js";
+import { adminRecoveryEnabled, adminRecoveryOn, adminSinceIn, BURN_REQUEST, expireOpenRequests, hashSecretValue, linkIsOnlyFactor, approverOldEnough, MAX_PROOF_ATTEMPTS, OPEN, resetDelayLeft, secretValueMatches, twoPersonOk } from "../lib/recovery.js";
+import { PLAN_SELECT } from "../lib/plans.js";
 import { consumeTotp } from "../lib/totp.js";
 import { signRecovery, signSetup, verifyToken } from "../lib/tokens.js";
 import { authView, createSession, kdfView, materialView } from "./auth.js";
@@ -47,7 +48,7 @@ export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
   const limit = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
 
   /** Whether "Ask an admin to reset my password" exists here (any organisation has it on), so it says nothing about any account. */
-  app.get("/options", async () => ({ adminRecoveryEnabled: await adminRecoveryEnabled(app.prisma) }));
+  app.get("/options", async () => ({ adminRecoveryEnabled: await adminRecoveryEnabled(app.prisma, app.config) }));
 
   /** Recovery kit: email + kit auth value (+ fresh 2FA) → the wrapped user key and a short recovery token. */
   app.post("/kit", limit(10), async (req, reply) => {
@@ -89,7 +90,7 @@ export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
     if (!user || user.status === "disabled") return done();
     const made = await app.prisma.$transaction(async (tx) => {
       await lockUser(tx, user.id);
-      const ms = await tx.membership.findMany({ where: { userId: user.id, status: "active", org: { adminRecoveryEnabled: true } }, select: { orgId: true, org: { select: { name: true } } } });
+      const ms = (await tx.membership.findMany({ where: { userId: user.id, status: "active", org: { adminRecoveryEnabled: true } }, select: { orgId: true, org: { select: { ...PLAN_SELECT, name: true } } } })).filter((m) => adminRecoveryOn(app.config, { ...m.org, adminRecoveryEnabled: true }));
       const out: { id: string; orgId: string; orgName: string }[] = [];
       for (const m of ms) {
         // The current key (a reset), or one a scoped reset archived (restored later, under the current password).
@@ -119,7 +120,7 @@ export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
     const body = z.object({ proof: secret256, code: optCode }).parse(req.body);
     const invalid = () => reply.code(401).send({ error: "invalid_link" });
     const r = await app.prisma.recoveryRequest.findUnique({ where: { id }, include: { user: true } });
-    if (!r || r.status !== "approved" || !r.expiresAt || r.expiresAt <= new Date() || !r.proofHash || !r.wrappedMembershipKey || !r.memberPublicKey || !(await adminRecoveryEnabled(app.prisma, r.orgId))) {
+    if (!r || r.status !== "approved" || !r.expiresAt || r.expiresAt <= new Date() || !r.proofHash || !r.wrappedMembershipKey || !r.memberPublicKey || !(await adminRecoveryEnabled(app.prisma, app.config, r.orgId))) {
       secretValueMatches(null, body.proof); return invalid();
     }
     /** Wrong proofs and wrong 2FA codes both count against the link; five burn it. */
@@ -262,7 +263,7 @@ export const recoveryAuthRoutes: FastifyPluginAsync = async (app) => {
     void sendEmail(app.mail, user.email, recoveryUsedEmail(await app.brand.productName(), via, now), req.log);
     const fresh = await app.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const { accessToken } = await createSession(app, reply, fresh, meta(req).userAgent);
-    return authView(app.prisma, accessToken, fresh);
+    return authView(app.prisma, app.config, accessToken, fresh);
   });
 
   /** Checks the current master password (auth key) of a recovery-token holder: wrong ones count toward the lockout. */
@@ -346,8 +347,8 @@ export const meRecoveryRoutes: FastifyPluginAsync = async (app) => {
   app.get("/me/security", async (req) => {
     const me = req.auth.userId;
     const u = await app.prisma.user.findUniqueOrThrow({ where: { id: me }, select: { recoveryCreatedAt: true } });
-    const ms = await app.prisma.membership.findMany({ where: { userId: me, status: "active", org: { adminRecoveryEnabled: true } }, orderBy: { createdAt: "asc" },
-      select: { adminRecoveryAckAt: true, org: { select: { id: true, name: true, adminRecoveryChangedAt: true } } } });
+    const ms = (await app.prisma.membership.findMany({ where: { userId: me, status: "active", org: { adminRecoveryEnabled: true } }, orderBy: { createdAt: "asc" },
+      select: { adminRecoveryAckAt: true, org: { select: { ...PLAN_SELECT, id: true, name: true, adminRecoveryChangedAt: true } } } })).filter((m) => adminRecoveryOn(app.config, { ...m.org, adminRecoveryEnabled: true }));
     const orgs = [];
     for (const m of ms) {
       const cur = await currentKey(app.prisma, m.org.id, me);
@@ -368,9 +369,9 @@ export const meRecoveryRoutes: FastifyPluginAsync = async (app) => {
   /** "I understand this organisation's admins can recover my account": required once per switch-on, per org, before any escrow. */
   app.post("/me/admin-recovery-ack", async (req, reply) => {
     const { orgId } = z.object({ orgId: z.string().uuid() }).parse(req.body ?? {});
-    const m = await app.prisma.membership.findFirst({ where: { orgId, userId: req.auth.userId, status: "active" }, select: { id: true, org: { select: { adminRecoveryEnabled: true } } } });
+    const m = await app.prisma.membership.findFirst({ where: { orgId, userId: req.auth.userId, status: "active" }, select: { id: true, org: { select: { ...PLAN_SELECT, adminRecoveryEnabled: true } } } });
     if (!m) return reply.code(403).send({ error: "org_forbidden" });
-    if (!m.org.adminRecoveryEnabled) return reply.code(409).send({ error: "policy_off" });
+    if (!adminRecoveryOn(app.config, m.org)) return reply.code(409).send({ error: "policy_off" });
     await app.prisma.membership.update({ where: { id: m.id }, data: { adminRecoveryAckAt: new Date() } });
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "recovery.policy_acknowledged", ...meta(req) });
     return { ok: true };
