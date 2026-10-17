@@ -33,9 +33,9 @@ const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> =
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
 
-async function fake() {
+async function fake(o: { metadataDown?: boolean } = {}) {
   const kek = await fileKek();
-  const api = await startFakeApi({ kek, aud: AUD });
+  const api = await startFakeApi({ kek, aud: AUD, ...o });
   closers.push(api.close);
   return { kek, api };
 }
@@ -120,6 +120,41 @@ describe("bearerAuth", () => {
     const wrong: ApiClient = { ...client, exchangeStatic: async () => ({ accessToken: await api.issueToken({ grant: "another-token-id" }), expiresIn: 900 }) };
     expect(await bearerAuth(cfgFor(api.url, api.token), wrong)(`Bearer ${api.staticToken}`)).toBeNull();
     expect(await bearerAuth(cfgFor(api.url, api.token), client)(`Bearer ${api.staticToken}`)).toMatchObject({ agentId: api.agent.id });
+  });
+
+  it("checks iss against the issuer in the API's metadata, not API_URL, and needs a grant claim", async () => {
+    const { api } = await fake();
+    const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
+    expect(await auth(`Bearer ${await api.issueToken()}`)).toMatchObject({ agentId: api.agent.id });
+    for (const jwt of [await api.issueToken({ iss: "https://evil.test/app" }), await api.issueToken({ iss: api.url }),
+      await api.issueToken({ grant: undefined })])
+      expect(await auth(`Bearer ${jwt}`)).toBeNull();
+  });
+
+  it("an OAuth grant's JWT (no cvat_ id) is accepted like an exchanged one", async () => {
+    const { api } = await fake();
+    const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
+    const jwt = await api.issueToken({ grant: "an-agent-grant-id" });
+    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.agent.id, orgId: api.agent.orgId, accessToken: jwt, exp: expect.any(Number) });
+    expect(api.tokenCalls).toBe(0);
+  });
+
+  it("an unreachable JWKS, metadata or exchange is a 503 with Retry-After; never a principal", async () => {
+    const { api } = await fake();
+    const broken = http.createServer((_req, res) => { res.writeHead(500).end(); });
+    await new Promise<void>((r) => broken.listen(0, "127.0.0.1", r));
+    closers.push(() => new Promise((r) => { broken.closeAllConnections(); broken.close(() => r()); }));
+    const client = apiClient({ apiUrl: api.url, apiToken: api.token });
+    const unavailable = { status: 503, code: "api_unavailable", headers: { "retry-after": "5" } };
+    const noJwks: ApiClient = { ...client, jwksUrl: new URL(`http://127.0.0.1:${(broken.address() as AddressInfo).port}/jwks.json`) };
+    await expect(bearerAuth(cfgFor(api.url, api.token), noJwks)(`Bearer ${await api.issueToken()}`)).rejects.toMatchObject(unavailable);
+    const down: typeof fetch = async () => { throw new TypeError("fetch failed"); };
+    const noApi = apiClient({ apiUrl: api.url, apiToken: api.token }, down);
+    await expect(bearerAuth(cfgFor(api.url, api.token), noApi)(`Bearer ${await api.issueToken()}`)).rejects.toMatchObject(unavailable);
+    const auth = bearerAuth(cfgFor(api.url, api.token), noApi);
+    await expect(auth(`Bearer ${api.staticToken}`)).rejects.toMatchObject(unavailable);
+    // A bad token with a reachable JWKS is still just refused.
+    expect(await bearerAuth(cfgFor(api.url, api.token), client)("Bearer x.y.z")).toBeNull();
   });
 
   it("drop(agentId) evicts the agent's cached exchange; onExchange runs on misses only", async () => {
@@ -317,8 +352,8 @@ describe("agentTools", () => {
   });
 });
 
-async function start(over: Partial<GatewayConfig> = {}, deps: Partial<GatewayDeps> = {}) {
-  const { kek, api } = await fake();
+async function start(over: Partial<GatewayConfig> = {}, deps: Partial<GatewayDeps> = {}, apiOpts: { metadataDown?: boolean } = {}) {
+  const { kek, api } = await fake(apiOpts);
   const dir = tempDir();
   const identity = await loadOrCreateIdentity(join(dir, "identity.json"), kek);
   const held = new HeldSecrets();
@@ -335,14 +370,43 @@ describe("MCP route gate", () => {
   const post = (url: string, body: string, token?: string) =>
     fetch(url, { method: "POST", body, headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) } });
 
-  it("401 with WWW-Authenticate: Bearer without a valid bearer", async () => {
+  it("401 with WWW-Authenticate naming the resource metadata without a valid bearer", async () => {
     const { url } = await start();
     for (const t of [undefined, "cvat_wrong", "x.y.z"]) {
       const r = await post(url, call("list_secrets"), t);
       expect(r.status).toBe(401);
-      expect(r.headers.get("www-authenticate")).toBe("Bearer");
+      expect(r.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
       expect(await r.json()).toEqual({ error: "unauthorized" });
     }
+  });
+
+  it("serves the protected-resource metadata at both RFC 9728 paths, naming the issuer from the API's metadata", async () => {
+    const { api, url } = await start();
+    const r = await post(url, call("list_secrets"));
+    const meta = /resource_metadata="([^"]+)"/.exec(r.headers.get("www-authenticate") ?? "")![1]!;
+    expect(meta).toMatch(/\/mcp\/\.well-known\/oauth-protected-resource$/);
+    const origin = new URL(url).origin;
+    for (const path of ["/mcp/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]) {
+      const m = await fetch(`${origin}${path}`);
+      expect(m.status).toBe(200);
+      expect(await m.json()).toEqual({ resource: AUD, authorization_servers: [api.issuer], bearer_methods_supported: ["header"] });
+    }
+    expect(api.issuer).not.toBe(api.url); // the public issuer, not the internal API_URL
+    expect((await fetch(`${origin}/.well-known/oauth-protected-resource`)).status).toBe(404);
+  });
+
+  it("the metadata, and JWT checks, are 503 with Retry-After until the API's metadata can be read", async () => {
+    const { api, url } = await start({}, {}, { metadataDown: true });
+    const meta = `${new URL(url).origin}/mcp/.well-known/oauth-protected-resource`;
+    const r = await fetch(meta);
+    expect(r.status).toBe(503);
+    expect(r.headers.get("retry-after")).toBe("5");
+    expect(await r.json()).toEqual({ error: "api_unavailable" });
+    // A JWT can't be checked against an unknown issuer: 503 (fail closed), not 401 (which would send the client to re-authorise).
+    expect((await post(url, call("list_secrets"), await api.issueToken())).status).toBe(503);
+    api.metadataDown = false;
+    expect((await fetch(meta)).status).toBe(200);
+    expect((await post(url, call("list_secrets"), await api.issueToken())).status).not.toBe(503);
   });
 
   it("serves only the PUBLIC_URL path", async () => {
@@ -491,6 +555,30 @@ describe("MCP endpoint", () => {
     await connect(url, api.staticToken);
     await expect(cs[1]!.listTools()).rejects.toMatchObject({ code: 404 });
     for (const c of [cs[0]!, ...cs.slice(2)]) await c.listTools();
+  });
+
+  it("an OAuth grant's access token connects and uses tools; an API refusal is 401 with the metadata challenge and closes its sessions", async () => {
+    const { api, gw, url } = await start({ cacheTtlSeconds: 0 });
+    await api.addFolderRecord("Payments", apiKey("Stripe", ["api.test"]));
+    const jwt = await api.issueToken({ grant: "an-agent-grant-id" });
+    const { client, transport } = await connect(url, jwt);
+    const other = (await connect(url, jwt)).client;
+    expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "payments/stripe" })] });
+    expect(api.tokenCalls).toBe(0); // nothing to exchange
+    // Session binding holds for grant tokens: another agent's grant token on this session is 403.
+    const r = await fetch(url, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list" }), headers: {
+      "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${await api.issueToken({ sub: api.agent2.id })}`,
+      "mcp-session-id": transport.sessionId!, "mcp-protocol-version": transport.protocolVersion ?? "2025-06-18" } });
+    expect(r.status).toBe(403);
+    api.revoke(); // the grant revoked at the API
+    const sid = transport.sessionId!;
+    const refused = await fetch(url, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_secrets", arguments: {} } }),
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${jwt}`,
+        "mcp-session-id": sid, "mcp-protocol-version": transport.protocolVersion ?? "2025-06-18" } });
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
+    expect(gw.keys.has(api.agent.id)).toBe(false);
+    await expect(other.listTools()).rejects.toMatchObject({ code: 404 }); // dropAgent closed every session of the agent's
   });
 
   it("the internal DELETE closes every session of the agent's", async () => {

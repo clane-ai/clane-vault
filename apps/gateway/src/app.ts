@@ -8,7 +8,7 @@ import type { Identity } from "./identity.js";
 import type { Kek } from "./kek.js";
 import { safeError, type HeldSecrets, type Logger } from "./log.js";
 import { apiClient } from "./apiClient.js";
-import { bearerAuth } from "./auth.js";
+import { bearerAuth, unavailable } from "./auth.js";
 import { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
 import { AgentKeyCache, SyncCache } from "./keys.js";
@@ -32,6 +32,11 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter: new RateLimiter(deps.now),
     log, held, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
   const mcpPath = new URL(cfg.publicUrl).pathname;
+  // RFC 9728: under PUBLIC_URL's path, and by path insertion at the root (`/.well-known/oauth-protected-resource/mcp`).
+  const base = mcpPath.replace(/\/+$/, "");
+  const metadataPaths = new Set([`${base}/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource${base}`]);
+  // Fetched at start; until the API answers, metadata and JWT checks are 503 and retry it.
+  api.issuer().catch((e: unknown) => log.error({ event: "issuer_unavailable", class: e instanceof Error ? e.name : typeof e }));
   // Hashing first gives equal lengths, so the compare is timing-safe whatever the caller sends.
   const digest = (s: string) => createHash("sha256").update(s).digest();
   const tokenHash = digest(cfg.apiToken);
@@ -81,9 +86,20 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
     });
   };
 
-  // Task 12 adds the OAuth metadata; /internal/* is never served here.
-  const publicServer = createServer(handle(async (req, res) =>
-    new URL(req.url ?? "/", "http://public").pathname === mcpPath ? mcp(req, res) : send(res, 404, { error: "not_found" })));
+  async function metadata(req: IncomingMessage, res: ServerResponse) {
+    if (req.method !== "GET") return send(res, 405, { error: "method_not_allowed" }, { allow: "GET" });
+    let issuer: string;
+    try { issuer = await api.issuer(); } catch { throw unavailable(); }
+    send(res, 200, { resource: cfg.publicUrl, authorization_servers: [issuer], bearer_methods_supported: ["header"] });
+  }
+
+  // /internal/* is never served here.
+  const publicServer = createServer(handle(async (req, res) => {
+    const path = new URL(req.url ?? "/", "http://public").pathname;
+    if (path === mcpPath) return mcp(req, res);
+    if (metadataPaths.has(path)) return metadata(req, res);
+    send(res, 404, { error: "not_found" });
+  }));
   const internalServer = createServer(handle(internal));
   const stop = (s: Server) => new Promise<void>((r) => { if (!s.listening) return r(); s.close(() => r()); s.closeAllConnections(); });
   return { publicServer, internalServer, keys, syncs, close: async () => { await Promise.all([stop(publicServer), stop(internalServer)]); } };

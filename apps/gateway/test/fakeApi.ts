@@ -12,9 +12,10 @@ import type { UseEvent } from "../src/apiClient.js";
 
 /**
  * The API's /agent/* contract (plan Task 5) with real ciphertext: the agent key pair wrapped under the KEK, folder keys
- * sealed to the agent's key, bodies encrypted, ES256 access tokens and a JWKS. Routes live under `${url}/api/v1`.
+ * sealed to the agent's key, bodies encrypted, ES256 access tokens and a JWKS. Routes live under `${url}/api/v1`; the AS metadata
+ * (plan Task 12) at `${url}/.well-known/oauth-authorization-server`, naming a public `issuer` that is not `url` (as hosted).
  */
-export async function startFakeApi(o: { kek: Kek; aud?: string }) {
+export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string; metadataDown?: boolean }) {
   const orgId = randomUUID(), agentId = randomUUID(), ownerId = randomUUID(), tokenId = randomUUID();
   const agent2 = { id: randomUUID() }; // a second agent of the org: its tokens verify, it holds nothing
   const kp = await generateX25519();
@@ -27,6 +28,8 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   const token = randomBytes(32).toString("base64url"); // X-Gateway-Token
   const staticToken = `cvat_${tokenId}_${randomBytes(32).toString("base64url")}`;
   const aud = o.aud ?? "https://gw.test/mcp";
+  const issuer = o.issuer ?? "https://vault.test/app";
+  let metadataDown = o.metadataDown ?? false;
   const folders: { id: string; name: string; key: Uint8Array; encName: string; wrappedFolderKey: string }[] = [];
   const records: Record<string, unknown>[] = [];
   const events: UseEvent[] = [];
@@ -34,16 +37,16 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   let revoked = false, expired = false, syncCalls = 0, tokenCalls = 0;
   let url = "";
 
-  /** `over` replaces claims (undefined removes one); `sub` (null removes it) and `exp` (a jose time span or epoch seconds) too. */
-  const issueToken = (over: Record<string, unknown> & { sub?: unknown; exp?: string | number } = {}) => {
-    const { sub = agentId, exp = "15m", ...claims } = over;
+  /** `over` replaces claims (undefined removes one); `sub` (null removes it), `iss` and `exp` (a jose time span or epoch seconds) too. */
+  const issueToken = (over: Record<string, unknown> & { sub?: unknown; iss?: string; exp?: string | number } = {}) => {
+    const { sub = agentId, iss = issuer, exp = "15m", ...claims } = over;
     const now = Math.floor(Date.now() / 1000);
     if (typeof sub !== "string" && sub !== null) // jose won't sign a non-string sub; sign the payload as is
-      return new CompactSign(new TextEncoder().encode(JSON.stringify({ scope: "agent", org: orgId, sub, aud, iss: url, iat: now, exp: now + 900, ...claims })))
+      return new CompactSign(new TextEncoder().encode(JSON.stringify({ scope: "agent", org: orgId, sub, aud, iss, iat: now, exp: now + 900, ...claims })))
         .setProtectedHeader({ alg: "ES256", kid: jwk.kid }).sign(signing.privateKey);
     const j = new SignJWT({ scope: "agent", org: orgId, grant: randomUUID(), ...claims }).setProtectedHeader({ alg: "ES256", kid: jwk.kid });
     if (sub !== null) j.setSubject(sub);
-    return j.setAudience(aud).setIssuer(url).setJti(randomUUID()).setIssuedAt().setExpirationTime(exp).sign(signing.privateKey);
+    return j.setAudience(aud).setIssuer(iss).setJti(randomUUID()).setIssuedAt().setExpirationTime(exp).sign(signing.privateKey);
   };
 
   const record = (id: string, body: RecordBody, encBody: string, holder: Record<string, unknown>) => ({
@@ -86,12 +89,14 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   async function agentAuth(req: IncomingMessage): Promise<number | null> {
     if (req.headers["x-gateway-token"] !== token) return 401;
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-    try { await jwtVerify(bearer ?? "", signing.publicKey, { issuer: url, audience: aud, algorithms: ["ES256"] }); } catch { return 401; }
+    try { await jwtVerify(bearer ?? "", signing.publicKey, { issuer, audience: aud, algorithms: ["ES256"] }); } catch { return 401; }
     return revoked ? 401 : expired ? 403 : null;
   }
 
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? "/", url).pathname.replace(/^\/api\/v1/, "");
+    if (req.method === "GET" && path === "/.well-known/oauth-authorization-server")
+      return metadataDown ? send(res, 503, { error: "unavailable" }) : send(res, 200, { issuer, jwks_uri: `${issuer}/api/v1/.well-known/jwks.json` });
     if (req.method === "GET" && path === "/.well-known/jwks.json") return send(res, 200, { keys: [jwk] });
     if (req.method === "POST" && path === "/oauth/token") {
       tokenCalls++;
@@ -113,12 +118,14 @@ export async function startFakeApi(o: { kek: Kek; aud?: string }) {
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
-    url, token, staticToken, events, bodies, kid: jwk.kid!, agent: { id: agentId, orgId, publicKey }, agent2,
+    url, issuer, token, staticToken, events, bodies, kid: jwk.kid!, agent: { id: agentId, orgId, publicKey }, agent2,
     addFolderRecord, addSharedRecord, issueToken,
     get syncCalls() { return syncCalls; },
     get tokenCalls() { return tokenCalls; },
     revoke() { revoked = true; },
     expire() { expired = true; },
+    /** The metadata route answers 503 while set. */
+    set metadataDown(v: boolean) { metadataDown = v; },
     close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }),
   };
 }

@@ -21,6 +21,8 @@ export interface ApiClient {
   sync(accessToken: string): Promise<AgentSync>;
   events(accessToken: string, events: UseEvent[]): Promise<void>;
   exchangeStatic(cvat: string): Promise<{ accessToken: string; expiresIn: number }>;
+  /** The public issuer from `${API_URL}/.well-known/oauth-authorization-server`: cached once fetched; a failure is retried next call. */
+  issuer(): Promise<string>;
   jwksUrl: URL;
 }
 
@@ -42,7 +44,20 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
     throw new Error(`API ${path} failed (${r.status})`);
   }
   const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
+  let issuer: Promise<string> | undefined;
+  // API_URL is origin + base path, and the API serves its metadata at `${basePath}/.well-known/...` (plan Task 12).
+  async function fetchIssuer(): Promise<string> {
+    const r = await fetchImpl(`${cfg.apiUrl.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!r.ok) throw new Error(`API metadata failed (${r.status})`);
+    const iss = ((await r.json()) as { issuer?: unknown } | null)?.issuer;
+    if (typeof iss !== "string" || !URL.canParse(iss)) throw new Error("API metadata has no issuer");
+    return iss;
+  }
   return {
+    issuer() {
+      issuer ??= fetchIssuer().catch((e: unknown) => { issuer = undefined; throw e; });
+      return issuer;
+    },
     jwksUrl: new URL(`${base}/.well-known/jwks.json`),
     async sync(accessToken) {
       return await (await call("/agent/sync", { headers: bearer(accessToken) })).json() as AgentSync;

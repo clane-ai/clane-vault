@@ -6,7 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { AGENT_METHODS, CryptoError, type AgentMethod, type MembershipKeys } from "@clane-vault/crypto";
 import { ApiRefused, type AgentSync, type ApiClient, type UseEvent } from "./apiClient.js";
-import type { AgentPrincipal, BearerAuth } from "./auth.js";
+import { challenge, type AgentPrincipal, type BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
@@ -214,7 +214,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       const r = limiter.take(`xchg:${addr}`, EXCHANGE_MISSES_PER_MINUTE, MINUTE);
       if (!r.ok) throw new HttpError(429, "rate_limited", { "retry-after": String(r.retryAfterSeconds) });
     });
-    if (!p) return send(res, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+    if (!p) return send(res, 401, { error: "unauthorized" }, challenge(cfg));
     // No server-to-client stream (GET) is offered.
     if (req.method !== "POST" && req.method !== "DELETE") return send(res, 405, { error: "method_not_allowed" }, { allow: "POST, DELETE" });
     const body = req.method === "POST" ? await readJson(req, MAX_BODY) : undefined;
@@ -249,7 +249,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
     if (call.refused) {
       // Revoked or expired (the tool already dropped the key and sync caches): its static token is checked at the API again.
       dropAgent(p.agentId);
-      return send(res, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+      return send(res, 401, { error: "unauthorized" }, challenge(cfg));
     }
     res.writeHead(r.status, Object.fromEntries(r.headers)).end(Buffer.from(await r.arrayBuffer()));
   };
