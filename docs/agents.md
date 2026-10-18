@@ -163,6 +163,8 @@ CloudTrail then logs every unwrap, with the org and agent: the operator-side aud
 
 **Back up the KEK** (or keep the KMS key from being deleted) and the gateway's data volume (its identity key, wrapped under the KEK). **Lose the KEK and every agent must be re-enrolled**: revoke each one, create it again, verify it and share with it again. Nothing else is affected: people's data doesn't depend on it. A new KEK or a lost data volume also means a new gateway identity (see *A changed gateway identity*).
 
+**Keep the KEK backup apart from database backups, and encrypted.** The KEK plus a database dump yields every agent-scoped item in plain text, so never store them together (not in the same bucket, archive or backup job).
+
 ## Settings
 
 On the **API** (`.env`). Agent access is off unless `GATEWAY_INTERNAL_URL` is set, and then the other three are required too, or the API won't start:
@@ -192,7 +194,7 @@ On the **gateway**:
 | `PORT` | 3002 | Public: `/mcp` and its metadata. |
 | `INTERNAL_PORT` | 3003 | `/internal/*` only (enrolment, cache drop, health), with `X-Gateway-Token`. **Never publish or proxy it.** |
 | `INTERNAL_HOST` | 0.0.0.0 | Address the internal port binds to. |
-| `TRUST_PROXY` | 0 | Number of reverse proxies in front (as on the API). |
+| `TRUST_PROXY` | 0 | Number of reverse proxies in front. **A number only**: unlike the API, `true`/`false` are refused. The compose file sets it from `GATEWAY_TRUST_PROXY` (default 1), not from the API's `TRUST_PROXY`. |
 
 Rules the gateway enforces at start: it refuses `NODE_OPTIONS`, any Node flag outside a short allowlist, and starting without `--disable-sigusr1` (SIGUSR1 would open the inspector). The image's command is `--disable-sigusr1 dist/server.js`; run it from source with `npm run dev -w @clane-vault/gateway`, which builds and then runs it the same way. A bad setting prints one line, `{"event":"config_error","msg":…}`, and exits 1. After changing the API's `PUBLIC_URL` (its OAuth issuer), restart the gateway.
 
@@ -204,9 +206,10 @@ Rules the gateway enforces at start: it refuses `NODE_OPTIONS`, any Node flag ou
 |---|---|---|
 | 400 | `agent_use_only` | Sharing more than *Use* with an agent. |
 | 400 | `user_not_active` | Sharing with an agent that isn't verified yet. |
+| 400 | `invalid_client` | OAuth: unknown client. |
 | 400 | `invalid_redirect_uri` | Consent page: the redirect URI isn't one the client registered. |
 | 400 | `invalid_request`, `invalid_grant`, `unsupported_grant_type`, `invalid_target` | OAuth (RFC 6749). |
-| 401 | `invalid_client` | OAuth: unknown client. |
+| 401 | `invalid_client` | OAuth: an API token exchange that didn't come from the gateway (no valid `X-Gateway-Token`). |
 | 401 | `unauthorized` | Bad or revoked token or grant; gateway: with `WWW-Authenticate` (`error="invalid_token"` when a token was sent). |
 | 402 | `agent_limit` (`used`, `allowed`) | Hosted: no free agent slot. |
 | 403 | `agent_expired`, `agent_unverified` | The agent expired, or isn't verified. |

@@ -29,12 +29,14 @@ services:
       GATEWAY_MAX_RESPONSE_BYTES: ${GATEWAY_MAX_RESPONSE_BYTES:-}
       GATEWAY_UPSTREAM_TIMEOUT_MS: ${GATEWAY_UPSTREAM_TIMEOUT_MS:-}
       GATEWAY_ALLOW_PRIVATE_CIDRS: ${GATEWAY_ALLOW_PRIVATE_CIDRS:-}
-      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # A number only (proxies in front); the app's TRUST_PROXY may also be true/false, so the gateway has its own.
+      TRUST_PROXY: ${GATEWAY_TRUST_PROXY:-1}
     secrets: [gateway-kek]
     volumes: [gateway-data:/data]
     # Only the public MCP port (3002). The internal port (3003) is never published: the API reaches it on the internal network.
     ports: ["${GATEWAY_BIND:-127.0.0.1}:${GATEWAY_PORT:-8081}:3002"]
-    networks: [default, internal]
+    # gateway-egress: its own bridge for outbound calls, shared with no other container; internal: the API only.
+    networks: [gateway-egress, internal]
     ulimits:
       core: 0
     read_only: true
@@ -66,6 +68,7 @@ volumes:
 
 networks:
   default:
+  gateway-egress:
   internal:
     internal: true
 

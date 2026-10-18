@@ -270,9 +270,9 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
        openssl rand -hex 32                                  # → GATEWAY_API_TOKEN
        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | awk '{printf "%s\\n", $0}'   # → AGENT_TOKEN_PRIVATE_KEY (one line)
 
-   **Back up `secrets/gateway-kek`** somewhere off the host, as you back up `.env`. Lose it and every agent must be re-enrolled (created again and shared with again); nothing else is affected. `docs/agents.md` covers AWS KMS and Google Cloud KMS instead of the file key.
+   **Back up `secrets/gateway-kek`** somewhere off the host, as you back up `.env`, **encrypted and apart from your database backups**: the KEK plus a database dump yields every agent-scoped item in plain text. Lose it and every agent must be re-enrolled (created again and shared with again); nothing else is affected. `docs/agents.md` covers AWS KMS and Google Cloud KMS instead of the file key.
 2. **`.env`**: uncomment and fill in `GATEWAY_INTERNAL_URL=http://gateway:3003`, `GATEWAY_PUBLIC_URL` (your public address plus `/mcp`, e.g. `https://vault.example.com/mcp`), `GATEWAY_API_TOKEN` and `AGENT_TOKEN_PRIVATE_KEY`, and add `agents` to `COMPOSE_PROFILES` (e.g. `COMPOSE_PROFILES=bundled-db,agents`). Under a path (e.g. `/vault`), also set `BASE_PATH` explicitly: the gateway reaches the API at `http://clane-vault:3001${BASE_PATH}`.
-3. **Start**: `docker compose up -d`. The gateway listens on `127.0.0.1:8081` (`GATEWAY_BIND` / `GATEWAY_PORT`) for `/mcp`. Its internal port 3003 (agent enrolment) is reachable only from the API on the compose networks and is **never published**: don't add it to `ports`.
+3. **Start**: `docker compose up -d`. The gateway listens on `127.0.0.1:8081` (`GATEWAY_BIND` / `GATEWAY_PORT`) for `/mcp`. Its internal port 3003 (agent enrolment) is **never published** and is reachable only from the API: the two share the `internal` network (no internet access), and the gateway makes its outbound calls on its own `gateway-egress` network, which no other container joins. Don't add 3003 to `ports` or put other services on `internal`.
 4. **Reverse proxy**: on the same HTTPS host, forward these to the gateway port **without stripping the prefix**:
    - `/mcp` (and everything under it)
    - `/.well-known/oauth-protected-resource/mcp`
@@ -298,6 +298,7 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
 Rules the gateway checks at start:
 - `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.
 - The gateway's `API_URL` must be https, or plain http to a private network name or address (as in the compose file). After changing the API's `PUBLIC_URL`, restart the gateway too (`docker compose restart gateway`): it checks the API's issuer, which is `PUBLIC_URL`.
+- `TRUST_PROXY` on the gateway is a number only (`true`/`false` are refused). The compose file passes `GATEWAY_TRUST_PROXY` (default `1`), not the app's `TRUST_PROXY`; set it in `.env` if your proxy count differs.
 - It refuses to start with `NODE_OPTIONS` set, with any Node flag outside its allowlist, or without `--disable-sigusr1` (the image's command has it). Don't override the command.
 
 If the gateway's identity key changes (a new `gateway-data` volume, a new KEK), the API stops with a message until you set `GATEWAY_ACCEPT_NEW_IDENTITY=true` once. Every existing agent's attestation is then invalid, so every agent must be re-enrolled, and members can't share with agents until an admin confirms the new fingerprint on the Agents page. Updates (`update.sh`) pull the gateway image at the same `CLANE_VAULT_VERSION`.
