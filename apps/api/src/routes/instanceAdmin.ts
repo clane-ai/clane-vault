@@ -37,7 +37,7 @@ export const instanceAdminRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({ error: "totp_invalid" });
     }
     const r = await resetTwoFactorByEmail({ prisma: app.prisma, mail: app.mail, productName: () => app.brand.productName() }, { email: b.email, actorId: me.id, log: req.log, ...meta(req) });
-    if (!r.ok) return reply.code(({ not_found: 404, self: 400, disabled: 409 } as const)[r.error]).send({ error: r.error });
+    if (!r.ok) return reply.code(({ not_found: 404, self: 400, disabled: 409, is_agent: 409 } as const)[r.error]).send({ error: r.error });
     return { ok: true, email: r.user.email, emailed: r.emailed };
   });
 };

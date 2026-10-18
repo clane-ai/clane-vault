@@ -4,7 +4,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSession } from "@/lib/session";
-import { fingerprintOf, pinStatus } from "@/lib/orgKeys";
+import { fingerprintOf, isAgent, pinStatus } from "@/lib/orgKeys";
+import { AgentWarning } from "@/features/vault/AgentWarning";
+import { AgentChip } from "@/features/vault/people";
 import { PERMISSION_LABEL, type VaultFolder } from "@/features/vault/types";
 import { useGroupAccess, type GroupPending } from "./groups";
 
@@ -37,8 +39,12 @@ export function GroupAccessBanner({ folders }: { folders: VaultFolder[] }) {
             {[...new Set(waiting.map((p) => p.folderId))].map((fid) => (
               <FolderRequests key={fid} folder={folders.find((f) => f.id === fid)} people={waiting.filter((p) => p.folderId === fid)}
                 onApprove={async (people) => {
-                  try { const r = await approve(fid, people); toast.success(r.skipped ? `Access given to ${r.added.length}; ${r.skipped} changed meanwhile, review again.` : `Access given to ${r.added.length}`); }
-                  catch { toast.error("Couldn't give access. Try again."); }
+                  try {
+                    const r = await approve(fid, people);
+                    if (r.added.length || !r.refused.length) toast.success(r.skipped ? `Access given to ${r.added.length}; ${r.skipped} changed meanwhile, review again.` : `Access given to ${r.added.length}`);
+                    // Agents whose key the gateway didn't attest: left waiting, named with the reason.
+                    if (r.refused.length) return r.refused.map((e) => `Not given to ${people.find((p) => p.userId === e.agentId)?.name ?? "an agent"}: ${e.message}`).join(" ");
+                  } catch { toast.error("Couldn't give access. Try again."); }
                 }}
                 onDecline={async (ids) => { try { await decline(fid, ids); toast.success("Declined"); } catch { toast.error("Couldn't decline. Try again."); } }} />
             ))}
@@ -49,9 +55,11 @@ export function GroupAccessBanner({ folders }: { folders: VaultFolder[] }) {
   );
 }
 
-function FolderRequests({ folder, people, onApprove, onDecline }: { folder?: VaultFolder; people: GroupPending[]; onApprove: (p: GroupPending[]) => Promise<void>; onDecline: (ids: string[]) => Promise<void> }) {
+/** `onApprove` resolves to a message when sealing was refused (an agent's key not attested by the pinned gateway). */
+function FolderRequests({ folder, people, onApprove, onDecline }: { folder?: VaultFolder; people: GroupPending[]; onApprove: (p: GroupPending[]) => Promise<string | void>; onDecline: (ids: string[]) => Promise<void> }) {
   const groups = [...new Set(people.flatMap((p) => p.via.map((v) => v.groupName)))];
   const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
   const run = (f: () => Promise<void>) => { setBusy(true); void f().finally(() => setBusy(false)); };
   return (
     <section aria-label={`Requests for ${folder?.name ?? "a folder"}`} className="rounded-[10px] border border-border p-3">
@@ -59,9 +67,11 @@ function FolderRequests({ folder, people, onApprove, onDecline }: { folder?: Vau
       <ul className="mt-2 flex flex-col gap-2">
         {people.map((p) => <PersonRow key={p.userId} p={p} />)}
       </ul>
+      {refused && <p role="alert" className="mt-2 text-[12.5px] text-red-500">{refused}</p>}
+      {people.some(isAgent) && <div className="mt-3"><AgentWarning /></div>}
       <div className="mt-3 flex justify-end gap-2">
         <Button type="button" variant="ghost" disabled={busy} onClick={() => run(() => onDecline(people.map((p) => p.userId)))}>Decline</Button>
-        <Button type="button" disabled={busy} onClick={() => run(() => onApprove(people))}>Approve</Button>
+        <Button type="button" disabled={busy} onClick={() => run(async () => setRefused((await onApprove(people)) || null))}>Approve</Button>
       </div>
     </section>
   );
@@ -74,7 +84,7 @@ function PersonRow({ p }: { p: GroupPending }) {
   useEffect(() => { if (p.membershipKey) void fingerprintOf(p.membershipKey).then(setFp); }, [p.membershipKey]);
   return (
     <li className="text-[13px]">
-      <div><span className="font-medium">{p.name}</span> <span className="text-text-secondary">{p.email}</span> · {PERMISSION_LABEL[p.permission]}</div>
+      <div><span className="font-medium">{p.name}</span>{isAgent(p) && <> <AgentChip /></>} <span className="text-text-secondary">{p.email}</span> · {PERMISSION_LABEL[p.permission]}</div>
       <div className="text-[12px] text-text-tertiary">
         {p.via.map((v) => `${v.groupName}${v.addedBy ? ` (added by ${v.addedBy.name})` : ""}`).join("; ")}
         {fp && <> · key <span className="font-mono">{fp}</span></>}

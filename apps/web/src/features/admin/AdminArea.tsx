@@ -1,5 +1,5 @@
 import { Link, Navigate, useNavigate } from "react-router";
-import { Building, Building2, DatabaseBackup, FolderSync, HardDrive, HeartPulse, KeyRound, LifeBuoy, ListChecks, Mail, Palette, ScrollText, ShieldAlert, ShieldOff, UserRoundCog, UserRoundSearch, UsersRound, type LucideIcon } from "lucide-react";
+import { Bot, Building, Building2, DatabaseBackup, FolderSync, HardDrive, HeartPulse, KeyRound, LifeBuoy, ListChecks, Mail, Palette, ScrollText, ShieldAlert, ShieldOff, UserRoundCog, UserRoundSearch, UsersRound, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader, SectionLayout, SectionPage, type NavGroup } from "@/components/SectionLayout";
 import { adminPath, isServerSection, spacePrefix, type AdminSection } from "@/lib/paths";
@@ -21,6 +21,7 @@ import { BrandingSection } from "@/features/settings/BrandingSection";
 import PeoplePage from "./PeoplePage";
 import MemberPage from "./MemberPage";
 import EventLogPage from "./EventLogPage";
+import AgentsPage from "./AgentsPage";
 import BackupsPage from "./BackupsPage";
 import { OrgStorageSection, ServerStorageSection } from "./StoragePages";
 import RiskPage from "./risk/RiskPage";
@@ -38,7 +39,7 @@ export function adminNav(o: { isAdmin: boolean; isInstanceAdmin: boolean; people
   if (o.isAdmin && o.orgPrefix) {
     groups.push({ label: "Organisation", items: [
       item("risk", "Risk dashboard", ShieldAlert),
-      item("people", "People", UserRoundCog, o.peopleBadge), item("groups", "Groups", UsersRound), item("events", "Event log", ScrollText),
+      item("people", "People", UserRoundCog, o.peopleBadge), item("groups", "Groups", UsersRound), item("agents", "Agents", Bot), item("events", "Event log", ScrollText),
       item("health", "Password health", HeartPulse), item("migrate", "Migrate from Keeper", FolderSync, o.migrateBadge),
     ] });
     groups.push({ label: "Organisation settings", items: [
@@ -99,6 +100,7 @@ export function AdminArea({ section, detailId, mobile, isAdmin, isInstanceAdmin,
   const page = section === "risk" ? <PlanGate feature="risk"><RiskPage /></PlanGate>
     : section === "people" ? (detailId ? <MemberPage key={detailId} userId={detailId} folders={folders} /> : <PeoplePage pendingReady={pendingReady} onOpenMigrate={() => navigate(paths.admin("migrate"))} />)
     : section === "groups" ? (detailId ? <GroupPage key={detailId} groupId={detailId} folders={folders} /> : <SectionPage title="Groups"><GroupsSection /></SectionPage>)
+    : section === "agents" ? <AgentsPage folders={folders} />
     : section === "events" ? <EventLogPage />
     : section === "health" ? <SectionPage title="Password health" wide><TeamHealth /></SectionPage>
     : section === "migrate" ? <MigratePage folders={folders} records={records} vaultLoading={vaultLoading} />

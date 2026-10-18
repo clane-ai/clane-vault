@@ -15,6 +15,8 @@ COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 # The browser extension is a workspace too: npm ci needs its manifest to match the lockfile (it isn't built here).
 COPY apps/extension/package.json apps/extension/
+# The agent gateway is a workspace too (built into its own image, apps/gateway/Dockerfile).
+COPY apps/gateway/package.json apps/gateway/
 COPY e2e/package.json e2e/
 COPY apps/api/prisma apps/api/prisma
 

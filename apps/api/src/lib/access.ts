@@ -68,5 +68,12 @@ export const activeMember = (prisma: Db, userId: string, orgId: string) =>
 
 export const permissionRank = (p: Permission) => RANK[p];
 
+/** "use" for an agent user, `permission` unchanged for a person (agents hold Use only: docs/agents.md). */
+export async function capForAgent(db: Db, userId: string, permission: Permission): Promise<Permission> {
+  if (permission === "use") return permission;
+  const u = await db.user.findUnique({ where: { id: userId }, select: { kind: true } });
+  return u?.kind === "agent" ? "use" : permission;
+}
+
 /** Prisma unique-constraint violation (a concurrent duplicate insert). */
 export const isUniqueViolation = (e: unknown) => typeof e === "object" && e !== null && (e as { code?: string }).code === "P2002";

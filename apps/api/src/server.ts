@@ -7,6 +7,7 @@ import { createPrisma } from "./db.js";
 import { ensureDefaultOrg } from "./lib/orgs.js";
 import { checkServerSecret, ServerSecretMismatch } from "./lib/serverSecretCheck.js";
 import { checkDemoStartup, DemoStartupRefused } from "./lib/demo.js";
+import { checkGatewayAtStart, gatewayClient, GatewayIdentityChanged } from "./lib/gateway.js";
 
 const config = loadConfig();
 // Default matches the repo/image layout: apps/api/dist/src/server.js -> apps/web/dist
@@ -19,6 +20,16 @@ try {
   if (!(e instanceof ServerSecretMismatch)) throw e;
   console.error(JSON.stringify({ level: 60, event: "server_secret_mismatch", msg: e.message }));
   process.exit(1);
+}
+// Agent access: pin the gateway's identity key. Unreachable only warns (pinned on first contact); a changed one stops here.
+if (config.agents) {
+  try {
+    await checkGatewayAtStart(prisma, gatewayClient(config.agents), { accept: config.agents.acceptNewGatewayIdentity, log: { warn: (m) => console.warn(JSON.stringify({ level: 40, event: "gateway_check", msg: m })) } });
+  } catch (e) {
+    if (!(e instanceof GatewayIdentityChanged)) throw e;
+    console.error(JSON.stringify({ level: 60, event: "gateway_identity_changed", msg: e.message }));
+    process.exit(1);
+  }
 }
 // Demo mode (docs/demo.md) only on a database of demo sandboxes: a real account anywhere stops the start.
 try {

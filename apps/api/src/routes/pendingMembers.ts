@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { isUniqueViolation } from "../lib/access.js";
+import { capForAgent, isUniqueViolation } from "../lib/access.js";
 import { logEvent } from "../lib/events.js";
 import { currentKeys, isPublicKeyB64, recipientKeyOk } from "../lib/membershipKeys.js";
 
@@ -33,7 +33,9 @@ export const pendingMemberRoutes: FastifyPluginAsync = async (app) => {
     const { id } = idParam.parse(req.params);
     const b = z.object({ email, permission: grantable }).parse(req.body);
     if (!(await ownTeamFolder(req, reply, id))) return reply;
-    const user = await app.prisma.user.findUnique({ where: { email: b.email }, select: { id: true } });
+    const user = await app.prisma.user.findUnique({ where: { email: b.email }, select: { id: true, kind: true } });
+    // Agents hold Use only (docs/agents.md); their emails are under the reserved .invalid TLD.
+    if (b.permission !== "use" && (user?.kind === "agent" || b.email.endsWith("@agents.invalid"))) return reply.code(400).send({ error: "agent_use_only" });
     // (Someone who isn't in the org yet can still be listed: they are added once they join and are active.)
     if (user && (await app.prisma.folderMember.findUnique({ where: { folderId_userId: { folderId: id, userId: user.id } } }))) return reply.code(409).send({ error: "already_member" });
     try {
@@ -74,13 +76,14 @@ export const pendingMemberRoutes: FastifyPluginAsync = async (app) => {
     if (!user) return reply.code(400).send({ error: "user_mismatch" });
     if (user.status !== "active" || !user.memberships.length) return reply.code(400).send({ error: "user_not_active" });
     if (!(await recipientKeyOk(app.prisma, req.org!.id, user.id, b.sealedTo))) return reply.code(409).send({ error: "stale_recipient_key" });
-    let added: boolean;
+    let added: false | typeof p.permission;
     try {
       added = await app.prisma.$transaction(async (tx) => {
         await tx.pendingFolderMember.delete({ where: { id: p.id } });
         if (await tx.folderMember.findUnique({ where: { folderId_userId: { folderId: id, userId: user.id } } })) return false;
-        await tx.folderMember.create({ data: { folderId: id, userId: user.id, permission: p.permission, directPermission: p.permission, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
-        return true;
+        const perm = await capForAgent(tx, user.id, p.permission);
+        await tx.folderMember.create({ data: { folderId: id, userId: user.id, permission: perm, directPermission: perm, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
+        return perm;
       });
     } catch (e) {
       if (!isUniqueViolation(e)) throw e;
@@ -92,7 +95,7 @@ export const pendingMemberRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ error: "already_member" });
     }
     await logEvent(app.prisma, { orgId: req.org!.id, actorId: req.auth.userId, action: "folder.member_add", folderId: id, targetUserId: user.id });
-    return reply.code(201).send({ ok: true, permission: p.permission });
+    return reply.code(201).send({ ok: true, permission: added });
   });
 
   app.delete("/folders/:id/pending-members/:pendingId", async (req, reply) => {

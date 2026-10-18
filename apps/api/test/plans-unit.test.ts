@@ -21,6 +21,18 @@ describe("entitlements", () => {
     expect(getEntitlements(on, { plan: "business", billingStatus: "free", seatsPaid: null, trialEndsAt: null }).seatsAllowed).toBe(0);
     expect(getPersonalEntitlements(on)).toMatchObject({ plan: "personal", activeLinkLimit: 5, storageBytesPerSeat: 1024 ** 3 });
   });
+  it("sets the agent limit and the Business-only agent features", () => {
+    const team = getEntitlements(on, free);
+    const biz = getEntitlements(on, { plan: "business", billingStatus: "active", seatsPaid: 20, trialEndsAt: null });
+    expect(team.agentLimit).toBe(3);
+    expect(biz.agentLimit).toBe(10);
+    expect(getEntitlements(off, free).agentLimit).toBeNull();
+    expect(getPersonalEntitlements(on).agentLimit).toBe(0);
+    expect([team.features.agentApprovals, team.features.agentPathPolicy]).toEqual([false, false]);
+    expect([biz.features.agentApprovals, biz.features.agentPathPolicy]).toEqual([true, true]);
+    const now = new Date("2026-11-01T00:00:00Z");
+    expect(getEntitlements(on, { ...free, trialEndsAt: new Date(+now + 864e5) }, now).agentLimit).toBe(3);
+  });
   it("gives a Team org Business features during its trial only", () => {
     const now = new Date("2026-11-01T00:00:00Z"), day = 864e5;
     const trial = getEntitlements(on, { ...free, trialEndsAt: new Date(+now + day) }, now);

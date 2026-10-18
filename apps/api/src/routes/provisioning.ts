@@ -60,9 +60,9 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
     const [rows, invited, joined] = await Promise.all([
       app.prisma.invite.findMany({ where: { orgId, acceptedAt: null, expiresAt: { gt: new Date(now - EXPIRED_LISTED_MS) } },
         select: { id: true, email: true, role: true, source: true, createdAt: true, expiresAt: true, lastSentAt: true, resendCount: true, invitedById: true } }),
-      app.prisma.membership.findMany({ where: { orgId, status: "invited", createdAt: { gt: new Date(now - INVITE_TTL_MS - EXPIRED_LISTED_MS) } },
+      app.prisma.membership.findMany({ where: { orgId, status: "invited", user: { kind: "person" }, createdAt: { gt: new Date(now - INVITE_TTL_MS - EXPIRED_LISTED_MS) } },
         select: { id: true, role: true, createdAt: true, invitedById: true, user: { select: { email: true } } } }),
-      app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" } }, select: { user: { select: { email: true } } } }),
+      app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" }, user: { kind: "person" } }, select: { user: { select: { email: true } } } }),
     ]);
     const members = new Set(joined.map((m) => m.user.email));
     const byEmail = new Map<string, Omit<PendingInviteView, "groups" | "invitedBy"> & { invitedById: string | null }>();
@@ -223,7 +223,7 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
   /** The org's members as CSV (name, email, role, status, two-step sign-in, joined, groups). */
   app.get("/people/export.csv", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const orgId = orgOf(req);
-    const ms = await app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" } }, orderBy: { createdAt: "asc" },
+    const ms = await app.prisma.membership.findMany({ where: { orgId, status: { not: "invited" }, user: { kind: "person" } }, orderBy: { createdAt: "asc" },
       select: { role: true, status: true, createdAt: true, joinedAt: true, user: { select: { id: true, name: true, email: true, status: true, totpEnabledAt: true } } } });
     const gm = await app.prisma.groupMember.findMany({ where: { group: { orgId }, userId: { in: ms.map((m) => m.user.id) } }, select: { userId: true, group: { select: { name: true } } }, orderBy: { group: { name: "asc" } } });
     await logEvent(app.prisma, { orgId, actorId: req.auth.userId, action: "admin.export", meta: { what: "members", rows: ms.length }, ...meta(req) });
@@ -306,9 +306,9 @@ export const provisioningAdminRoutes: FastifyPluginAsync = async (app) => {
     const orgId = orgOf(req);
     const [org, members, invites, invitedMembers, groups, sso, email, join] = await Promise.all([
       app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { createdAt: true, onboardingDismissedAt: true, policiesChangedAt: true, adminRecoveryEnabled: true } }),
-      app.prisma.membership.count({ where: { orgId, status: { not: "invited" } } }),
+      app.prisma.membership.count({ where: { orgId, status: { not: "invited" }, user: { kind: "person" } } }),
       app.prisma.invite.count({ where: { orgId, acceptedAt: null, expiresAt: { gt: new Date() } } }),
-      app.prisma.membership.count({ where: { orgId, status: "invited" } }),
+      app.prisma.membership.count({ where: { orgId, status: "invited", user: { kind: "person" } } }),
       app.prisma.group.count({ where: { orgId } }),
       app.prisma.orgSso.count({ where: { orgId } }),
       app.prisma.emailSettings.count({ where: { orgId } }),

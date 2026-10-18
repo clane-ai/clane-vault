@@ -17,7 +17,7 @@ export async function clearTwoFactor(tx: Db, userId: string, by: string | null, 
   await tx.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: at } });
 }
 
-export type InstanceResetResult = { ok: true; user: { id: string; email: string; name: string }; emailed: boolean } | { ok: false; error: "not_found" | "self" | "disabled" };
+export type InstanceResetResult = { ok: true; user: { id: string; email: string; name: string }; emailed: boolean } | { ok: false; error: "not_found" | "self" | "disabled" | "is_agent" };
 
 /**
  * The instance-level authenticator reset by email address (docs/recovery.md, "Organisations"): the instance admin's
@@ -28,8 +28,10 @@ export type InstanceResetResult = { ok: true; user: { id: string; email: string;
 export async function resetTwoFactorByEmail(deps: { prisma: PrismaClient; mail: Mailer; productName: () => Promise<string> },
   o: { email: string; actorId: string | null; log: Log; at?: Date; ip?: string; userAgent?: string }): Promise<InstanceResetResult> {
   const email = o.email.trim().toLowerCase();
-  const user = await deps.prisma.user.findUnique({ where: { email }, select: { id: true, email: true, name: true, status: true } });
+  const user = await deps.prisma.user.findUnique({ where: { email }, select: { id: true, email: true, name: true, status: true, kind: true } });
   if (!user) return { ok: false, error: "not_found" };
+  // Agents are not people: no authenticator, no sign-in (docs/agents.md).
+  if (user.kind === "agent") return { ok: false, error: "is_agent" };
   // Your own authenticator is never reset from your own (signed-in, so working) session: that would make a stolen session
   // into a takeover. The operator's CLI is the way for a locked-out instance admin.
   if (user.id === o.actorId) return { ok: false, error: "self" };

@@ -264,7 +264,7 @@ describe("sync never leaks", () => {
     const users = (await call(a, "GET", "/users")).json().users;
     expect(users.map((u: any) => u.id).sort()).toEqual([a.id, b.id].sort());
     expect(users.find((u: any) => u.id === b.id).publicKey).toBe(b64url.encode(b.keys.publicKey));
-    expect(Object.keys(users[0]).sort()).toEqual(["email", "id", "membershipKey", "name", "publicKey"]);
+    expect(Object.keys(users[0]).sort()).toEqual(["email", "id", "kind", "membershipKey", "name", "publicKey"]);
     expect((await t.app.inject({ method: "GET", url: "/api/v1/users" })).statusCode).toBe(401);
   });
 });

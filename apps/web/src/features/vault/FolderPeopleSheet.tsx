@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useSession } from "@/lib/session";
+import { isAgent } from "@/lib/orgKeys";
+import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { Chip, Fingerprint, PermissionSelect, PersonRow } from "./people";
 import { PERMISSION_LABEL, type FolderMember, type Grant, type Person, type VaultFolder } from "./types";
@@ -60,6 +62,8 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
             </p>
           )}
           {folder && canAdd && <PeoplePicker exclude={members.map((m) => m.userId)} onAdd={(p, perm) => onAdd(folder, p, perm).then(() => toast.success(`${p.name} added`))} />}
+          {/* "Give access again" to an agent reseals to it: the warning stands above that button too (as ShareSheet). */}
+          {holdsKey && onGiveAccess && members.some((m) => m.needsAccess && !!m.membershipKey && isAgent(m) && m.userId !== user?.id) && <AgentWarning />}
           <ul className="rounded-[12px] border border-border-default px-3" aria-label="Members">
             {members.map((m) => {
               const isFolderOwner = m.permission === "owner";
@@ -67,7 +71,7 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
               const viaGroup = !isFolderOwner && m.directPermission === null;
               const gs = groupsOf(m.userId);
               return (
-                <PersonRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.membershipKey ?? m.publicKey}
+                <PersonRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.membershipKey ?? m.publicKey} agent={isAgent(m)}
                   badge={<>{isFolderOwner && <Chip tone="blue">Owner</Chip>}{m.userId === user?.id && <Chip>You</Chip>}{!isFolderOwner && gs.length > 0 && <Chip>{viaGroup ? "via " : "+ "}{gs.join(", ")}</Chip>}{m.needsAccess && <Chip tone="orange">Needs access again</Chip>}</>}>
                   {m.needsAccess && holdsKey && onGiveAccess && folder && m.userId !== user?.id && (
                     <Button type="button" variant="outline" size="sm" title={m.membershipKey ? "Their new key's fingerprint is shown under their name: compare it with them" : "They haven't opened their vault since the reset"}
@@ -78,7 +82,7 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
                     !isFolderOwner && <span className="text-[13px] text-text-secondary">{PERMISSION_LABEL[m.permission]}</span>
                   ) : (
                     <>
-                      <PermissionSelect value={(m.directPermission ?? m.permission) as Grant} label={`Permission for ${m.name}`} onChange={(p) => folder && void run("Permission changed", () => onUpdate(folder.id, m.userId, p))} />
+                      <PermissionSelect value={(m.directPermission ?? m.permission) as Grant} disabled={isAgent(m)} label={`Permission for ${m.name}`} onChange={(p) => folder && void run("Permission changed", () => onUpdate(folder.id, m.userId, p))} />
                       <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${m.name}`} className="hover:bg-red-tint hover:text-red-500"
                         onClick={() => folder && void run(`${m.name} removed`, () => onRemove(folder.id, m.userId))}><X className="size-4" /></Button>
                     </>
@@ -106,7 +110,9 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
                   ))}
                 </ul>
               )}
-              {folder && canAdd && addable.length > 0 && (
+              {folder && canAdd && addable.length > 0 && <>
+                {/* Sharing with a group that has agents shares with those agents (capped to Use only by the server). */}
+                {addable.find((g) => g.id === pick)?.members.some(isAgent) && <AgentWarning />}
                 <div className="flex items-center gap-2">
                   <Select value={pick} onValueChange={setPick}>
                     <SelectTrigger aria-label="Group to share with" className="h-8 flex-1 text-[13px]"><SelectValue placeholder="Share with a group…" /></SelectTrigger>
@@ -118,7 +124,7 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
                     if (g) void run(`Shared with ${g.name}`, () => fg.add(folder, g, pickPerm)).then(() => setPick(""));
                   }}>Share</Button>
                 </div>
-              )}
+              </>}
               {canAdd && grants.length > 0 && <p className="text-[12px] leading-snug text-text-tertiary">People who join a group later wait until you or an editor approve them (you'll see who, through which group, and who added them).</p>}
             </section>
           )}

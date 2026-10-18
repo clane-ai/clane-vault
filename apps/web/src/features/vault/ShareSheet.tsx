@@ -9,25 +9,27 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { OneTimeLinkForm } from "@/features/links/OneTimeLinkSheet";
 import { useSession, type Org } from "@/lib/session";
 import { InOrg } from "@/lib/scope";
+import { isAgent } from "@/lib/orgKeys";
 import { recordPath, spacePrefix } from "@/lib/paths";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { RecordAvatar } from "./RecordAvatar";
-import { Chip, Fingerprint, PermissionSelect, PersonAvatar } from "./people";
+import { AgentChip, Chip, Fingerprint, PermissionSelect, PersonAvatar } from "./people";
 import { PERMISSION_LABEL, type Grant, type Person, type Permission, type VaultFolder, type VaultRecord } from "./types";
 import { usePeople } from "./useVault";
 
 const eyebrow = "font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase";
 
 /** One row in "People with access": avatar · name, email, how they got access · trailing control. */
-function AccessRow({ id, name, email, publicKey, via, badge, children }: {
-  id: string; name: string; email?: string; publicKey?: string; via: string; badge?: React.ReactNode; children?: React.ReactNode;
+function AccessRow({ id, name, email, publicKey, via, badge, agent, children }: {
+  id: string; name: string; email?: string; publicKey?: string; via: string; badge?: React.ReactNode; agent?: boolean; children?: React.ReactNode;
 }) {
   return (
     <li aria-label={name} className="flex items-center gap-3 border-b border-border-default px-4 py-3 transition-colors duration-150 last:border-b-0 hover:bg-app/60">
-      <PersonAvatar id={id} name={name} />
+      <PersonAvatar id={id} name={name} agent={agent} />
       <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5"><span className="truncate text-[14px] font-medium text-text-primary">{name}</span>{badge}</span>
+        <span className="flex min-w-0 items-center gap-1.5"><span className="truncate text-[14px] font-medium text-text-primary">{name}</span>{agent && <AgentChip />}{badge}</span>
         {email && <span className="block truncate text-[12.5px] text-text-secondary">{email}</span>}
         <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-text-tertiary">
           <span className="shrink-0">{via}</span>
@@ -152,6 +154,8 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                     <h3 className={eyebrow}>People with access</h3>
                     {total > 0 && <span className="font-mono text-[11px] text-text-tertiary">{total}</span>}
                   </div>
+                  {/* "Share again" to an agent reseals to it: the warning stands above that button too. */}
+                  {shares.some((s) => { const p = personOf(s.userId); return s.needsAccess && !!p?.membershipKey && isAgent(p); }) && <AgentWarning />}
                   {total > 0 && <ul aria-label="Shared with" className="overflow-hidden rounded-[12px] border border-border-default bg-card">
                     {ownerId && ownerName && (
                       <AccessRow id={ownerId} name={ownerName} email={personOf(ownerId)?.email} publicKey={personOf(ownerId)?.membershipKey ?? personOf(ownerId)?.publicKey} via="Owner"
@@ -163,12 +167,12 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                     {shares.map((s) => {
                       const p = personOf(s.userId);
                       return (
-                        <AccessRow key={s.userId} id={s.userId} name={s.name} email={p?.email} publicKey={p?.membershipKey ?? p?.publicKey} via="Direct"
+                        <AccessRow key={s.userId} id={s.userId} name={s.name} email={p?.email} publicKey={p?.membershipKey ?? p?.publicKey} via="Direct" agent={!!p && isAgent(p)}
                           badge={s.needsAccess ? <Chip tone="orange">Needs access again</Chip> : undefined}>
                           {s.needsAccess && p?.membershipKey && (
                             <Button type="button" variant="outline" size="sm" onClick={() => void run(`Shared with ${s.name} again`, () => onShare(p, s.permission as Grant))}>Share again</Button>
                           )}
-                          <PermissionSelect className="w-[104px] sm:w-[118px]" value={s.permission as Grant} label={`Permission for ${s.name}`} onChange={(perm) => void run("Permission changed", () => onUpdate(s.userId, perm))} />
+                          <PermissionSelect className="w-[104px] sm:w-[118px]" value={s.permission as Grant} disabled={!!p && isAgent(p)} label={`Permission for ${s.name}`} onChange={(perm) => void run("Permission changed", () => onUpdate(s.userId, perm))} />
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button type="button" variant="ghost" size="icon" aria-label={`Stop sharing with ${s.name}`} className="hover:bg-red-tint hover:text-red-500"
@@ -180,7 +184,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                       );
                     })}
                     {viaFolder.map((m) => (
-                      <AccessRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.membershipKey ?? m.publicKey} via={`via ${teamFolder!.name}`}
+                      <AccessRow key={m.userId} id={m.userId} name={m.name} email={m.email} publicKey={m.membershipKey ?? m.publicKey} via={`via ${teamFolder!.name}`} agent={isAgent(m)}
                         badge={m.userId === user?.id ? <Chip>You</Chip> : undefined}>
                         <PermissionChip permission={m.permission} />
                         <span className="size-8" aria-hidden="true" />

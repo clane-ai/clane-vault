@@ -42,6 +42,12 @@ import { AttachmentSweeper } from "./lib/attachments/sweep.js";
 import { attachmentConfig, instanceUsage, MIB } from "./lib/attachments/quota.js";
 import { SeatLimitError } from "./lib/seats.js";
 import { DEMO_SWEEP_INTERVAL_MS, sweepExpiredDemos } from "./lib/demo.js";
+import { gatewayClient, GatewayIdentityChanged, GatewayUnavailable, type GatewayClient } from "./lib/gateway.js";
+import { AgentLimitError } from "./lib/agents.js";
+import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
+import { registerAgent } from "./plugins/agent.js";
+import { agentApiRoutes } from "./routes/agentApi.js";
+import { authServerMetadata, oauthRoutes, sweepOAuthClients } from "./routes/oauth.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -58,7 +64,9 @@ declare module "fastify" {
     /** Where attachment chunks live (docs/attachments.md): the database, and S3 when configured. */
     attachmentStores: ChunkStores;
     /** Abandoned uploads, removed files, purged S3 files and orphans (run by the periodic sweep). */
-    attachmentSweeper: AttachmentSweeper }
+    attachmentSweeper: AttachmentSweeper;
+    /** The agent gateway's internal port (docs/agents.md). Decorated only when agent features are on. */
+    gateway: GatewayClient }
 }
 
 const INVITE_TOKEN = /(\/auth\/invite\/)[^/?#\s]+/g;
@@ -101,13 +109,18 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
   const backups = new BackupService({ prisma: opts.prisma, databaseUrl: opts.config.databaseUrl, log: app.log,
     config: opts.config.backup ?? { enabled: false, schedule: "30 2 * * *", retentionDays: 14 }, attachmentStorage: att.storage, ...opts.backup });
   app.decorate("backups", backups);
+  if (opts.config.agents) app.decorate("gateway", gatewayClient(opts.config.agents));
   await app.register(cookie);
   await app.register(rateLimit, { max: opts.config.rateLimitPerMinute ?? 300, timeWindow: "1 minute" });
   registerAuth(app);
   registerOrg(app);
+  if (opts.config.agents) registerAgent(app);
   app.setErrorHandler((err: FastifyError, _req, reply) => {
     if (err instanceof ZodError) return reply.code(400).send({ error: "invalid_request", issues: err.issues.map((i) => i.path.join(".")) });
     if (err instanceof SeatLimitError) return reply.code(402).send({ error: "seat_limit", used: err.used, allowed: err.allowed });
+    if (err instanceof AgentLimitError) return reply.code(402).send({ error: "agent_limit", used: err.used, allowed: err.allowed });
+    if (err instanceof GatewayUnavailable) { app.log.warn({ event: "gateway_unavailable" }, err.message); return reply.code(503).send({ error: "gateway_unavailable" }); }
+    if (err instanceof GatewayIdentityChanged) { app.log.error({ event: "gateway_identity_changed", pinned: err.pinned.keyId, seen: err.seen.keyId }, err.message); return reply.code(503).send({ error: "gateway_identity_changed" }); }
     if (err.statusCode === 429) return reply.code(429).send({ error: "rate_limited" });
     if (err.code === "FST_ERR_CTP_BODY_TOO_LARGE") return reply.code(413).send({ error: "too_large" });
     if (err.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") return reply.code(415).send({ error: "unsupported_media_type" });
@@ -145,7 +158,19 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     await api.register(membershipKeyRoutes);
     await api.register(meKeyRoutes);
     await api.register(healthReportRoutes);
+    if (opts.config.agents) {
+      await api.register(agentAdminRoutes, { prefix: "/admin/agents" });
+      await api.register(orgAgentRoutes);
+      await api.register(agentApiRoutes);
+      await api.register(oauthRoutes);
+    }
   }, { prefix: apiPrefix(opts.config) });
+  if (opts.config.agents) {
+    // RFC 8414 path insertion for an issuer with a path, and under the base path (where the gateway, given API_URL, looks).
+    const base = opts.config.basePath ?? "";
+    for (const url of new Set([`/.well-known/oauth-authorization-server${base}`, `${base}/.well-known/oauth-authorization-server`]))
+      app.get(url, async () => authServerMetadata(opts.config));
+  }
   if (opts.webDist) await registerWeb(app, opts.webDist, opts.config.basePath ?? "");
   // Expired one-time links lose their ciphertext and password material even if nobody looks at them again.
   // Lapsed recovery requests lose their wrapped key and proof hash the same way.
@@ -157,6 +182,8 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     opts.prisma.ssoLogin.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.ssoProof.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.m365Connect.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
+    opts.prisma.agentOAuthCode.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
+    sweepOAuthClients(opts.prisma).catch((e: unknown) => app.log.error(e));
     // Attachments: abandoned uploads (24 h), removed files and purged S3 objects (docs/attachments.md).
     sweeper.run().catch((e: unknown) => app.log.error(e));
   }, SWEEP_INTERVAL_MS);

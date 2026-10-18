@@ -1,0 +1,28 @@
+{
+  "name": "@clane-vault/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node build.mjs && node --disable-sigusr1 dist/server.js",
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clane-vault/crypto": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "jose": "^6.2.12",
+    "undici": "^7.30.0",
+    "zod": "^4.6.5"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-kms": "3.1146.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

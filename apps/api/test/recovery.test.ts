@@ -8,6 +8,7 @@ import {
 import { anyScopedPayload, approveScoped, escrowKey, keyUp, keysOf, scopedReset } from "./keys.js";
 import { makeTestApp, resetDb, createActiveUser, FAST_KDF, freshTotp, wrongTotp as wrongCode, orgHeader } from "./helpers.js";
 import { sweepRecoveryRequests } from "../src/lib/recovery.js";
+import { createTestAgent } from "./agentHelpers.js";
 
 const t = await makeTestApp();
 afterAll(() => t.app.close());
@@ -557,8 +558,9 @@ describe("0.5.1 hardening", () => {
     await enablePolicy(a, false);
   });
 
-  it("emails everyone when the policy turns on", async () => {
+  it("emails everyone when the policy turns on, never an agent", async () => {
     const a = await createActiveUser(t, { role: "admin" }), m = await createActiveUser(t);
+    await createTestAgent(t, { orgId: a.orgId, createdById: a.id, verified: true });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     Object.assign(t.config, { resendApiKey: "re_test", emailFrom: "vault@clane.ai" });
     try {
@@ -566,6 +568,8 @@ describe("0.5.1 hardening", () => {
       // The emails are sent in the background (the reply doesn't wait for them).
       const to = () => fetchSpy.mock.calls.filter(([u]) => String(u).includes("resend.com")).map(([, init]) => JSON.parse(String((init as RequestInit).body)).to[0]);
       await vi.waitFor(() => expect(to()).toEqual([m.email]));
+      await new Promise((r) => setTimeout(r, 100)); // and nothing else follows
+      expect(to()).toEqual([m.email]);
     } finally { fetchSpy.mockRestore(); Object.assign(t.config, { resendApiKey: undefined, emailFrom: undefined }); }
   });
 

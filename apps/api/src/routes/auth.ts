@@ -247,7 +247,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/login", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
     const body = z.object({ email, authKey: z.string().max(4096), code: z.string().max(10).optional(), client: clientSchema }).parse(req.body);
     const user = await app.prisma.user.findUnique({ where: { email: body.email } });
-    if (!user || user.status === "disabled" || demoExpired(user)) {
+    // Agents have no password: same answer and timing as an unknown address.
+    if (!user || user.kind === "agent" || user.status === "disabled" || demoExpired(user)) {
       await argon2.verify(dummyHash, body.authKey).catch(() => false);
       return reply.code(401).send({ error: "invalid_credentials" });
     }

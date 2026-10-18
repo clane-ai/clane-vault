@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { activeMember, isUniqueViolation, maxPermission, permissionRank } from "../lib/access.js";
+import { activeMember, capForAgent, isUniqueViolation, maxPermission, permissionRank } from "../lib/access.js";
+import { isAgentUser } from "../lib/agents.js";
 import { logEvent } from "../lib/events.js";
 import { privateLockGuard } from "../lib/privateLock.js";
 import { removeFolderMember, trashFolder } from "../lib/folderMembers.js";
@@ -96,6 +97,7 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
     if (!folder) return reply;
     // Only active members of the folder's organisation can join it.
     if (!(await activeMember(app.prisma, b.userId, req.org!.id))) return reply.code(400).send({ error: "user_not_active" });
+    if (b.permission !== "use" && (await isAgentUser(app.prisma, b.userId))) return reply.code(400).send({ error: "agent_use_only" });
     let r: "added" | "exists" | "stale";
     try {
       r = await app.prisma.$transaction(async (tx) => {
@@ -105,7 +107,7 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
         // Someone with access only through a group gets a direct grant on top (their key is already sealed).
         if (cur && cur.directPermission !== null) return "exists";
         if (cur) await tx.folderMember.update({ where: { folderId_userId: { folderId: id, userId: b.userId } }, data: { directPermission: b.permission } });
-        else await tx.folderMember.create({ data: { folderId: id, userId: b.userId, permission: maxPermission(b.permission, await groupPermission(tx, id, b.userId))!, directPermission: b.permission, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
+        else await tx.folderMember.create({ data: { folderId: id, userId: b.userId, permission: await capForAgent(tx, b.userId, maxPermission(b.permission, await groupPermission(tx, id, b.userId))!), directPermission: b.permission, wrappedFolderKey: b.wrappedFolderKey, sealedTo: b.sealedTo } });
         await recomputeMember(tx, folder, b.userId);
         // Added directly: a pending entry for the same person (bulk migration) is done.
         const u = await tx.user.findUnique({ where: { id: b.userId }, select: { email: true } });
@@ -125,6 +127,7 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
     const folder = await manageable(req, reply, id, { admin: true });
     if (!folder) return reply;
     if (userId === folder.ownerId) return reply.code(400).send({ error: "folder_owner" });
+    if (b.permission !== "use" && (await isAgentUser(app.prisma, userId))) return reply.code(400).send({ error: "agent_use_only" });
     // Changes the direct grant; the effective permission stays the highest of it and the person's group grants.
     const n = await app.prisma.$transaction(async (tx) => {
       await lockFolder(tx, id);
@@ -133,7 +136,7 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
       if (cur.directPermission === null) return "group_only" as const;
       if (folder.asAdmin && permissionRank(b.permission) > permissionRank(cur.directPermission)) return "forbidden" as const;
       const g = await groupPermission(tx, id, userId);
-      await tx.folderMember.update({ where: { folderId_userId: { folderId: id, userId } }, data: { directPermission: b.permission, permission: maxPermission(b.permission, g)! } });
+      await tx.folderMember.update({ where: { folderId_userId: { folderId: id, userId } }, data: { directPermission: b.permission, permission: await capForAgent(tx, userId, maxPermission(b.permission, g)!) } });
       // Down to view/use: links they made on the folder's records go (unless a direct share or a group still gives them edit).
       if (b.permission !== "edit" && g !== "edit") {
         const ids = (await tx.record.findMany({ where: { folderId: id }, select: { id: true } })).map((r) => r.id);

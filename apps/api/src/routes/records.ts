@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { accessFor, activeMember, canEdit, isUniqueViolation, teamMembership } from "../lib/access.js";
+import { isAgentUser } from "../lib/agents.js";
 import { logEvent } from "../lib/events.js";
 import { privateLockGuard } from "../lib/privateLock.js";
 import { revokeLinksForRecords, revokeLinksOfLostAccess } from "../lib/links.js";
@@ -208,6 +209,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     if (b.userId === req.auth.userId) return reply.code(400).send({ error: "self_share" });
     if ((await app.prisma.record.findUniqueOrThrow({ where: { id }, select: { deletedAt: true } })).deletedAt) return reply.code(409).send({ error: "in_trash" });
     if (!(await activeMember(app.prisma, b.userId, req.org.id))) return reply.code(400).send({ error: "user_not_active" });
+    if (b.permission !== "use" && (await isAgentUser(app.prisma, b.userId))) return reply.code(400).send({ error: "agent_use_only" });
     if (!(await recipientKeyOk(app.prisma, req.org.id, b.userId, b.sealedTo))) return reply.code(409).send({ error: "stale_recipient_key" });
     const exists = await app.prisma.recordAccess.findUnique({ where: { recordId_holderType_holderId: { recordId: id, holderType: "user", holderId: b.userId } } });
     if (exists) {
@@ -228,6 +230,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     const { id, userId } = shareParam.parse(req.params);
     const b = z.object({ permission: grantable }).parse(req.body);
     if (!(await owned(req, reply, id))) return reply;
+    if (b.permission !== "use" && (await isAgentUser(app.prisma, userId))) return reply.code(400).send({ error: "agent_use_only" });
     const n = await app.prisma.$transaction(async (tx) => {
       const u = await tx.recordAccess.updateMany({ where: { recordId: id, holderType: "user", holderId: userId, permission: { not: "owner" }, orgId: ctx(req) }, data: { permission: b.permission } });
       if (u.count) await revokeLinksOfLostAccess(tx, userId, [id]); // down to view/use: their links go

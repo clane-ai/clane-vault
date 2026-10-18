@@ -1,4 +1,5 @@
 import { aeadDecrypt, aeadEncrypt } from "./aead.js";
+import { validateAgentPolicy, type AgentPolicy } from "./agents.js";
 import { randomBytes, utf8, CryptoError } from "./encoding.js";
 import { CORE_KEYS, FIELD_KINDS, coreKeysOf, dataKeysOf, isRecordType, type CoreKey, type FieldKind, type RecordType } from "./recordTypes.js";
 
@@ -19,6 +20,8 @@ export interface RecordBody {
   v?: 2; type: RecordType; title: string;
   username?: string; password?: string; url?: string; totpSecret?: string; notes?: string; passwordChangedAt?: string;
   data?: Record<string, string>; fields?: CustomField[];
+  /** How agents may use this record (docs/agents.md); absent = agents get no_policy. */
+  agentPolicy?: AgentPolicy;
 }
 
 /** Limits on a body (docs/record-types.md). The whole body must fit the server's 64 KiB ciphertext envelope. */
@@ -85,7 +88,8 @@ function validateV1(body: RecordBody): RecordBody {
   return clean;
 }
 
-function validateV2(body: RecordBody): RecordBody {
+/** `lenient` (reads only): an invalid stored agentPolicy is dropped, so people can still open the record and agents fail closed. */
+function validateV2(body: RecordBody, lenient = false): RecordBody {
   if (!isRecordType(body.type)) throw new Error("record type is invalid");
   if (typeof body.title !== "string" || body.title.trim() === "") throw new Error("record title is required");
   if (body.title.length > 1024) throw new Error("record title is too long");
@@ -104,16 +108,19 @@ function validateV2(body: RecordBody): RecordBody {
   if (data) clean.data = data;
   const fields = cleanFields(body.fields);
   if (fields) clean.fields = fields;
+  if (body.agentPolicy !== undefined) {
+    try { clean.agentPolicy = validateAgentPolicy(body.agentPolicy, clean); } catch (e) { if (!lenient) throw e; }
+  }
   if (utf8.encode(JSON.stringify(clean)).length > MAX_BODY_BYTES) throw new Error("record is too large");
   return clean;
 }
 
 /** v1 bodies (no `v`) are read as they always were; anything else must be a valid v2 body. */
-function validate(body: RecordBody): RecordBody {
+function validate(body: RecordBody, lenient = false): RecordBody {
   if (!body || typeof body !== "object") throw new Error("record body must be an object");
   if (body.v === undefined) return validateV1(body);
   if (body.v !== 2) throw new Error("unknown record version");
-  return validateV2(body);
+  return validateV2(body, lenient);
 }
 
 /** What an encrypt writes: always v2 (a v1-shaped login or note is a valid v2 body). */
@@ -136,9 +143,11 @@ export async function encryptNewRecord(recordId: string, body: RecordBody, holde
 export async function decryptRecordBody(recordId: string, encBody: string, recordKey: Uint8Array): Promise<RecordBody> {
   const plaintext = await aeadDecrypt(recordKey, encBody, `record-body:${recordId}`);
   try {
-    return validate(JSON.parse(utf8.decode(plaintext)));
+    return validate(JSON.parse(utf8.decode(plaintext)), true);
   } catch {
     throw new CryptoError("bad_envelope");
+  } finally {
+    plaintext.fill(0); // the body's secrets as bytes; the gateway relies on this zeroing
   }
 }
 

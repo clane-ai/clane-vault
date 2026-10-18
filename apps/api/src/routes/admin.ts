@@ -100,7 +100,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
    */
   app.get("/people", async (req) => {
     const [members, rows] = await Promise.all([
-      app.prisma.membership.findMany({ where: { orgId: orgId(req) }, orderBy: { createdAt: "asc" },
+      app.prisma.membership.findMany({ where: { orgId: orgId(req), user: { kind: "person" } }, orderBy: { createdAt: "asc" },
         select: { id: true, role: true, status: true, createdAt: true, joinedAt: true, user: { select: { id: true, name: true, email: true, status: true, createdAt: true, publicKey: true } } } }),
       app.prisma.invite.findMany({ where: { orgId: orgId(req), acceptedAt: null, expiresAt: { gt: new Date() } }, select: { id: true, email: true, role: true, expiresAt: true, createdAt: true }, orderBy: { createdAt: "desc" } }),
     ]);
@@ -145,18 +145,20 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
   async function target(req: FastifyRequest, id: string) {
     if (id === req.auth.userId) return "self" as const;
     const m = await app.prisma.membership.findUnique({ where: { orgId_userId: { orgId: orgId(req), userId: id } },
-      select: { role: true, status: true, user: { select: { id: true, status: true, totpSecretEnc: true, email: true, name: true } } } });
+      select: { role: true, status: true, user: { select: { id: true, status: true, totpSecretEnc: true, email: true, name: true, kind: true } } } });
     if (!m) return null;
+    // Agents are revoked only through DELETE /admin/agents/:id (offboarding would leave a live wrapped key and tokens).
+    if (m.user.kind === "agent") return "agent" as const;
     if (m.role === "owner") return "owner" as const;
     return m;
   }
-  const refuse = (t: "self" | "owner" | null) => (t === "self" ? [400, "self"] : t === "owner" ? [403, "owner"] : [404, "not_found"]) as [number, string];
+  const refuse = (t: "self" | "owner" | "agent" | null) => (t === "self" ? [400, "self"] : t === "owner" ? [403, "owner"] : t === "agent" ? [409, "is_agent"] : [404, "not_found"]) as [number, string];
 
   /** Disables the membership in this org only: the account, private items and other orgs are untouched. */
   app.post("/users/:id/disable", async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const t = await target(req, id);
-    if (t === null || t === "self" || t === "owner") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
+    if (t === null || typeof t === "string") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
     if (t.status === "invited") return reply.code(404).send({ error: "not_found" });
     await app.prisma.$transaction((tx) => offboard(tx, orgId(req), id, "disable"));
     await logEvent(app.prisma, { orgId: orgId(req), actorId: req.auth.userId, action: "admin.disable", targetUserId: id });
@@ -166,7 +168,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
   app.post("/users/:id/enable", async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const t = await target(req, id);
-    if (t === null || t === "self" || t === "owner") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
+    if (t === null || typeof t === "string") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
     const globallyDisabled = t.user.status === "disabled";
     // An invitation is accepted by its invitee, never "enabled" by an admin.
     if (t.status === "invited" || (t.status !== "disabled" && !globallyDisabled)) return reply.code(409).send({ error: "not_disabled" });
@@ -190,7 +192,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
   app.post("/users/:id/reset-2fa", async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const t = await target(req, id);
-    if (t === null || t === "self" || t === "owner") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
+    if (t === null || typeof t === "string") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
     if (t.status !== "active" || t.user.status === "disabled") return reply.code(409).send({ error: "disabled" });
     if (!(await canManageAccount(app.prisma, app.config, req.auth.userId, id))) return reply.code(403).send({ error: "other_orgs" });
     // Who reset it and when: admin recovery then needs a second admin and a waiting period (docs/recovery.md).
@@ -212,8 +214,9 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
     const org = orgId(req);
     const m = await app.prisma.membership.findUnique({ where: { orgId_userId: { orgId: org, userId } },
       select: { role: true, status: true, createdAt: true, joinedAt: true, adminRecoveryAckAt: true,
-        user: { select: { id: true, name: true, email: true, status: true, totpEnabledAt: true, createdAt: true } } } });
+        user: { select: { id: true, name: true, email: true, status: true, totpEnabledAt: true, createdAt: true, kind: true } } } });
     if (!m || m.status === "invited") return reply.code(404).send({ error: "not_found" });
+    if (m.user.kind === "agent") return reply.code(409).send({ error: "is_agent" });
     const [groups, folders, report, escrows, o, requests] = await Promise.all([
       app.prisma.groupMember.findMany({ where: { userId, group: { orgId: org } }, orderBy: { group: { name: "asc" } }, select: { group: { select: { id: true, name: true } } } }),
       app.prisma.folderMember.findMany({ where: { userId, folder: { orgId: org, kind: "team", deletedAt: null } }, orderBy: { createdAt: "asc" },
@@ -237,7 +240,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/members/:userId", async (req, reply) => {
     const { userId } = userParam.parse(req.params);
     const t = await target(req, userId);
-    if (t === null || t === "self" || t === "owner") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
+    if (t === null || typeof t === "string") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
     await app.prisma.$transaction(async (tx) => {
       if (t.status === "invited") await coolDown(tx, orgId(req), t.user.email);
       await tx.invite.deleteMany({ where: { orgId: orgId(req), email: t.user.email, acceptedAt: null } });
@@ -252,7 +255,7 @@ const orgAdminRoutes: FastifyPluginAsync = async (app) => {
     const { userId } = userParam.parse(req.params);
     const { role } = z.object({ role: z.enum(["admin", "member"]) }).parse(req.body);
     const t = await target(req, userId);
-    if (t === null || t === "self" || t === "owner") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
+    if (t === null || typeof t === "string") { const [c, e] = refuse(t); return reply.code(c).send({ error: e }); }
     if (t.role === role) return { ok: true };
     await app.prisma.$transaction(async (tx) => {
       await tx.membership.update({ where: { orgId_userId: { orgId: orgId(req), userId } }, data: { role, ...(role === "member" ? { adminSince: null } : {}) } });

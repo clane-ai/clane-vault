@@ -11,7 +11,7 @@ configureKdfFloor({ m: 1024, t: 1 });
 export const FAST_KDF: KdfParams = { alg: "argon2id", m: 1024, t: 2, p: 1 };
 
 export async function resetDb(prisma: PrismaClient) {
-  await prisma.$executeRawUnsafe(`TRUNCATE "RecoveryRequest","MembershipEscrow","MembershipKey","AccountKeyArchive","PendingFolderMember","Event","RecordAccess","Record","Folder","Session","Invite","Membership","OrgLogo","Organization","User","InstanceBrand" CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "RecoveryRequest","MembershipEscrow","MembershipKey","AccountKeyArchive","PendingFolderMember","Event","RecordAccess","Record","Folder","Session","Invite","Membership","OrgLogo","Organization","User","InstanceBrand","AgentOAuthClient","AgentOAuthCode","GatewayIdentity" CASCADE`);
   // Every test starts with the default organisation only (what the API creates on a fresh install).
   await prisma.organization.create({ data: { name: "Test org", slug: "default", createdAt: new Date("2020-01-01T00:00:00Z") } });
 }

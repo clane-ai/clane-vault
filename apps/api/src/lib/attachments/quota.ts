@@ -77,7 +77,7 @@ export async function chargeQuota(db: Db, cfg: AttachmentConfig, charge: Charge)
   if (cfg.billingMode !== "hosted") return cap;
   const perSeat = charge.kind === "org" ? (await orgEntitlements(db, cfg, charge.orgId)).storageBytesPerSeat : getPersonalEntitlements(cfg).storageBytesPerSeat;
   if (perSeat === null) return cap;
-  const seats = charge.kind === "org" ? Math.max(1, await db.membership.count({ where: { orgId: charge.orgId, status: "active" } })) : 1;
+  const seats = charge.kind === "org" ? Math.max(1, await db.membership.count({ where: { orgId: charge.orgId, status: "active", user: { kind: "person" } } })) : 1;
   return perSeat * seats;
 }
 

@@ -1,3 +1,4 @@
+import { createPrivateKey } from "node:crypto";
 import { Cron } from "croner";
 import { z } from "zod";
 import { AGE_RECIPIENT } from "./lib/backup/age.js";
@@ -64,6 +65,12 @@ const schema = z.object({
   DEMO_MODE: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
   DEMO_TTL_MINUTES: z.preprocess(blank, z.coerce.number().int().min(5).max(7 * 24 * 60).default(120)),
   DEMO_SANDBOXES_PER_IP_PER_HOUR: z.preprocess(blank, z.coerce.number().int().min(1).max(10000).default(5)),
+  // Agent access (docs/agents.md): off unless GATEWAY_INTERNAL_URL is set, and then the next three are required too.
+  GATEWAY_INTERNAL_URL: z.preprocess(blank, z.string().url().optional()),
+  GATEWAY_PUBLIC_URL: z.preprocess(blank, z.string().url().optional()),
+  GATEWAY_API_TOKEN: z.preprocess(blank, z.string().min(32).optional()),
+  AGENT_TOKEN_PRIVATE_KEY: z.preprocess(blank, z.string().optional()),
+  GATEWAY_ACCEPT_NEW_IDENTITY: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
 });
 
 export interface BackupConfig {
@@ -95,6 +102,15 @@ export interface AttachmentConfig {
 export const DEFAULT_ATTACHMENTS: AttachmentConfig = {
   enabled: true, storage: "db", maxFileMb: 100, maxPerRecord: 25, maxRecordMb: 250, orgQuotaMb: 2048, userQuotaMb: 512, instanceQuotaMb: 10240, dailyUploadMb: 2048,
 };
+
+/** Agent access (docs/agents.md). Absent on Config = agent features off. */
+export interface AgentConfig {
+  gatewayInternalUrl: string; gatewayPublicUrl: string; gatewayApiToken: string;
+  /** PKCS#8 PEM, P-256: signs agent access tokens (ES256). */
+  tokenPrivateKeyPem: string;
+  /** GATEWAY_ACCEPT_NEW_IDENTITY=true: accept and pin a changed gateway identity. */
+  acceptNewGatewayIdentity: boolean;
+}
 
 export interface Config {
   /** Product name shown to people: authenticator-app issuer, invite emails. PRODUCT_NAME, default "Clane Vault". */
@@ -152,7 +168,9 @@ export interface Config {
    * uploads are capped small. `sandboxesPerIpPerHour` (DEMO_SANDBOXES_PER_IP_PER_HOUR, default 5) limits sign-ups.
    * Absent: off.
    */
-  demo?: DemoConfig }
+  demo?: DemoConfig;
+  /** Agent access; absent: off (no agent, /agent/* or /oauth/* route exists). */
+  agents?: AgentConfig }
 
 export interface DemoConfig { ttlMinutes: number; sandboxesPerIpPerHour: number }
 
@@ -223,6 +241,19 @@ function backupConfig(e: z.infer<typeof schema>): BackupConfig {
   return b;
 }
 
+function agentConfig(e: z.infer<typeof schema>): AgentConfig | undefined {
+  const set = [e.GATEWAY_INTERNAL_URL, e.GATEWAY_PUBLIC_URL, e.GATEWAY_API_TOKEN, e.AGENT_TOKEN_PRIVATE_KEY];
+  if (set.every((v) => v === undefined)) return undefined;
+  if (set.some((v) => v === undefined)) throw new Error("GATEWAY_INTERNAL_URL, GATEWAY_PUBLIC_URL, GATEWAY_API_TOKEN and AGENT_TOKEN_PRIVATE_KEY go together (docs/agents.md)");
+  const pem = e.AGENT_TOKEN_PRIVATE_KEY!.replace(/\\n/g, "\n");
+  try {
+    const k = createPrivateKey(pem);
+    if (k.asymmetricKeyType !== "ec" || k.asymmetricKeyDetails?.namedCurve !== "prime256v1") throw new Error();
+  } catch { throw new Error("AGENT_TOKEN_PRIVATE_KEY must be a P-256 PKCS#8 PEM (-----BEGIN PRIVATE KEY-----)"); }
+  return { gatewayInternalUrl: e.GATEWAY_INTERNAL_URL!, gatewayPublicUrl: e.GATEWAY_PUBLIC_URL!, gatewayApiToken: e.GATEWAY_API_TOKEN!,
+    tokenPrivateKeyPem: pem, acceptNewGatewayIdentity: e.GATEWAY_ACCEPT_NEW_IDENTITY === "true" };
+}
+
 function attachmentConfig(e: z.infer<typeof schema>): AttachmentConfig {
   const prefix = e.ATTACHMENT_S3_PREFIX === "" || e.ATTACHMENT_S3_PREFIX.endsWith("/") ? e.ATTACHMENT_S3_PREFIX : `${e.ATTACHMENT_S3_PREFIX}/`;
   const a: AttachmentConfig = {
@@ -261,11 +292,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
   }
   const { basePath, publicUrl } = resolveBasePath(e.PUBLIC_URL, e.BASE_PATH);
+  const agents = agentConfig(e);
   return { productName: e.PRODUCT_NAME, basePath, databaseUrl: e.DATABASE_URL, jwtSecret: e.JWT_SECRET, serverSecret: e.SERVER_SECRET, publicUrl, cookieSecure: e.COOKIE_SECURE === "true", port: e.PORT, kdfMinMemoryKiB: e.KDF_MIN_MEMORY_KIB, rateLimitPerMinute: e.RATE_LIMIT_PER_MINUTE, adminRecoveryResetDelayHours: e.ADMIN_RECOVERY_RESET_DELAY_HOURS, adminRecoveryApproverMinAgeDays: e.ADMIN_RECOVERY_APPROVER_MIN_AGE_DAYS, trustProxy: e.TRUST_PROXY === "true" ? true : e.TRUST_PROXY === "false" ? false : Number(e.TRUST_PROXY),
     ...(e.RESEND_API_KEY && e.EMAIL_FROM ? { resendApiKey: e.RESEND_API_KEY, emailFrom: e.EMAIL_FROM } : {}), backup: backupConfig(e),
     ...(e.DEFAULT_ORG_NAME ? { defaultOrgName: e.DEFAULT_ORG_NAME } : {}), allowOrgCreation: e.ALLOW_ORG_CREATION === "true", acceptNewServerSecret: e.ACCEPT_NEW_SERVER_SECRET === "true",
     hostedMode: e.HOSTED_MODE === "true", billingMode: e.BILLING_MODE, invitesPerOrgPerDay: e.INVITES_PER_ORG_PER_DAY, maxOwnedOrgs: e.MAX_OWNED_ORGS,
     ssoAllowHttpIssuer: e.SSO_ALLOW_HTTP_ISSUER === "true",
     attachments: attachmentConfig(e),
+    ...(agents ? { agents } : {}),
     ...(e.DEMO_MODE === "true" ? { demo: { ttlMinutes: e.DEMO_TTL_MINUTES, sandboxesPerIpPerHour: e.DEMO_SANDBOXES_PER_IP_PER_HOUR } } : {}) };
 }

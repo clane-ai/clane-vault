@@ -23,7 +23,7 @@ export const healthAdminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (req) => {
     const orgId = req.org!.id;
     const [members, reports] = await Promise.all([
-      app.prisma.membership.findMany({ where: { orgId, status: { in: ["active", "disabled"] } }, orderBy: { createdAt: "asc" }, select: { role: true, status: true, user: { select: { id: true, name: true, email: true } } } }),
+      app.prisma.membership.findMany({ where: { orgId, status: { in: ["active", "disabled"] }, user: { kind: "person" } }, orderBy: { createdAt: "asc" }, select: { role: true, status: true, user: { select: { id: true, name: true, email: true } } } }),
       app.prisma.healthReport.findMany({ where: { orgId }, select: { userId: true, score: true, total: true, weak: true, reused: true, old: true, breached: true, reportedAt: true } }),
     ]);
     const byUser = new Map(reports.map((r) => [r.userId, r]));

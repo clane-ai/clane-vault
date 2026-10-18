@@ -2,11 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api";
 import { useOrgApi, useScope } from "@/lib/scope";
 
-export type PlanFeature = "sso" | "domains" | "policyEdit" | "adminRecovery" | "risk" | "orgLogo" | "eventExport";
+export type PlanFeature = "sso" | "domains" | "policyEdit" | "adminRecovery" | "risk" | "orgLogo" | "eventExport" | "agentApprovals" | "agentPathPolicy";
 export interface OrgPlan {
   plan: "team" | "business"; billingStatus: string; seatsPaid: number | null; currentPeriodEnd: string | null; trialEndsAt: string | null;
   entitlements: { plan: string; trial: boolean; features: Record<PlanFeature, boolean>; seatsAllowed: number | null; storageBytesPerSeat: number | null; activeLinkLimit: number | null; eventLogDays: number | null };
   seats: { used: number; allowed: number | null }; storage: { used: number; limit: number | null };
+  /** Live agents (not revoked) and the plan's allowance; null: unlimited. Absent where agents are off. */
+  agents?: { used: number; allowed: number | null };
 }
 
 /** The org's plan for owners and admins. Null: billing is off (the route is absent), so nothing is locked. */
@@ -28,6 +30,9 @@ export const UPGRADE = "Available on the Business plan.";
 
 export const MEMBER_OVER_LIMIT = "Your organisation is over its plan's limit. Ask an admin.";
 
+export const agentLimitLine = (allowed?: number | null) =>
+  allowed == null ? "Your plan's agents are all in use. Revoke one to add another." : `All ${allowed} agents on your plan are in use. Revoke one to add another.`;
+
 /** The line for a plan or limit refusal (402), or null for any other error. `member`: plain members never see seat counts or upgrade prompts. */
 export function planMessage(e: unknown, member = false): string | null {
   if (!(e instanceof ApiError)) return null;
@@ -35,6 +40,7 @@ export function planMessage(e: unknown, member = false): string | null {
   const b = (e.body ?? {}) as { allowed?: number; limit?: number };
   if (e.code === "seat_limit") return b.allowed == null ? "All seats are in use. An owner can add seats." : `All ${b.allowed} seats are in use. An owner can add seats.`;
   if (e.code === "link_limit") return b.limit == null ? "You've reached the limit of active one-time links. Revoke one to make another." : `You can have ${b.limit} active one-time links. Revoke one to make another.`;
+  if (e.code === "agent_limit") return agentLimitLine(b.allowed);
   if (e.code === "plan_required") return UPGRADE;
   return null;
 }
