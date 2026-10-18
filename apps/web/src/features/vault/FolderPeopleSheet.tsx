@@ -62,6 +62,8 @@ export function FolderPeopleSheet({ folder, onClose, onAdd, onUpdate, onRemove, 
             </p>
           )}
           {folder && canAdd && <PeoplePicker exclude={members.map((m) => m.userId)} onAdd={(p, perm) => onAdd(folder, p, perm).then(() => toast.success(`${p.name} added`))} />}
+          {/* "Give access again" to an agent reseals to it: the warning stands above that button too (as ShareSheet). */}
+          {holdsKey && onGiveAccess && members.some((m) => m.needsAccess && !!m.membershipKey && isAgent(m) && m.userId !== user?.id) && <AgentWarning />}
           <ul className="rounded-[12px] border border-border-default px-3" aria-label="Members">
             {members.map((m) => {
               const isFolderOwner = m.permission === "owner";

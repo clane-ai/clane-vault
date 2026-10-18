@@ -267,5 +267,20 @@ describe("giving access again after a key change", () => {
     expect(row).toHaveTextContent("Needs access again");
     await userEvent.click(within(row).getByRole("button", { name: "Give access again" }));
     await waitFor(() => expect(give).toHaveBeenCalledWith(folder, folder.members![1]));
+    expect(screen.queryByRole("note", { name: "Sharing with an agent" })).toBeNull();
+  });
+
+  it("an agent that needs access again has the restricted-credential warning above Give access again", async () => {
+    const folder: VaultFolder = { id: crypto.randomUUID(), name: "Infra", kind: "team", deleted: false, ownerId: "a1", myPermission: "owner", folderKey: randomBytes(32), groups: [],
+      members: [
+        { userId: "a1", name: "Ada", email: "ada@clane.ai", publicKey: "", permission: "owner", directPermission: "owner" },
+        { userId: "b1", name: "Billing bot", email: "agent+b1@agents.invalid", kind: "agent", publicKey: "", membershipKey: b64url.encode((await generateKeyPair()).publicKey), needsAccess: true, permission: "use", directPermission: "use" },
+      ] };
+    server.use(http.get("/api/v1/users", () => HttpResponse.json({ users: [] })), http.get("/api/v1/groups", () => HttpResponse.json({ groups: [] })));
+    wrap(<FolderPeopleSheet folder={folder} onClose={() => undefined} onAdd={vi.fn()} onUpdate={vi.fn()} onRemove={vi.fn()} onGiveAccess={vi.fn(async () => undefined)} />);
+    const row = await screen.findByRole("listitem", { name: "Billing bot" });
+    const again = within(row).getByRole("button", { name: "Give access again" });
+    const warning = screen.getByRole("note", { name: "Sharing with an agent" });
+    expect(warning.compareDocumentPosition(again) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
