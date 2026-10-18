@@ -96,6 +96,21 @@ describe("agents hold use only", () => {
     expect((await t.prisma.recordAccess.findFirstOrThrow({ where: { recordId: id, holderId: A.id } })).permission).toBe("use");
   });
 
+  it("pending members: more than use for an agent is 400 agent_use_only; complete caps a stored row to use", async () => {
+    const { owner, A } = await setup();
+    const f = await teamFolder(owner);
+    const email = (await t.prisma.user.findUniqueOrThrow({ where: { id: A.id } })).email;
+    for (const [e, p] of [[email, "edit"], [email, "view"], ["agent+x@agents.invalid", "edit"]]) {
+      const r = await call(owner, "POST", `/folders/${f}/pending-members`, { email: e, permission: p });
+      expect([r.statusCode, r.json().error]).toEqual([400, "agent_use_only"]);
+    }
+    // A row stored before this check (or by any other path) is still capped on complete.
+    const pending = await t.prisma.pendingFolderMember.create({ data: { folderId: f, email, permission: "edit", createdBy: owner.id } });
+    const r = await call(owner, "POST", `/folders/${f}/pending-members/${pending.id}/complete`, { userId: A.id, ...sealTo(A) });
+    expect([r.statusCode, r.json().permission]).toEqual([201, "use"]);
+    expect(await permOf(f, A.id)).toBe("use");
+  });
+
   it("group grants are capped silently: approval gives use, and a recompute after raising the group keeps use", async () => {
     const { owner, A } = await setup();
     const f = await teamFolder(owner);
