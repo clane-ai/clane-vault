@@ -17,6 +17,17 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, PUBLIC_URL: "http://vault.example/mcp" })).toThrow(/https/);
     expect(() => loadConfig({ ...base, GATEWAY_KEK: "" })).toThrow();
   });
+  it("API_URL: https anywhere; http only on loopback, an internal name or a private literal", () => {
+    for (const ok of ["https://api.example/app", "http://api:3001", "http://localhost:3001", "http://127.0.0.1:3001", "http://[::1]:3001", "http://vault-api.internal",
+      "http://10.1.2.3", "http://172.16.0.1", "http://172.31.255.1", "http://192.168.1.1", "http://[fd00::1]", "http://[fc12::1]"])
+      expect(loadConfig({ ...base, API_URL: ok }).apiUrl, ok).toBe(ok);
+    for (const bad of ["http://api.example", "http://8.8.8.8", "http://172.32.0.1", "http://11.0.0.1", "http://[2001:db8::1]", "http://internal.example.com", "ftp://api"])
+      expect(() => loadConfig({ ...base, API_URL: bad }), bad).toThrow(/API_URL/);
+  });
+  it("refuses a GATEWAY_ALLOW_PRIVATE_CIDRS entry that isn't a CIDR", () => {
+    for (const bad of ["10.0.0.0", "10.0.0.0/8,nope", "10.0.0.0/33", "fd00::/200", "example.com/24"])
+      expect(() => loadConfig({ ...base, GATEWAY_ALLOW_PRIVATE_CIDRS: bad }), bad).toThrow(/GATEWAY_ALLOW_PRIVATE_CIDRS/);
+  });
   it("never echoes the token in an error", () => {
     const tok = "secret-token-value";
     expect(() => loadConfig({ ...base, GATEWAY_API_TOKEN: tok })).toThrow();

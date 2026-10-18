@@ -99,7 +99,7 @@ describe("every page has a URL", () => {
     await waitFor(() => expect(where()).toBe("/o/acme/admin/risk"));
     const sub = await screen.findByRole("navigation", { name: "Admin sections" });
     expect(within(sub).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Organisation", "Organisation settings"]);
-    expect(within(sub).getAllByRole("link").map((l) => l.textContent)).toEqual(["Risk dashboard", "People", "Groups", "Event log", "Password health", "Migrate from Keeper", "General", "Policies", "Single sign-on", "Admin recovery", "Email", "Storage"]);
+    expect(within(sub).getAllByRole("link").map((l) => l.textContent)).toEqual(["Risk dashboard", "People", "Groups", "Agents", "Event log", "Password health", "Migrate from Keeper", "General", "Policies", "Single sign-on", "Admin recovery", "Email", "Storage"]);
     expect(screen.getByRole("heading", { level: 1, name: "Risk dashboard" })).toBeInTheDocument();
   });
 

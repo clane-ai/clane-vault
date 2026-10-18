@@ -83,7 +83,7 @@ export async function runMigration(plan: Plan, sel: Selection, log: MigrationLog
     const id = crypto.randomUUID();
     const folderKey = randomBytes(32);
     const encName = await encryptFolderName(id, f.name, folderKey);
-    const mine = await sealFolderKeyTo(folderKey, { orgId: d.orgId ?? "", folderId: id }, { id: d.myId ?? "", publicKey: b64url.encode(d.publicKey), membershipKey: d.myKey ?? null });
+    const mine = await sealFolderKeyTo(folderKey, { orgId: d.orgId ?? "", folderId: id }, { id: d.myId ?? "", publicKey: b64url.encode(d.publicKey), membershipKey: d.myKey ?? null }, d.myId ?? "");
     d.assertOpen();
     await http.post("/folders", { id, kind: "team", encName, ...mine });
     log.folders.set(f.key, id);
@@ -101,7 +101,7 @@ export async function runMigration(plan: Plan, sel: Selection, log: MigrationLog
       try {
         if (m.status === "add") {
           if (!log.members.has(key)) {
-            const sealed = await sealFolderKeyTo(folderKey, { orgId: d.orgId ?? "", folderId: id }, { id: m.userId!, publicKey: m.publicKey!, membershipKey: d.memberKeys?.get(m.userId!) ?? null });
+            const sealed = await sealFolderKeyTo(folderKey, { orgId: d.orgId ?? "", folderId: id }, { id: m.userId!, publicKey: m.publicKey!, membershipKey: d.memberKeys?.get(m.userId!) ?? null, email: m.email }, d.myId ?? "");
             d.assertOpen();
             try { await http.post(`/folders/${id}/members`, { userId: m.userId, permission: m.permission, ...sealed }); }
             catch (e) { if (!isCode(e, 409)) throw e; }
@@ -228,7 +228,7 @@ export function usePendingMembers(enabled: boolean) {
 
 /** Adds every ready pending member to their folder: seals the folder key (held in the vault cache) to their public key. */
 export function useCompletePending() {
-  const { generation, org } = useSession();
+  const { generation, org, user } = useSession();
   const oapi = useOrgApi();
   const qc = useQueryClient();
   return async (ready: PendingMember[], folders: VaultFolder[]) => {
@@ -240,7 +240,7 @@ export function useCompletePending() {
       if (!folder?.folderKey || !p.user) { out.failed.push({ email: p.email, folder: name }); continue; }
       const fk = folder.folderKey.slice();
       try {
-        const sealed = await sealFolderKeyTo(fk, { orgId: org?.id ?? "", folderId: p.folderId }, { id: p.user.id, publicKey: p.user.publicKey, membershipKey: p.user.membershipKey ?? null });
+        const sealed = await sealFolderKeyTo(fk, { orgId: org?.id ?? "", folderId: p.folderId }, { id: p.user.id, publicKey: p.user.publicKey, membershipKey: p.user.membershipKey ?? null, email: p.email }, user?.id ?? "");
         if (generation() !== gen) throw new Error("Vault locked");
         await oapi.post(`/folders/${p.folderId}/pending-members/${p.id}/complete`, { userId: p.user.id, ...sealed });
         out.added.push({ email: p.email, folder: name });

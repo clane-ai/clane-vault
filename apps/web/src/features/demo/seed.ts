@@ -91,10 +91,10 @@ export async function seedDemo(o: { orgId: string; userId: string; keys: Unlocke
       const folderKey = randomBytes(32);
       toZero.push(folderKey);
       const ids = { orgId, folderId };
-      await team.post("/folders", { id: folderId, kind: "team", encName: await encryptFolderName(folderId, f.name, folderKey), ...(await sealFolderKeyTo(folderKey, ids, me)) });
+      await team.post("/folders", { id: folderId, kind: "team", encName: await encryptFolderName(folderId, f.name, folderKey), ...(await sealFolderKeyTo(folderKey, ids, me, me.id)) });
       for (const [person, perm] of f.people) {
         const c = byName.get(person.name);
-        if (c) await team.post(`/folders/${folderId}/members`, { userId: c.id, permission: PERMISSION[perm], ...(await sealFolderKeyTo(folderKey, ids, { id: c.id, publicKey: c.publicKey, membershipKey: null })) });
+        if (c) await team.post(`/folders/${folderId}/members`, { userId: c.id, permission: PERMISSION[perm], ...(await sealFolderKeyTo(folderKey, ids, { id: c.id, publicKey: c.publicKey, membershipKey: null }, me.id)) });
       }
       const records = await Promise.all(f.records.map(async (r) => {
         const id = crypto.randomUUID();

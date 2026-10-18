@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "@/lib/session";
 import { useOrgApi, useScope } from "@/lib/scope";
-import { pinKey, pinStatus, sealFolderKeyTo, type Recipient } from "@/lib/orgKeys";
+import { AgentAttestationError, ensureGatewayPinned, isAgent, pinKey, pinStatus, sealFolderKeyTo, type Recipient } from "@/lib/orgKeys";
+import type { OrgApi } from "@/lib/api";
 import type { Grant, Person, VaultFolder } from "@/features/vault/types";
 
 /** A group of the active org with its active members' keys (any member can read them, to share a folder). */
@@ -15,6 +16,7 @@ export interface AdminGroup { id: string; name: string; createdAt: string; folde
 export interface GroupPending {
   folderId: string; userId: string; name: string; email: string; publicKey: string; membershipKey: string | null; permission: Grant; groups: string[]; declined: boolean;
   via: { groupId: string; groupName: string; addedBy: { id: string; name: string } | null }[];
+  /** Agents: the gateway's attestation of their key (checked before sealing). */ kind?: "person" | "agent"; attestation?: string | null; gatewayKeyId?: string | null;
 }
 
 export function useOrgGroups(enabled = true) {
@@ -32,19 +34,28 @@ export function useAdminGroups() {
  * Seals a folder key to each person's key in this org (copying the folder key first, so a lock mid-way never seals zeros).
  * `accepted`: the user approved these people with their fingerprints and key-change warnings in view, so a changed key is
  * re-pinned. Otherwise a person whose key changed is skipped: with no wrap they wait in the approval queue, which warns.
+ * An agent whose key the pinned gateway didn't attest is never sealed to: it is skipped and listed in `refused` (on a
+ * group add it simply waits in the approval queue; approving, the people go ahead and the agent's refusal is shown).
  */
-async function sealAll(orgId: string, folder: VaultFolder, people: Recipient[], assertOpen: () => void, me?: string, accepted = false) {
+async function sealAll(oapi: Pick<OrgApi, "get">, orgId: string, folder: VaultFolder, people: Recipient[], assertOpen: () => void, me: string, accepted = false) {
   if (!folder.folderKey) throw new Error("This folder's key isn't available");
+  // Trust on first use for the gateway identity; if that fails the agents are refused below with its reason, the people still go ahead.
+  const gatewayError = people.some(isAgent)
+    ? await ensureGatewayPinned(oapi, me, orgId).then(() => null, (e: unknown) => (e instanceof AgentAttestationError ? e.reason : "unpinned" as const))
+    : null;
   const fk = folder.folderKey.slice();
   try {
-    const out: { userId: string; wrappedFolderKey: string; sealedTo: string | null }[] = [];
+    const wraps: { userId: string; wrappedFolderKey: string; sealedTo: string | null }[] = [];
+    const refused: AgentAttestationError[] = [];
     for (const p of people) {
-      if (me && !accepted && pinStatus(me, orgId, p.id, p.membershipKey, p.publicKey).status === "changed") continue;
-      out.push({ userId: p.id, ...(await sealFolderKeyTo(fk, { orgId, folderId: folder.id }, p)) });
-      if (me) pinKey(me, orgId, p.id, p.membershipKey, p.publicKey);
+      if (!accepted && pinStatus(me, orgId, p.id, p.membershipKey, p.publicKey).status === "changed") continue;
+      if (gatewayError && isAgent(p)) { refused.push(new AgentAttestationError(gatewayError, p.id)); continue; }
+      try { wraps.push({ userId: p.id, ...(await sealFolderKeyTo(fk, { orgId, folderId: folder.id }, p, me)) }); }
+      catch (e) { if (e instanceof AgentAttestationError) { refused.push(e); continue; } throw e; }
+      pinKey(me, orgId, p.id, p.membershipKey, p.publicKey);
       assertOpen();
     }
-    return out;
+    return { wraps, refused };
   } finally { fk.fill(0); }
 }
 
@@ -56,7 +67,8 @@ export function useFolderGroups() {
   const done = () => Promise.all([qc.invalidateQueries({ queryKey: ["vault"] }), qc.invalidateQueries({ queryKey: ["group-pending"] })]);
   const guard = () => { const g = generation(); return () => { if (generation() !== g) throw new Error("Vault locked"); }; };
   const add = useMutation({ mutationFn: async (v: { folder: VaultFolder; group: OrgGroup; permission: Grant }) => {
-    const wraps = await sealAll(org!.id, v.folder, v.group.members, guard(), user?.id);
+    if (!user) throw new Error("Not signed in");
+    const { wraps } = await sealAll(oapi, org!.id, v.folder, v.group.members, guard(), user.id);
     return oapi.post<{ added: number; pending: number }>(`/folders/${v.folder.id}/groups`, { groupId: v.group.id, permission: v.permission, wraps });
   }, onSettled: done });
   const update = useMutation({ mutationFn: (v: { folderId: string; groupId: string; permission: Grant }) => oapi.patch(`/folders/${v.folderId}/groups/${v.groupId}`, { permission: v.permission }), onSettled: done });
@@ -84,9 +96,11 @@ export function useGroupAccess(folders: VaultFolder[]) {
   const approve = useMutation({ mutationFn: async (v: { folderId: string; people: GroupPending[] }) => {
     const folder = holders.find((f) => f.id === v.folderId);
     if (!folder) throw new Error("This folder's key isn't available");
+    if (!user) throw new Error("Not signed in");
     const gen = generation();
-    const wraps = await sealAll(org!.id, folder, v.people.map((p) => ({ id: p.userId, publicKey: p.publicKey, membershipKey: p.membershipKey })), () => { if (generation() !== gen) throw new Error("Vault locked"); }, user?.id, true);
-    return oapi.post<{ added: string[]; skipped: number }>(`/folders/${v.folderId}/group-access`, { wraps });
+    const { wraps, refused } = await sealAll(oapi, org!.id, folder, v.people.map((p) => ({ id: p.userId, publicKey: p.publicKey, membershipKey: p.membershipKey, kind: p.kind, email: p.email, attestation: p.attestation, gatewayKeyId: p.gatewayKeyId })), () => { if (generation() !== gen) throw new Error("Vault locked"); }, user.id, true);
+    const r = wraps.length ? await oapi.post<{ added: string[]; skipped: number }>(`/folders/${v.folderId}/group-access`, { wraps }) : { added: [], skipped: 0 };
+    return { ...r, refused };
   }, onSettled: refresh });
   const decline = useMutation({ mutationFn: (v: { folderId: string; userIds: string[] }) => oapi.post<{ declined: number }>(`/folders/${v.folderId}/group-access/decline`, { userIds: v.userIds }), onSettled: refresh });
   const holderIds = new Set(holders.map((f) => f.id));

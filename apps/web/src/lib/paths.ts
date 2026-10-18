@@ -40,7 +40,7 @@ export const folderPath = (prefix: string, id: string | null) => (id ? `${prefix
 export const SETTINGS_SECTIONS = ["account", "security", "device", "extension", "health"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-export const ORG_ADMIN_SECTIONS = ["risk", "people", "groups", "events", "health", "migrate",
+export const ORG_ADMIN_SECTIONS = ["risk", "people", "groups", "agents", "events", "health", "migrate",
   "org/general", "org/policies", "org/sso", "org/recovery", "org/email", "org/storage"] as const;
 export const SERVER_SECTIONS = ["organisations", "accounts", "branding", "email", "backups", "storage"] as const;
 export type ServerSection = (typeof SERVER_SECTIONS)[number];

@@ -7,7 +7,7 @@ import { ApiError, forOrg } from "@/lib/api";
 import { useSession, type Org } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
 import { dropSync, loadSync, orgKey, saveSync } from "@/lib/offline";
-import { assertPinned, myMembershipKey, pinKey, sealFolderKeyTo, sealShareTo } from "@/lib/orgKeys";
+import { assertPinned, ensureGatewayPinned, isAgent, myMembershipKey, pinKey, sealFolderKeyTo, sealShareTo } from "@/lib/orgKeys";
 import { decryptSync } from "./decrypt";
 import type { FolderMember, Grant, Permission, Person, SyncResponse, VaultFolder, VaultRecord } from "./types";
 
@@ -155,10 +155,12 @@ export function useVault() {
   /** Seals the folder key to each person's key in this org (their membership key, or their account key while they have none). */
   async function addMembers(folderId: string, folderKey: Uint8Array, people: { person: Person; permission: Grant }[], assertOpen: () => void) {
     if (!org) throw new Error("No organisation");
+    if (!user) throw new Error("Not signed in");
     for (const { person, permission } of people) {
       await toRecipient(person, async (p) => {
-        if (user) assertPinned(user.id, org.id, p);
-        const sealed = await sealFolderKeyTo(folderKey, { orgId: org.id, folderId }, p);
+        assertPinned(user.id, org.id, p);
+        if (isAgent(p)) await ensureGatewayPinned(oapi, user.id, org.id);
+        const sealed = await sealFolderKeyTo(folderKey, { orgId: org.id, folderId }, p, user.id);
         assertOpen();
         await oapi.post(`/folders/${folderId}/members`, { userId: p.id, permission, ...sealed });
         if (user) pinKey(user.id, org.id, p.id, p.membershipKey, p.publicKey);
@@ -177,7 +179,7 @@ export function useVault() {
         const mine = await myMembershipKey(oapi, org.id, user!.id, k.userKey).catch((e: unknown) => { if (e instanceof CryptoError) throw e; return q.data?.membershipKey ?? null; });
         const me = { id: user!.id, publicKey: b64url.encode(k.publicKey), membershipKey: mine };
         const encName = await encryptFolderName(id, v.name, folderKey);
-        const sealed = await sealFolderKeyTo(folderKey, { orgId: org.id, folderId: id }, me);
+        const sealed = await sealFolderKeyTo(folderKey, { orgId: org.id, folderId: id }, me, user!.id);
         assertOpen();
         await oapi.post("/folders", { id, kind: "team", encName, ...sealed });
         await addMembers(id, folderKey, v.people, assertOpen);
@@ -195,8 +197,13 @@ export function useVault() {
    */
   const giveAccessAgain = useMutation({ mutationFn: async (v: { folder: VaultFolder; member: FolderMember }) => {
     if (!org) throw new Error("No organisation");
+    if (!user) throw new Error("Not signed in");
     return withSecret(v.folder.folderKey, "folder", async (fk, assertOpen) => {
-      const sealed = await sealFolderKeyTo(fk, { orgId: org.id, folderId: v.folder.id }, { id: v.member.userId, publicKey: v.member.publicKey, membershipKey: v.member.membershipKey ?? null });
+      // Agent fields go along: sealing checks an agent's attestation (ruling R41).
+      const m = v.member;
+      const to = { id: m.userId, publicKey: m.publicKey, membershipKey: m.membershipKey ?? null, kind: m.kind, email: m.email, attestation: m.attestation, gatewayKeyId: m.gatewayKeyId };
+      if (isAgent(to)) await ensureGatewayPinned(oapi, user.id, org.id);
+      const sealed = await sealFolderKeyTo(fk, { orgId: org.id, folderId: v.folder.id }, to, user.id);
       assertOpen();
       await oapi.put(`/folders/${v.folder.id}/members/${v.member.userId}/key`, sealed);
       if (user) pinKey(user.id, org.id, v.member.userId, v.member.membershipKey, v.member.publicKey);
@@ -216,9 +223,11 @@ export function useVault() {
   const share = useMutation({ mutationFn: async (v: { r: VaultRecord; person: Person; permission: Grant }) =>
     withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
       if (!org) throw new Error("No organisation");
+      if (!user) throw new Error("Not signed in");
       return toRecipient(v.person, async (p) => {
-        if (user) assertPinned(user.id, org.id, p);
-        const sealed = await sealShareTo(rk, { orgId: org.id, recordId: v.r.id }, p);
+        assertPinned(user.id, org.id, p);
+        if (isAgent(p)) await ensureGatewayPinned(oapi, user.id, org.id);
+        const sealed = await sealShareTo(rk, { orgId: org.id, recordId: v.r.id }, p, user.id);
         assertOpen();
         const res = await oapi.post(`/records/${v.r.id}/shares`, { userId: p.id, permission: v.permission, ...sealed });
         if (user) pinKey(user.id, org.id, p.id, p.membershipKey, p.publicKey);
@@ -233,9 +242,11 @@ export function useVault() {
   const shareIn = useMutation({ mutationFn: async (v: { r: VaultRecord; in: Org; person: Person; permission: Grant }) =>
     withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
       const there = forOrg(v.in.id);
+      if (!user) throw new Error("Not signed in");
       const send = async (p: Person) => {
-        if (user) assertPinned(user.id, v.in.id, p);
-        const sealed = await sealShareTo(rk, { orgId: v.in.id, recordId: v.r.id }, p);
+        assertPinned(user.id, v.in.id, p);
+        if (isAgent(p)) await ensureGatewayPinned(there, user.id, v.in.id);
+        const sealed = await sealShareTo(rk, { orgId: v.in.id, recordId: v.r.id }, p, user.id);
         assertOpen();
         const res = await there.post(`/records/${v.r.id}/shares`, { userId: p.id, permission: v.permission, ...sealed });
         if (user) pinKey(user.id, v.in.id, p.id, p.membershipKey, p.publicKey);

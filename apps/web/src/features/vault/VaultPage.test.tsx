@@ -210,4 +210,22 @@ describe("VaultPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(posted).toMatchObject({ folderId: f.id, type: "login" }));
   });
+
+  describe.each([[404, false], [503, true]])("Agent use when the gateway answers %i", (status, shown) => {
+    it(shown ? "stays in the editor" : "is hidden from the editor", async () => {
+      const f = await syncWithFolder();
+      server.use(
+        http.get("/api/v1/sync", () => HttpResponse.json(f.body)),
+        http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: status === 404 ? "not_found" : "gateway_unavailable" }, { status })),
+      );
+      renderPage(<VaultScreen />);
+      await userEvent.click(await screen.findByRole("button", { name: /^Infrastructure/ }));
+      await userEvent.click(screen.getByRole("button", { name: "New" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Record" }));
+      await userEvent.type(await screen.findByLabelText("Title"), "AWS root account{Enter}");
+      await screen.findByRole("heading", { name: "New login" });
+      if (shown) expect(await screen.findByRole("region", { name: "Agent use" })).toBeInTheDocument();
+      else { await new Promise((r) => setTimeout(r, 100)); expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull(); }
+    });
+  });
 });
