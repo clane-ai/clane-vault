@@ -144,5 +144,31 @@ describe("RecordEditor", () => {
       render(editor({ agentUse: false }));
       expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull();
     });
+
+    it("keeps approval and locked methods when the hosts are cleared and refilled", async () => {
+      const onSave = vi.fn(async () => undefined);
+      const policy = { ...stored.agentPolicy, approval: true };
+      render(editor({ onSave, pathsLocked: true, initial: { ...stored, agentPolicy: policy } }));
+      await userEvent.clear(screen.getByLabelText("Allowed hosts"));
+      await userEvent.type(screen.getByLabelText("Allowed hosts"), "api.stripe.com");
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave.mock.calls[0]![0].agentPolicy).toEqual(policy);
+    });
+
+    it("saves a stored policy back unchanged when the section is hidden", async () => {
+      const onSave = vi.fn(async () => undefined);
+      render(editor({ onSave, agentUse: false }));
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave.mock.calls[0]![0].agentPolicy).toBe(stored.agentPolicy);
+    });
+
+    it("treats NONE in any case as deny all", async () => {
+      const onSave = vi.fn(async () => undefined);
+      render(editor({ onSave, initial: { ...stored, agentPolicy: undefined } }));
+      await userEvent.type(screen.getByLabelText("Allowed hosts"), "api.stripe.com");
+      await userEvent.type(screen.getByLabelText("Allowed paths"), "None");
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave.mock.calls[0]![0].agentPolicy.paths).toEqual([]);
+    });
   });
 });

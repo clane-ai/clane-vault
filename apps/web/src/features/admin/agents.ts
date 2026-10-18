@@ -31,9 +31,9 @@ export function useAgents() {
   const oapi = useOrgApi();
   return useQuery({ queryKey: ["admin-agents", useScope()], queryFn: () => oapi.get<{ agents: Agent[] }>("/admin/agents").then((r) => r.agents) });
 }
-export function useGateway() {
+export function useGateway(enabled = true) {
   const oapi = useOrgApi();
-  return useQuery({ queryKey: ["agent-gateway", useScope()], queryFn: () => oapi.get<Gateway>("/org/agents/gateway") });
+  return useQuery({ queryKey: ["agent-gateway", useScope()], enabled, queryFn: () => oapi.get<Gateway>("/org/agents/gateway") });
 }
 
 function useAgentMutation<V, R>(fn: (v: V) => Promise<R>, opts: { gcTime?: number } = {}) {

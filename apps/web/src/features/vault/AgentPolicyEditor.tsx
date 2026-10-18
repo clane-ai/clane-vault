@@ -14,7 +14,7 @@ const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 // eslint-disable-next-line react-refresh/only-export-components
 export function agentPolicyError(p: AgentPolicy | undefined, body: Pick<RecordBody, "type" | "fields">): string | null {
   if (!p) return null;
-  if (p.hosts.some((h) => /[^\x00-\x7f]/.test(h))) return "Agent policy: write international host names in punycode (xn--…). The gateway only matches that form.";
+  if (p.hosts.some((h) => /[^\p{ASCII}]/u.test(h))) return "Agent policy: write international host names in punycode (xn--…). The gateway only matches that form.";
   try { validateAgentPolicy(p, body); return null; } catch (e) { return (e as Error).message.replace(/^agent policy:/, "Agent policy:"); }
 }
 
@@ -35,7 +35,7 @@ function build(s: S, base: AgentPolicy | undefined, locked: boolean): AgentPolic
     const ph = lines(s.paths);
     delete p.methods; delete p.paths;
     if (m.length) p.methods = (m.length === 1 && m[0] === "NONE" ? [] : m) as AgentPolicy["methods"];
-    if (ph.length) p.paths = ph.length === 1 && ph[0] === "none" ? [] : ph;
+    if (ph.length) p.paths = ph.length === 1 && ph[0]!.toLowerCase() === "none" ? [] : ph;
   }
   return p;
 }
@@ -45,12 +45,14 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
   body: Pick<RecordBody, "type" | "fields">; value: AgentPolicy | undefined; onChange: (p: AgentPolicy | undefined) => void;
   /** Methods and paths are a Business feature: shown, not editable. */ pathsLocked?: boolean;
 }) {
+  // The policy as stored: what the form does not show survives clearing and refilling the hosts.
+  const [stored] = useState(value);
   const [s, setS] = useState<S>(() => ({
     hosts: value?.hosts.join("\n") ?? "", kind: value?.inject.kind ?? "bearer",
     name: value && "name" in value.inject ? value.inject.name : "", prefix: value?.inject.kind === "header" ? value.inject.prefix ?? "" : "",
     secret: value?.secret ?? DEFAULT_SECRET, methods: listText(value?.methods).replace(/\n/g, ", "), paths: listText(value?.paths),
   }));
-  const set = (patch: Partial<S>) => { const n = { ...s, ...patch }; setS(n); onChange(build(n, value, pathsLocked)); };
+  const set = (patch: Partial<S>) => { const n = { ...s, ...patch }; setS(n); onChange(build(n, stored, pathsLocked)); };
   const secrets = [
     ...templateOf(body.type).filter((f) => !f.core || f.key === "password").map((f) => ({ ref: f.core ? f.key : `data.${f.key}`, label: f.label })),
     ...(body.fields ?? []).filter((f) => f.kind === "secret").map((f) => ({ ref: `field:${f.id}`, label: f.label || "Custom field" })),
