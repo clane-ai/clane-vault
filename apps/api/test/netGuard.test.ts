@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { describe, expect, it, vi } from "vitest";
 import { isPrivateAddress, publicOnlyFetch } from "../src/lib/netGuard.js";
+
+// The real undici fetch with the public-only dispatcher dropped, so a redirect test can use a local server. The URL's own
+// literal check still runs in publicOnlyFetch first.
+const fetchCalls = vi.hoisted(() => [] as { redirect?: string }[]);
+vi.mock("undici", async (orig) => {
+  const u = await orig<typeof import("undici")>();
+  return { ...u, fetch: (url: string, init: { redirect?: string; dispatcher?: unknown }) => {
+    fetchCalls.push({ redirect: init.redirect });
+    const { dispatcher: _d, ...rest } = init;
+    return u.fetch(url.replace("://public.test", "://127.0.0.1"), rest as never);
+  } };
+});
 
 // The gateway's vectors (apps/gateway/test/ssrf.test.ts NETGUARD_VECTORS, BLOCKED, PUBLIC), plus forms the WHATWG URL
 // parser produces from bracketed hosts.
@@ -50,5 +64,18 @@ describe("publicOnlyFetch", () => {
       const e = await publicOnlyFetch(u, {}).then(() => null, (x: Error & { cause?: { code?: string } }) => x);
       expect(e?.cause?.code, u).toBe("EPRIVATE");
     }
+  });
+  it("never follows a redirect, even when the caller asks to", async () => {
+    let hits = 0;
+    const srv = createServer((req, res) => { hits++; res.writeHead(302, { location: "http://[::ffff:169.254.169.254]/latest/meta-data/" }).end(); });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const { port } = srv.address() as AddressInfo;
+      fetchCalls.length = 0;
+      const res = await publicOnlyFetch(`http://public.test:${port}/`, { redirect: "follow" });
+      expect(res.status).toBe(302);
+      expect(hits).toBe(1);
+      expect(fetchCalls).toEqual([{ redirect: "manual" }]);
+    } finally { srv.close(); }
   });
 });

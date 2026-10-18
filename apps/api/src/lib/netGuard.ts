@@ -1,5 +1,4 @@
 import { lookup } from "node:dns/promises";
-import { lookup as dnsLookup } from "node:dns/promises";
 import { Agent, fetch as undiciFetch } from "undici";
 import { isIP } from "node:net";
 
@@ -81,7 +80,7 @@ type LookupCb = (err: NodeJS.ErrnoException | null, address?: string | { address
  */
 export function publicOnlyLookup(hostname: string, options: { all?: boolean; family?: number } | number, cb: LookupCb): void {
   const opts = typeof options === "number" ? { family: options } : options ?? {};
-  dnsLookup(hostname, { all: true, verbatim: true }).then((addrs) => {
+  lookup(hostname, { all: true, verbatim: true }).then((addrs) => {
     const list = addrs.filter((a) => !opts.family || a.family === opts.family);
     if (!list.length || list.some((a) => isPrivateAddress(a.address))) { cb(Object.assign(new PrivateHostError(hostname), { code: "EPRIVATE" })); return; }
     if (opts.all) cb(null, list);
@@ -96,14 +95,15 @@ export const publicOnlyFetch = async (url: string, init: RequestInit): Promise<R
   const h = new URL(String(url)).hostname.replace(/^\[|\]$/g, "");
   if (isIP(h) && isPrivateAddress(h)) throw new TypeError("fetch failed", { cause: Object.assign(new PrivateHostError(h), { code: "EPRIVATE" }) });
   publicAgent ??= new Agent({ connect: { lookup: publicOnlyLookup as never } });
-  return undiciFetch(url, { ...(init as object), dispatcher: publicAgent } as never) as unknown as Promise<Response>;
+  // Never follow redirects: a redirect hop to an IP literal would skip the check above (and the lookup).
+  return undiciFetch(url, { ...(init as object), redirect: "manual", dispatcher: publicAgent } as never) as unknown as Promise<Response>;
 };
 
 /** Resolves once to a public address (SMTP in HOSTED_MODE then connects to that IP, with TLS checked against the name). */
 export async function resolvePublic(host: string): Promise<string> {
   const h = host.replace(/^\[|\]$/g, "");
-  if (isIP(h)) { if (isPrivateAddress(h)) throw new PrivateHostError(host); return h; }
-  const addrs = await dnsLookup(h, { all: true, verbatim: true });
+  if (isIP(h)) { if (isPrivateAddress(h)) throw new PrivateHostError(host); return h.split("%")[0]!; }
+  const addrs = await lookup(h, { all: true, verbatim: true });
   if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) throw new PrivateHostError(host);
-  return addrs[0]!.address;
+  return addrs[0]!.address.split("%")[0]!;
 }
