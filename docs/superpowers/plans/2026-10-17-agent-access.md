@@ -139,7 +139,7 @@
   - Add the spec §4.1 models, written one field per line (the spec's `;`-separated one-liners are not valid Prisma).
   - `User` gains `kind UserKind @default(person)`, `agent Agent?` and `@@index([kind])`.
   - `Organization` gains `agents Agent[]`.
-  - `AgentGrant` gains `prevRefreshHash String?`, which refresh-reuse detection needs and the spec omits.
+  - `AgentGrant` gains `refreshGen Int @default(0)`, which refresh-reuse detection needs and the spec omits. (Built as generation-based refresh secrets in Task 12a round 2, replacing the first draft's `prevRefreshHash`; spec §13.)
   - `AgentOAuthCode` gains `@@index([expiresAt])`.
 - Create: `apps/api/prisma/migrations/20261026000000_agent_access/migration.sql` (Prisma's SQL; `kind` defaults to `person`, so existing rows backfill)
 - Modify: `apps/api/src/config.ts`: the env schema (L9-67), `Config` (L99-150) and `loadConfig` (L250-272)
@@ -808,8 +808,9 @@
       - It creates an `AgentGrant` (30 days) with `refreshHash`. Event `agent.grant` (`actorId` grantedById, `targetUserId` agent, `meta.clientName`).
       - → `{ access_token, token_type: "Bearer", expires_in: 900, refresh_token }`. Any failure → `400 invalid_grant`.
     - `grant_type=refresh_token`, with `refresh_token` and `client_id`, splits the token with `splitRefresh`:
-      - hash = `refreshHash` and the grant is live → rotate (`prevRefreshHash` = old, new `refreshHash`, `rotatedAt`) and return a new pair;
-      - hash = `prevRefreshHash` → revoke the grant, log `agent.grant_revoke` with `meta.reason: "refresh_reuse"`, and answer `invalid_grant`;
+      - the secret is HMAC-SHA256(K, `agent-refresh:<grantId>:<gen>`), K = HKDF-SHA256 of `JWT_SECRET`; the server finds which generation was presented:
+      - the current generation and the grant is live → rotate (`refreshGen` + 1, new `refreshHash`, `rotatedAt`) and return a new pair;
+      - an older generation (outside the concurrent-request grace) → revoke the grant, log `agent.grant_revoke` with `meta.reason: "refresh_reuse"`, and answer `invalid_grant`;
       - anything else → `invalid_grant`.
     - `urn:clane:agent-token` stays as Task 5 built it.
   - **`POST /oauth/revoke`**, form `token` (a refresh token) → revoke that grant. Always 200.

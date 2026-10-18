@@ -166,7 +166,7 @@ Until every file is moved, backups keep including chunk data. See `docs/attachme
 
 ## Backups
 
-The database holds only ciphertext (the server never sees your master passwords or vault keys), but losing it loses everything, so back it up. **Back up `.env` separately (in your secrets manager), not just the database.** `SERVER_SECRET` encrypts every user's 2FA secret: if it is lost or changed, nobody can sign in with their authenticator code again. Changing `JWT_SECRET` only signs everyone out.
+The database holds only ciphertext (the server never sees your master passwords or vault keys), but losing it loses everything, so back it up. **Back up `.env` separately (in your secrets manager), not just the database.** `SERVER_SECRET` encrypts every user's 2FA secret: if it is lost or changed, nobody can sign in with their authenticator code again. Changing `JWT_SECRET` only signs everyone out (and, with agent access on, ends every agent OAuth grant: connected apps must connect again).
 
 From 1.6.1 the server checks `SERVER_SECRET` at startup and refuses to start if it differs from the one the database was set up with, logging `server_secret_mismatch` with what to do. Put back the original `SERVER_SECRET` from your saved `.env`. If it is lost for good, start once with `ACCEPT_NEW_SERVER_SECRET=true`, then remove it: every account that set up an authenticator then needs **Admin → People → Reset 2FA** (owners: **Server → Accounts**, or `reset-2fa.js` above), and email and SSO secrets must be entered again. Vault data is not affected (it is encrypted with each person's master password). When some accounts' authenticators were set up under an older secret, the server still starts and logs how many can't sign in.
 

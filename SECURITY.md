@@ -73,3 +73,6 @@ Residual risks, which no mitigation in this release removes:
   under-report. Enrolment, verification, revocation, OAuth grants and KMS audit entries are recorded outside it.
 
 **Rotate every agent-scoped credential after a gateway incident.**
+
+Agent OAuth refresh tokens are derived from `JWT_SECRET`: rotating it ends every agent OAuth grant (connected apps must
+connect again), as well as signing everyone out.

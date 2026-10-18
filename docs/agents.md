@@ -4,7 +4,7 @@
 
 Agent access lets cloud AI agents (Claude.ai and ChatGPT connectors, the Claude and OpenAI APIs, Claude Code) **use** credentials held in a team vault without the model ever seeing a value, and without installing anything. The agent talks to one remote MCP server, the gateway (`https://vault.clane.ai/mcp` on the hosted service, `https://<your host>/mcp` self-hosted). The gateway makes the outbound HTTPS call itself with the credential injected, and returns the response with the credential scrubbed out.
 
-It is off unless the server is configured for it (self-hosted: `deploy/client/README.md`, *Agent access (optional)*). With it off, every agent, `/agent/*` and `/oauth/*` route answers 404 and the Agents page isn't shown.
+It is off unless the server is configured for it (self-hosted: `deploy/client/README.md`, *Agent access (optional)*). With it off, every agent, `/agent/*` and `/oauth/*` route answers 404; admins still see *Agents* in the admin menu, and the page says "Agent access isn't turned on for this server."
 
 ## What an agent is
 
@@ -125,14 +125,17 @@ OpenAI doesn't store `authorization`: send it with every request. Source: [OpenA
 
 ## API tokens and OAuth
 
-- **OAuth 2.1** (Claude.ai, ChatGPT, Claude Code): dynamic client registration, PKCE S256 only, authorization code bound to the agent, the client and the admin who allowed it. Access tokens are ES256 JWTs valid 15 minutes, for this gateway only; refresh tokens last 30 days and rotate, and reusing an old one revokes the grant. The Connect sheet lists each *Connected app* with who allowed it, and **Revoke** ends it at the gateway's next call. Client registration is rate-limited per address (10 an hour); registered clients that never connect aren't swept.
-- **API tokens** (Claude API, OpenAI API, CI): **Create API token** shows `cvat_…` **once**; the server keeps only its hash. The gateway exchanges it for a 15-minute access token. Revoke a token in the Connect sheet; it stops at once.
+- **OAuth 2.1** (Claude.ai, ChatGPT, Claude Code): dynamic client registration, PKCE S256 only, authorization code bound to the agent, the client and the admin who allowed it. Access tokens are ES256 JWTs valid 15 minutes, for this gateway only; refresh tokens last 30 days and rotate, and reusing an old one revokes the grant. The Connect sheet lists each *Connected app* with who allowed it, and **Revoke** ends it at the gateway's next call. Client registration is rate-limited per address (10 an hour); a registered client that never connects (no code and no grant) is deleted after 30 days.
+  Refresh tokens are derived from `JWT_SECRET`, so **rotating `JWT_SECRET` ends every OAuth grant**: each connected app must connect again (API tokens keep working).
+- **API tokens** (Claude API, OpenAI API, CI): **Create API token** shows `cvat_…` **once**; the server keeps only its hash. The gateway exchanges it for a 15-minute access token. Revoke a token in the Connect sheet; it stops at the gateway's next call.
 
 Anyone holding a token can *use* the agent's credentials against the allowed hosts until it is revoked, as the agent could.
 
 ## Expiry and revocation
 
 An expiry date ends access (`403 agent_expired`); the gateway drops its cache at once. **Revoke** removes the agent from every folder, group and share, ends every token and grant, deletes its wrapped key and drops the gateway's cache. The agent stays in the event log by name.
+
+In practice a revoke (of an agent, a token or a grant) stops access at the gateway's next call. Telling the gateway to drop its cache is best effort, though: if that call fails, the gateway can keep serving from its cache for up to `GATEWAY_CACHE_TTL_SECONDS` (default 60 s).
 
 Revoke then lists **the folders and records the gateway could open for this agent: rotate the credentials in them.** The gateway could read those items while the agent was live, and folder keys aren't rotated on removal (`docs/sharing.md`, *Follow-ups*), so changing the credentials themselves is what closes it. Do the same for every agent-scoped credential after any suspected gateway incident.
 
@@ -196,7 +199,7 @@ On the **gateway**:
 | `INTERNAL_HOST` | 0.0.0.0 | Address the internal port binds to. |
 | `TRUST_PROXY` | 0 | Number of reverse proxies in front. **A number only**: unlike the API, `true`/`false` are refused. The compose file sets it from `GATEWAY_TRUST_PROXY` (default 1), not from the API's `TRUST_PROXY`. |
 
-Rules the gateway enforces at start: it refuses `NODE_OPTIONS`, any Node flag outside a short allowlist, and starting without `--disable-sigusr1` (SIGUSR1 would open the inspector). The image's command is `--disable-sigusr1 dist/server.js`; run it from source with `npm run dev -w @clane-vault/gateway`, which builds and then runs it the same way. A bad setting prints one line, `{"event":"config_error","msg":…}`, and exits 1. After changing the API's `PUBLIC_URL` (its OAuth issuer), restart the gateway.
+Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NODE_DEBUG` (undici's debug log prints request paths, which can hold a secret injected into the query) or `NODE_V8_COVERAGE`, any Node flag outside a short allowlist, and starting without `--disable-sigusr1` (SIGUSR1 would open the inspector). The image's command is `--disable-sigusr1 dist/server.js`; run it from source with `npm run dev -w @clane-vault/gateway`, which builds and then runs it the same way. A bad setting prints one line, `{"event":"config_error","msg":…}`, and exits 1. After changing the API's `PUBLIC_URL` (its OAuth issuer), restart the gateway.
 
 **Limits**: `http_request` `GATEWAY_AGENT_RATE_PER_MINUTE` per agent; `list_secrets` 20 a minute per agent; 600 requests a minute per client address; 10 unknown API tokens a minute per address; 20 open MCP sessions per agent (idle ones close after 30 minutes); one call in flight per session; request bodies up to 1 MiB.
 
