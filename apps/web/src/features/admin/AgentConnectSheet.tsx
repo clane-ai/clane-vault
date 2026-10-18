@@ -18,7 +18,8 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 /**
  * Connect an agent (spec §7): the gateway URL, per-client snippets, API tokens and OAuth grants. A new token is shown
- * once, in this sheet's state only: closing the sheet forgets it (the server keeps only its hash).
+ * once: it lives in this sheet's state, and the mutation that fetched it is reset on close and never cached (gcTime 0),
+ * so closing the sheet forgets it (the server keeps only its hash).
  */
 export function AgentConnectSheet({ agent, url, onClose }: { agent: Agent; url: string; onClose: () => void }) {
   const [label, setLabel] = useState("API token");
@@ -32,7 +33,7 @@ export function AgentConnectSheet({ agent, url, onClose }: { agent: Agent; url: 
   const grants = agent.grants.filter((g) => !g.revokedAt);
 
   return (
-    <Sheet open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Sheet open onOpenChange={(o) => { if (!o) { create.reset(); onClose(); } }}>
       <SheetContent side="right" showCloseButton={false} aria-describedby={undefined} className="data-[side=right]:w-full data-[side=right]:sm:max-w-[560px]">
         <SheetHeader><SheetTitle className="font-display text-[18px] font-semibold tracking-[-0.02em]">Connect {agent.name}</SheetTitle><SheetCloseButton /></SheetHeader>
         <SheetBody className="gap-5 overflow-y-auto pt-5">
@@ -75,7 +76,7 @@ export function AgentConnectSheet({ agent, url, onClose }: { agent: Agent; url: 
                 {grants.map((g) => (
                   <li key={g.id} aria-label={g.clientName} className="flex items-center gap-2 px-3 py-2 text-[13px]">
                     <span className="min-w-0 flex-1 truncate">{g.clientName}</span>
-                    <span className="text-[12px] text-text-tertiary">{g.grantedBy ? `${g.grantedBy}, ` : ""}{relativeTime(g.createdAt)}</span>
+                    <span className="text-[12px] text-text-tertiary">{g.grantedBy ? `${g.grantedBy.name}, ` : ""}{relativeTime(g.createdAt)}</span>
                     <Button variant="ghost" size="sm" aria-label={`Revoke ${g.clientName}`} disabled={revokeGrant.isPending} onClick={() => void run(() => revokeGrant.mutateAsync({ agentId: agent.id, grantId: g.id }))}>Revoke</Button>
                   </li>
                 ))}

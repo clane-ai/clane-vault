@@ -39,7 +39,8 @@ beforeEach(() => {
     http.get("/api/v1/org/plan", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   );
 });
-const renderPage = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AgentsPage folders={FOLDERS} /></QueryClientProvider>);
+let qc: QueryClient;
+const renderPage = () => { qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }); return render(<QueryClientProvider client={qc}><AgentsPage folders={FOLDERS} /></QueryClientProvider>); };
 
 describe("Admin → Agents", () => {
   it("creates an agent, shows both fingerprints as New, and Matches pins both", async () => {
@@ -85,7 +86,18 @@ describe("Admin → Agents", () => {
     expect(matches).toBeDisabled();
     await userEvent.click(within(dialog).getByLabelText("I compared the gateway fingerprint with the published one"));
     expect(matches).toBeEnabled();
-    await userEvent.click(matches);
+    // A refetch that serves another identity unticks the box, even if the first one comes back.
+    const third = await newGateway();
+    server.use(served(third.identity));
+    await qc.invalidateQueries({ queryKey: ["agent-gateway"] });
+    expect(await within(dialog).findByText("The gateway did not sign this key")).toBeInTheDocument();
+    server.use(served(gw.identity));
+    await qc.invalidateQueries({ queryKey: ["agent-gateway"] });
+    const box = await within(dialog).findByLabelText("I compared the gateway fingerprint with the published one");
+    expect(box).not.toBeChecked();
+    expect(within(dialog).getByRole("button", { name: "Matches" })).toBeDisabled();
+    await userEvent.click(box);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Matches" }));
     await waitFor(() => expect(gatewayPinStatus(ME, ORG.id, gw.identity).status).toBe("same"));
   });
 
@@ -117,7 +129,10 @@ describe("Admin → Agents", () => {
     const gw = await newGateway();
     await pinGateway(ME, ORG.id, gw.identity);
     const pub = await agentKey();
-    agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub) })];
+    agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub),
+      grants: [{ id: "g1", clientName: "Claude", grantedBy: { id: ME, name: "Admin" }, createdAt: new Date().toISOString() }] })];
+    let grantRevoked = false;
+    server.use(http.delete(`/api/v1/admin/agents/${AGENT_ID}/grants/g1`, () => { grantRevoked = true; return new HttpResponse(null, { status: 204 }); }));
     let tokenBody: unknown = null;
     server.use(served(gw.identity), http.post(`/api/v1/admin/agents/${AGENT_ID}/tokens`, async ({ request }) => {
       tokenBody = await request.json();
@@ -130,11 +145,17 @@ describe("Admin → Agents", () => {
     expect(snippets).toHaveLength(6);
     for (const s of snippets) expect(s.textContent).toContain(URL_);
     expect(within(sheet).getByRole("region", { name: "Claude API (MCP connector) snippet" }).textContent).toContain("mcp-client-2025-11-20");
+    const grant = within(sheet).getByRole("listitem", { name: "Claude" });
+    expect(within(grant).getByText(/Admin, /)).toBeInTheDocument();
+    await userEvent.click(within(grant).getByRole("button", { name: "Revoke Claude" }));
+    await waitFor(() => expect(grantRevoked).toBe(true));
     await userEvent.click(within(sheet).getByRole("button", { name: "Create API token" }));
     await waitFor(() => expect(tokenBody).toEqual({ label: "API token" }));
     expect(await within(sheet).findByText("cvat_t1_secretsecret")).toBeInTheDocument();
     await userEvent.click(within(sheet).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Nothing keeps the token once the sheet is closed: not the mutation cache either.
+    await waitFor(() => expect(JSON.stringify(qc.getMutationCache().getAll().map((m) => m.state.data ?? null))).not.toContain("cvat_"));
     await userEvent.click(screen.getByRole("button", { name: "Connect Billing bot" }));
     sheet = await screen.findByRole("dialog", { name: "Connect Billing bot" });
     expect(within(sheet).queryByText(/cvat_t1_secretsecret/)).not.toBeInTheDocument();
@@ -166,6 +187,37 @@ describe("Admin → Agents", () => {
     renderPage();
     const item = await screen.findByRole("listitem", { name: "Billing bot" });
     expect(await within(item).findByText("Needs re-enrolment")).toBeInTheDocument();
+  });
+
+  it("edit: a rename sends no expiry, and the expiry's day survives the round trip west of UTC", async () => {
+    const tz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const gw = await newGateway();
+      await pinGateway(ME, ORG.id, gw.identity);
+      const pub = await agentKey();
+      agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub), expiresAt: new Date("2026-12-31T23:59:59").toISOString() })];
+      expect(agents[0]!.expiresAt).toBe("2027-01-01T07:59:59.000Z");
+      const patches: unknown[] = [];
+      server.use(served(gw.identity), http.patch(`/api/v1/admin/agents/${AGENT_ID}`, async ({ request }) => { patches.push(await request.json()); return HttpResponse.json({ ok: true }); }));
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Edit Billing bot" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit Billing bot" });
+      expect(within(dialog).getByLabelText("Expires (optional)")).toHaveValue("2026-12-31");
+      await userEvent.clear(within(dialog).getByLabelText("Name"));
+      await userEvent.type(within(dialog).getByLabelText("Name"), "Payments bot");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(patches).toEqual([{ name: "Payments bot" }]));
+    } finally { process.env.TZ = tz; }
+  });
+
+  it("agents off on this server: one line, no actions", async () => {
+    server.use(http.get("/api/v1/admin/agents", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
+      http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: "not_found" }, { status: 404 })));
+    renderPage();
+    expect(await screen.findByText("Agent access isn't turned on for this server.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no longer exists/)).not.toBeInTheDocument();
   });
 
   it("at the Team plan's agent limit, New agent is replaced by the upgrade line", async () => {

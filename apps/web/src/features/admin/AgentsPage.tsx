@@ -16,7 +16,7 @@ import { AgentConnectSheet } from "./AgentConnectSheet";
 import { AgentVerifyDialog } from "./AgentVerifyDialog";
 import { LockLine } from "./PlanLock";
 import { agentLimitLine, useOrgPlan } from "./plan";
-import { agentErrorText, gatewayIdentity, PIN_LABEL, STATUS_LABEL, useAgents, useCreateAgent, useGateway, useRevokeAgent, useUpdateAgent, type Agent, type Gateway, type Rotation } from "./agents";
+import { AGENTS_OFF, agentErrorText, agentsOff, gatewayIdentity, PIN_LABEL, STATUS_LABEL, useAgents, useCreateAgent, useGateway, useRevokeAgent, useUpdateAgent, type Agent, type Gateway, type Rotation } from "./agents";
 
 const card = "rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]";
 const mono = "font-mono text-[11.5px] tracking-[.02em] text-text-tertiary";
@@ -24,7 +24,9 @@ type ToVerify = { id: string; name: string; publicKey: string; attestation: stri
 
 const useFingerprint = (key: string | undefined) =>
   useQuery({ queryKey: ["fingerprint", key], enabled: !!key, staleTime: Infinity, queryFn: () => fingerprintOf(key!).catch(() => "—") }).data;
-const dateInput = (iso: string | null) => (iso ? iso.slice(0, 10) : "");
+/** The expiry's day in local time (as `expiryOf` builds it), so an edit round trip never moves it. */
+const pad = (n: number) => String(n).padStart(2, "0");
+const dateInput = (iso: string | null) => { if (!iso) return ""; const d = new Date(iso); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 /** The end of the chosen day, local time. */
 const expiryOf = (day: string) => (day ? new Date(`${day}T23:59:59`).toISOString() : null);
 
@@ -38,7 +40,11 @@ function AgentForm({ agent, onDone, onClose }: { agent?: Agent; onDone: (created
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setError(null);
     try {
-      if (agent) { await update.mutateAsync({ id: agent.id, name: name.trim(), expiresAt: expiryOf(expiry) }); onDone(); }
+      if (agent) {
+        const changed = { ...(name.trim() !== agent.name ? { name: name.trim() } : {}), ...(expiry !== dateInput(agent.expiresAt) ? { expiresAt: expiryOf(expiry) } : {}) };
+        if (Object.keys(changed).length) await update.mutateAsync({ id: agent.id, ...changed });
+        onDone();
+      }
       else { const c = await create.mutateAsync({ name: name.trim(), expiresAt: expiryOf(expiry) }); onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation }); }
     } catch (err) { setError(agentErrorText(err)); }
   };
@@ -172,8 +178,8 @@ export default function AgentsPage({ folders }: { folders: VaultFolder[] }) {
         <p className="text-[13.5px] leading-relaxed text-text-secondary">
           Agents use credentials you share with them through the gateway, without ever seeing them. Share only restricted credentials.
         </p>
-        <div>{action}</div>
-        {q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error)}</p>
+        {agentsOff(q.error) ? <p className="text-[13.5px] text-text-secondary">{AGENTS_OFF}</p> : <div>{action}</div>}
+        {agentsOff(q.error) ? null : q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error)}</p>
           : q.data && q.data.length === 0 ? <p className="text-[13.5px] text-text-secondary">No agents yet.</p>
           : q.data && (
             <ul className={card} aria-label="Agents">

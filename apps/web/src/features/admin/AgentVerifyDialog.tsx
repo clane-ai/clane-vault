@@ -32,6 +32,10 @@ export function AgentVerifyDialog({ agent, onClose }: { agent: { id: string; nam
       gatewayFp: await fingerprintOf(identity!.publicKey).catch(() => "—"),
     }),
   });
+  // The tick is for the identity on screen: any refetch that serves another one unticks it.
+  const idKey = identity ? `${identity.keyId}.${identity.publicKey}` : null;
+  const [ticked, setTicked] = useState(idKey);
+  if (ticked !== idKey) { setTicked(idKey); setCompared(false); }
   const pin = identity && user && org ? gatewayPinStatus(user.id, org.id, identity) : null;
   const busy = verify.isPending || revoke.isPending;
 

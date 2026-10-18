@@ -11,7 +11,7 @@ export type AgentStatus = "awaiting_verification" | "active" | "expired" | "revo
 export const STATUS_LABEL: Record<AgentStatus, string> = { awaiting_verification: "Awaiting verification", active: "Active", expired: "Expired", revoked: "Revoked" };
 export interface AgentToken { id: string; label: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null }
 /** An OAuth grant (a client an admin allowed on the consent page). */
-export interface AgentGrant { id: string; clientName: string; grantedBy: string | null; createdAt: string; revokedAt?: string | null }
+export interface AgentGrant { id: string; clientName: string; grantedBy: { id: string; name: string } | null; createdAt: string; revokedAt?: string | null }
 export interface Agent {
   id: string; name: string; status: AgentStatus; publicKey: string; attestation: string; expiresAt: string | null; lastUsedAt: string | null;
   createdAt: string; verifiedAt: string | null; folders: { id: string }[]; groups: { id: string; name: string }[]; tokens: AgentToken[]; grants: AgentGrant[];
@@ -24,6 +24,9 @@ export interface Rotation { folders: { id: string }[]; records: number }
 export const PIN_LABEL = { same: "Pinned", new: "New", changed: "Changed — compare it with the published fingerprint" } as const;
 export const gatewayIdentity = (g: Gateway): GatewayIdentity => ({ keyId: g.identityKeyId, publicKey: g.identityPublicKey });
 
+/** Agent features off on this server: every agent route is 404. */
+export const AGENTS_OFF = "Agent access isn't turned on for this server.";
+export const agentsOff = (e: unknown) => e instanceof ApiError && e.status === 404;
 export function useAgents() {
   const oapi = useOrgApi();
   return useQuery({ queryKey: ["admin-agents", useScope()], queryFn: () => oapi.get<{ agents: Agent[] }>("/admin/agents").then((r) => r.agents) });
@@ -33,9 +36,9 @@ export function useGateway() {
   return useQuery({ queryKey: ["agent-gateway", useScope()], queryFn: () => oapi.get<Gateway>("/org/agents/gateway") });
 }
 
-function useAgentMutation<V, R>(fn: (v: V) => Promise<R>) {
+function useAgentMutation<V, R>(fn: (v: V) => Promise<R>, opts: { gcTime?: number } = {}) {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: fn, onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: ["admin-agents"] }), qc.invalidateQueries({ queryKey: ["org-plan"] })]) });
+  return useMutation({ ...opts, mutationFn: fn, onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: ["admin-agents"] }), qc.invalidateQueries({ queryKey: ["org-plan"] })]) });
 }
 
 export function useCreateAgent() {
@@ -58,7 +61,8 @@ export function useVerifyAgent() {
 }
 export function useUpdateAgent() {
   const oapi = useOrgApi();
-  return useAgentMutation((v: { id: string; name?: string; expiresAt?: string | null }) => oapi.patch(`/admin/agents/${v.id}`, { name: v.name, expiresAt: v.expiresAt }));
+  // Only the fields given: a rename never re-sends (and so never moves or refuses) the expiry.
+  return useAgentMutation(({ id, ...changed }: { id: string; name?: string; expiresAt?: string | null }) => oapi.patch(`/admin/agents/${id}`, changed));
 }
 export function useRevokeAgent() {
   const oapi = useOrgApi();
@@ -68,7 +72,9 @@ export function useRevokeAgent() {
 export function useCreateToken() {
   const oapi = useOrgApi();
   return useAgentMutation((v: { agentId: string; label: string; expiresAt?: string | null }) =>
-    oapi.post<{ id: string; token: string }>(`/admin/agents/${v.agentId}/tokens`, { label: v.label, ...(v.expiresAt ? { expiresAt: v.expiresAt } : {}) }));
+    oapi.post<{ id: string; token: string }>(`/admin/agents/${v.agentId}/tokens`, { label: v.label, ...(v.expiresAt ? { expiresAt: v.expiresAt } : {}) }),
+  // The answer holds the token: never kept in the mutation cache once the sheet lets go of it.
+  { gcTime: 0 });
 }
 export function useRevokeToken() {
   const oapi = useOrgApi();
@@ -88,7 +94,7 @@ const ERRORS: Record<string, string> = {
   not_found: "That agent no longer exists. Reload the page.",
 };
 export function agentErrorText(e: unknown): string {
-  if (e instanceof AgentAttestationError && e.reason === "gateway_changed") return "The pinned gateway identity changed meanwhile. Close this and compare the fingerprints again.";
+  if (e instanceof AgentAttestationError && e.reason === "gateway_changed") return "The agent was verified, but this device's pinned gateway identity changed meanwhile, so it can't be used from here. Revoke the agent and create it again.";
   return planMessage(e) ?? (e instanceof ApiError ? ERRORS[e.code] : undefined) ?? "Couldn't do that. Try again.";
 }
 
