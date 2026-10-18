@@ -121,6 +121,10 @@ describe("settings", () => {
     try {
       expect((await call(owner, "PUT", "/admin/settings/sso", { issuer: idp.issuer, clientId: CLIENT.id, clientSecret: CLIENT.secret })).json()).toEqual({ error: "private_host" });
       expect((await call(owner, "POST", "/admin/settings/sso/test", { issuer: idp.issuer, clientId: CLIENT.id, clientSecret: CLIENT.secret })).json()).toMatchObject({ ok: false, checks: [{ name: "discovery", detail: expect.stringMatching(/private network address/) }] });
+      // The URL parser turns this into ::ffff:a9fe:a9fe (the cloud metadata service), which is still refused.
+      const meta = "http://[::ffff:169.254.169.254]/";
+      expect((await call(owner, "PUT", "/admin/settings/sso", { issuer: meta, clientId: CLIENT.id, clientSecret: CLIENT.secret })).json()).toEqual({ error: "private_host" });
+      expect((await call(owner, "POST", "/admin/settings/sso/test", { issuer: meta, clientId: CLIENT.id, clientSecret: CLIENT.secret })).json()).toMatchObject({ ok: false, checks: [{ name: "discovery", detail: expect.stringMatching(/private network address/) }] });
     } finally { delete t.config.hostedMode; }
   });
 });

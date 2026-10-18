@@ -245,6 +245,8 @@ describe("which settings an email uses", () => {
     const r = await call(owner, "PUT", "/admin/settings/email", smtpSettings({ smtp: { host: "127.0.0.1", port: 587, security: "starttls", username: "mailer" } }));
     expect(r.statusCode).toBe(400);
     expect(r.json()).toEqual({ error: "private_host" });
+    for (const host of ["::ffff:169.254.169.254", "[::ffff:a9fe:a9fe]", "64:ff9b::a9fe:a9fe", "0:0:0:0:0:0:0:1"])
+      expect((await call(owner, "PUT", "/admin/settings/email", smtpSettings({ smtp: { host, port: 587, security: "starttls", username: "mailer" } }))).json(), host).toEqual({ error: "private_host" });
     // Instance admins are trusted with the network (a relay without a password on a private address).
     expect((await call(ia, "PUT", "/admin/instance/email", smtpSettings({ secret: undefined, smtp: { host: "127.0.0.1", port: smtpPort, security: "none", username: null } }), null)).statusCode).toBe(200);
     expect((await call(ia, "POST", "/admin/invites", { email: "x@y.test" })).json()).toMatchObject({ invited: true, emailed: true });
