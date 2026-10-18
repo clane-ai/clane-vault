@@ -118,8 +118,8 @@ export function connectSnippets(url: string, token?: string): { id: SnippetId; l
     input: "Create a Stripe test customer for ACME.",
   }, null, 2);
   return [
-    { id: "claude-ai", label: "Claude.ai (web and desktop)", text: `Settings → Connectors → Add custom connector → URL ${url} → Connect → sign in to Clane Vault, pick the agent, Allow.` },
-    { id: "chatgpt", label: "ChatGPT", text: `Settings → Connectors → Create (developer mode) → MCP server URL ${url}, authentication OAuth → connect → sign in to Clane Vault, pick the agent, Allow.` },
+    { id: "claude-ai", label: "Claude.ai (web and desktop)", text: `Customize → Connectors → + Add → Add custom connector → name, URL ${url} → Continue → OAuth client: Register automatically → Add → Connect → sign in to Clane Vault, pick the agent, Allow. (Team and Enterprise: an owner adds it in Organization settings → Connectors.)` },
+    { id: "chatgpt", label: "ChatGPT", text: `Plugins (chatgpt.com/plugins) → + → Add custom MCP server → name, description, MCP server URL ${url}, authentication OAuth → I understand and want to continue → Create as a plugin → sign in to Clane Vault, pick the agent, Allow.` },
     { id: "claude-code", label: "Claude Code (OAuth)", text: `claude mcp add --transport http clane-vault ${url}\n# then run /mcp in Claude Code to sign in` },
     { id: "claude-code-token", label: "Claude Code (API token)", text: `claude mcp add --transport http clane-vault ${url} --header "Authorization: Bearer ${t}"` },
     { id: "claude-api", label: "Claude API (MCP connector)", text: `${claudeApi}\n\nHeader: ${ANTHROPIC_BETA}` },

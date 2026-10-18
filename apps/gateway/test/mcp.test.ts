@@ -398,7 +398,7 @@ describe("MCP route gate", () => {
     for (const t of [undefined, "cvat_wrong", "x.y.z"]) {
       const r = await post(url, call("list_secrets"), t);
       expect(r.status).toBe(401);
-      // RFC 6750 ง3.1: error="invalid_token" only when a bearer was sent.
+      // RFC 6750 ยง3.1: error="invalid_token" only when a bearer was sent.
       expect(r.headers.get("www-authenticate"), t)
         .toBe(`Bearer ${t ? 'error="invalid_token", ' : ""}resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
       expect(await r.json()).toEqual({ error: "unauthorized" });

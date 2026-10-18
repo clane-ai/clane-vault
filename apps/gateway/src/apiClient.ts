@@ -51,7 +51,7 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
     if (!r.ok) throw new Error(`API metadata failed (${r.status})`);
     const iss = ((await r.json()) as { issuer?: unknown } | null)?.issuer;
     const u = typeof iss === "string" && URL.canParse(iss) ? new URL(iss) : null;
-    // RFC 8414 ง2: an https URL with no query or fragment (http on loopback for development, as PUBLIC_URL).
+    // RFC 8414 ยง2: an https URL with no query or fragment (http on loopback for development, as PUBLIC_URL).
     if (!u || !httpsOrLoopback(u) || /[?#]/.test(iss as string)) throw new Error("API metadata has no valid issuer");
     return iss as string;
   }

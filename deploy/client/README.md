@@ -258,6 +258,50 @@ Without the built-in schedule, `pg_dump` works too (remove `schema=`, `connectio
 
 For the bundled database: `docker compose exec -T postgres pg_dump -U vault vault | gzip > backup.sql.gz`. Keep copies off the host, encrypted, and test restores.
 
+## Agent access (optional)
+
+Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, Claude Code) *use* credentials you share with them through a gateway container, without seeing them. It is off unless you set it up. Read `docs/agents.md` first: sharing an item with an agent makes it readable by whoever runs the gateway (here, you).
+
+1. **Keys**, in the install folder:
+
+       mkdir -p secrets && chmod 700 secrets
+       openssl rand 32 > secrets/gateway-kek                 # the gateway's key-encryption key (KEK)
+       sudo chown 65532:65532 secrets/gateway-kek && sudo chmod 400 secrets/gateway-kek   # the gateway runs as uid 65532
+       openssl rand -hex 32                                  # → GATEWAY_API_TOKEN
+       openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | awk '{printf "%s\\n", $0}'   # → AGENT_TOKEN_PRIVATE_KEY (one line)
+
+   **Back up `secrets/gateway-kek`** somewhere off the host, as you back up `.env`. Lose it and every agent must be re-enrolled (created again and shared with again); nothing else is affected. `docs/agents.md` covers AWS KMS and Google Cloud KMS instead of the file key.
+2. **`.env`**: uncomment and fill in `GATEWAY_INTERNAL_URL=http://gateway:3003`, `GATEWAY_PUBLIC_URL` (your public address plus `/mcp`, e.g. `https://vault.example.com/mcp`), `GATEWAY_API_TOKEN` and `AGENT_TOKEN_PRIVATE_KEY`, and add `agents` to `COMPOSE_PROFILES` (e.g. `COMPOSE_PROFILES=bundled-db,agents`). Under a path (e.g. `/vault`), also set `BASE_PATH` explicitly: the gateway reaches the API at `http://clane-vault:3001${BASE_PATH}`.
+3. **Start**: `docker compose up -d`. The gateway listens on `127.0.0.1:8081` (`GATEWAY_BIND` / `GATEWAY_PORT`) for `/mcp`. Its internal port 3003 (agent enrolment) is reachable only from the API on the compose networks and is **never published**: don't add it to `ports`.
+4. **Reverse proxy**: on the same HTTPS host, forward these to the gateway port **without stripping the prefix**:
+   - `/mcp` (and everything under it)
+   - `/.well-known/oauth-protected-resource/mcp`
+
+   With a base path, also forward `/.well-known/oauth-authorization-server<base path>` (e.g. `/.well-known/oauth-authorization-server/vault`) to the **app** port. **Never forward `/internal`.** Plain nginx:
+
+   ```nginx
+   location /mcp {
+       proxy_pass http://127.0.0.1:8081;   # no URI part: /mcp is passed through
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_buffering off;
+   }
+   location = /.well-known/oauth-protected-resource/mcp { proxy_pass http://127.0.0.1:8081; }
+   # Only under a base path:
+   location = /.well-known/oauth-authorization-server/vault { proxy_pass http://127.0.0.1:8080; }
+   ```
+5. **Publish the gateway fingerprint** to your admins (they compare it when they verify an agent):
+
+       docker compose exec gateway /nodejs/bin/node dist/cli.js identity
+
+Rules the gateway checks at start:
+- `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.
+- The gateway's `API_URL` must be https, or plain http to a private network name or address (as in the compose file). After changing the API's `PUBLIC_URL`, restart the gateway too (`docker compose restart gateway`): it checks the API's issuer, which is `PUBLIC_URL`.
+- It refuses to start with `NODE_OPTIONS` set, with any Node flag outside its allowlist, or without `--disable-sigusr1` (the image's command has it). Don't override the command.
+
+If the gateway's identity key changes (a new `gateway-data` volume, a new KEK), the API stops with a message until you set `GATEWAY_ACCEPT_NEW_IDENTITY=true` once. Every existing agent's attestation is then invalid, so every agent must be re-enrolled, and members can't share with agents until an admin confirms the new fingerprint on the Agents page. Updates (`update.sh`) pull the gateway image at the same `CLANE_VAULT_VERSION`.
+
 ## Updates
 
     ./update.sh 0.2.0        # or .\update.ps1 0.2.0

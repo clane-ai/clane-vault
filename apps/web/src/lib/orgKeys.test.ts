@@ -216,6 +216,7 @@ describe("agent keys: the gateway's attestation is checked against the pinned ga
     expect(await reasonOf(sealFolderKeyTo(fk, ids, { id: "x", publicKey: agent.publicKey, email: "agent+x@agents.invalid" }, "me"))).toBe("unpinned");
     await pinGateway("me", ORG, identity);
     expect((await sealFolderKeyTo(fk, ids, agent, "me")).sealedTo).toBe(agent.membershipKey);
-    expect(isAgent({ id: "u", publicKey: "k" })).toBe(false);
+    const person = { id: "u", publicKey: "k", email: "u@example.com" };
+    expect(isAgent(person)).toBe(false);
   });
 });
