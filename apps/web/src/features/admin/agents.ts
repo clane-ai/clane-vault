@@ -31,9 +31,11 @@ export function useAgents() {
   const oapi = useOrgApi();
   return useQuery({ queryKey: ["admin-agents", useScope()], queryFn: () => oapi.get<{ agents: Agent[] }>("/admin/agents").then((r) => r.agents) });
 }
-export function useGateway(enabled = true) {
+/** A 404 (agents off) is final. `quiet` (every vault screen): fetched once, never retried or refetched on focus. */
+export function useGateway(enabled = true, quiet = false) {
   const oapi = useOrgApi();
-  return useQuery({ queryKey: ["agent-gateway", useScope()], enabled, queryFn: () => oapi.get<Gateway>("/org/agents/gateway") });
+  return useQuery({ queryKey: ["agent-gateway", useScope()], enabled, queryFn: () => oapi.get<Gateway>("/org/agents/gateway"),
+    ...(quiet ? { retry: false, staleTime: Infinity, refetchOnWindowFocus: false } : { retry: (n: number, e: unknown) => !agentsOff(e) && n < 1 }) });
 }
 
 function useAgentMutation<V, R>(fn: (v: V) => Promise<R>, opts: { gcTime?: number } = {}) {

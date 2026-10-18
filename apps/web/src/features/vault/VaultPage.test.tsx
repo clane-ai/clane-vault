@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { encryptFolderName, encryptNewRecord, randomBytes } from "@clane-vault/crypto";
 import { server } from "@/test/server";
@@ -227,5 +227,16 @@ describe("VaultPage", () => {
       if (shown) expect(await screen.findByRole("region", { name: "Agent use" })).toBeInTheDocument();
       else { await new Promise((r) => setTimeout(r, 100)); expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull(); }
     });
+  });
+
+  it("asks for the gateway once: a 404 is not retried, and a window focus doesn't refetch it", async () => {
+    let calls = 0;
+    server.use(http.get("/api/v1/org/agents/gateway", () => { calls++; return HttpResponse.json({ error: "not_found" }, { status: 404 }); }));
+    // The app's own defaults (App.tsx): one retry, refetch on focus.
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: true } } })}><MemoryRouter><VaultScreen /></MemoryRouter></QueryClientProvider>);
+    await waitFor(() => expect(calls).toBe(1));
+    focusManager.setFocused(false); focusManager.setFocused(true);
+    await new Promise((r) => setTimeout(r, 1500)); // past the default first retry delay (1 s)
+    expect(calls).toBe(1);
   });
 });

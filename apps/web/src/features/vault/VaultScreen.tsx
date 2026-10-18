@@ -45,7 +45,7 @@ export default function VaultScreen() {
   const team = !!org;
   // The plan is readable by owners and admins; for plain members the server cannot enforce Business-only policy fields (they are ciphertext).
   // Agents off answers 404 (members can read this); a 503 or any other error keeps the section.
-  const gw = useGateway(!!org);
+  const gw = useGateway(!!org, true);
   const pathsLocked = useLocked("agentPathPolicy", !!org && org.role !== "member");
   // Bulk migration (Keeper with shared folders and people) is an org admin's: Import lives in Personal, so it offers the
   // organisation the user administers.
