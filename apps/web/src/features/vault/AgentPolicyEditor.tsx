@@ -11,6 +11,7 @@ const ENCODED = /%(2f|5c|2e)/i;
 const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 /** The message to show under the section, or null when the policy is fine. Unicode hosts are refused, not converted: the gateway only matches punycode. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function agentPolicyError(p: AgentPolicy | undefined, body: Pick<RecordBody, "type" | "fields">): string | null {
   if (!p) return null;
   if (p.hosts.some((h) => /[^\x00-\x7f]/.test(h))) return "Agent policy: write international host names in punycode (xn--…). The gateway only matches that form.";
