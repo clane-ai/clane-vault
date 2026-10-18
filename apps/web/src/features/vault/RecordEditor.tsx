@@ -2,7 +2,7 @@ import { useRef, useState, type ElementType, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, Dices, Eye, EyeOff, Plus, Trash2, X } from "lucide-react";
 import {
   base32Decode, expiryValid, generatePassword, luhnValid, MAX_CUSTOM_FIELDS, MAX_FIELD_LABEL, templateOf, typeLabel,
-  FIELD_KINDS, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
+  FIELD_KINDS, defaultSecretRef, type AgentPolicy, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
 } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import { SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { emptyField, groupCardNumber, KIND_LABEL, lowerFirst, PLACEHOLDER } from "./recordKinds";
+import { AgentPolicyEditor, agentPolicyError } from "./AgentPolicyEditor";
 import { canFileInto, type VaultFolder } from "./types";
 
 const NO_FOLDER = "__none__";
@@ -114,7 +115,7 @@ function cardHint(v: string) {
   return luhnValid(d) ? undefined : <span className="text-amber-700 dark:text-amber-500">This number doesn't pass the card check. Check it for typos.</span>;
 }
 
-export function RecordEditor({ mode, type, initial, folderId, folders, canMove: canMoveProp = true, noFolder = true, onSave, onCancel, TitleAs = "h2", files }: {
+export function RecordEditor({ mode, type, initial, folderId, folders, canMove: canMoveProp = true, noFolder = true, onSave, onCancel, TitleAs = "h2", files, agentUse = false, pathsLocked = false }: {
   mode: "create" | "edit"; type: RecordType; initial?: RecordBody; folderId: string | null; folders: VaultFolder[];
   /** "No folder" is a place (Personal); in an organisation records stay in its shared folders. */ noFolder?: boolean;
   /** Only the record owner can move it between folders. */ canMove?: boolean;
@@ -123,6 +124,8 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   TitleAs?: ElementType;
   /** The Files part at the bottom (features/attachments): uploads for an existing record, a queue for a new one. */
   files?: React.ReactNode;
+  /** Edit holders in an organisation get the Agent use section. */ agentUse?: boolean;
+  /** Methods and paths need the Business plan. */ pathsLocked?: boolean;
 }) {
   const template = templateOf(type);
   const [title, setTitle] = useState(initial?.title ?? "");
@@ -132,6 +135,8 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
     (f.core ? (initial as unknown as Record<string, string | undefined> | undefined)?.[f.key] : initial?.data?.[f.key]) ?? ""])));
   const [fields, setFields] = useState<CustomField[]>(() => initial?.fields?.map((f) => ({ ...f })) ?? []);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  // Untouched, the stored policy is saved back as the same object (byte for byte).
+  const [policy, setPolicy] = useState<AgentPolicy | undefined>(initial?.agentPolicy);
   const [folder, setFolder] = useState<string | null>(folderId);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -142,8 +147,13 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   const setField = (id: string, p: Partial<CustomField>) => setFields((fs) => fs.map((f) => (f.id === id ? { ...f, ...p } : f)));
   const move = (i: number, d: -1 | 1) => setFields((fs) => { const n = [...fs]; const [x] = n.splice(i, 1); n.splice(i + d, 0, x!); return n; });
 
+  const keptFields = fields.filter((f) => f.value !== "");
+  const policyError = agentPolicyError(policy, { type, fields: keptFields });
+  const showAgent = agentUse && (!!policy || defaultSecretRef(type) !== null || keptFields.some((f) => f.kind === "secret"));
+
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (policyError) return setError(policyError);
     if (!title.trim()) return setError("Give it a title.");
     for (const f of template) {
       const v = values[f.key]!.trim();
@@ -176,6 +186,7 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
     if (Object.keys(data).length) body.data = data;
     const kept = custom.filter((f) => f.value !== "").map((f) => ({ id: f.id, label: f.label.trim(), kind: f.kind, value: f.kind === "totp" ? cleanTotp(f.value) : f.value }));
     if (kept.length) body.fields = kept;
+    if (policy) body.agentPolicy = policy;
     setBusy(true); setError(null);
     try { await onSave(body, folder); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
@@ -240,6 +251,13 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
           </Button>
         </section>
 
+        {showAgent && (
+          <section aria-label="Agent use" className="flex flex-col gap-2.5">
+            <h3 className="font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase">Agent use</h3>
+            <AgentPolicyEditor body={{ type, fields: keptFields }} value={policy} onChange={setPolicy} pathsLocked={pathsLocked} />
+            {policyError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{policyError}</p>}
+          </section>
+        )}
         <Field id="ed-folder" label="Folder">
           <Select value={elsewhere ? NO_FOLDER : folder ?? NO_FOLDER} onValueChange={(v) => setFolder(v === NO_FOLDER ? null : v)} disabled={!canMove}>
             <SelectTrigger id="ed-folder" className="w-full"><SelectValue /></SelectTrigger>
@@ -255,7 +273,7 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
       </SheetBody>
       <SheetFooter>
         <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>
-        <Button type="submit" disabled={busy} className="min-w-20">{busy ? "Saving…" : "Save"}</Button>
+        <Button type="submit" disabled={busy || !!policyError} className="min-w-20">{busy ? "Saving…" : "Save"}</Button>
       </SheetFooter>
     </form>
   );
