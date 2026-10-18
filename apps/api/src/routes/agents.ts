@@ -35,7 +35,7 @@ function attestationOk(att: string, ids: { orgId: string; agentId: string; publi
 /** health → pin: what every caller that needs the gateway identity goes through. Throws GatewayUnavailable / GatewayIdentityChanged. */
 async function ensureIdentity(app: FastifyInstance): Promise<GatewayIdentityInfo> {
   const seen = await app.gateway.health();
-  await pinGatewayIdentity(app.prisma, seen, { accept: app.config.agents!.acceptNewGatewayIdentity });
+  await pinGatewayIdentity(app.prisma, seen, { accept: app.config.agents!.acceptNewGatewayIdentity, log: app.log });
   return seen;
 }
 

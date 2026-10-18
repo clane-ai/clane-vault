@@ -58,8 +58,8 @@ export function gatewayClient(cfg: AgentConfig, fetchImpl: typeof fetch = fetch)
 
 const SLOT = "gateway";
 
-/** First sight creates the row; same → "ok"; different → throws GatewayIdentityChanged unless accept (then updates). */
-export async function pinGatewayIdentity(db: Db, seen: GatewayIdentityInfo, opts: { accept: boolean }): Promise<"created" | "ok" | "accepted"> {
+/** First sight creates the row; same → "ok"; different → throws GatewayIdentityChanged unless accept (then updates, and warns on `log`). */
+export async function pinGatewayIdentity(db: Db, seen: GatewayIdentityInfo, opts: { accept: boolean; log?: { warn: (o: object, msg: string) => void } }): Promise<"created" | "ok" | "accepted"> {
   let row = await db.gatewayIdentity.findUnique({ where: { id: SLOT } });
   if (!row) {
     // Two starts at once: the first row wins and the other compares against it.
@@ -69,6 +69,7 @@ export async function pinGatewayIdentity(db: Db, seen: GatewayIdentityInfo, opts
   if (row.keyId === seen.keyId && row.publicKey === seen.publicKey) return "ok";
   if (!opts.accept) throw new GatewayIdentityChanged({ keyId: row.keyId, publicKey: row.publicKey }, seen);
   await db.gatewayIdentity.update({ where: { id: SLOT }, data: { keyId: seen.keyId, publicKey: seen.publicKey, firstSeenAt: new Date() } });
+  opts.log?.warn({ event: "gateway_identity_repinned", oldKeyId: row.keyId, newKeyId: seen.keyId }, "GATEWAY_ACCEPT_NEW_IDENTITY=true: a changed gateway identity was pinned. Remove the setting.");
   return "accepted";
 }
 

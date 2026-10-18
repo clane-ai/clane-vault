@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
 import { b64url, generateKeyPair, keyFingerprint, verifyAgentAttestation } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
@@ -120,6 +120,20 @@ describe("enrolment through the gateway", () => {
       expect(seen.keyId).not.toBe(pinned.keyId);
       expect((await call(owner, "POST", "/admin/agents", { name: "Bot 2" })).statusCode).toBe(201);
     } finally { await t.prisma.gatewayIdentity.deleteMany(); }
+  });
+
+  it("GATEWAY_ACCEPT_NEW_IDENTITY at runtime: a re-pin logs a warning with the old and new keyId only", async () => {
+    const owner = await createActiveUser(t, { role: "owner" });
+    expect((await call(owner, "POST", "/admin/agents", { name: "Bot" })).statusCode).toBe(201);
+    const pinned = fake.identity.keyId;
+    await fake.rotateIdentity();
+    const warn = vi.spyOn(t.app.log, "warn");
+    t.config.agents!.acceptNewGatewayIdentity = true;
+    try {
+      expect((await call(owner, "POST", "/admin/agents", { name: "Bot 2" })).statusCode).toBe(201);
+      const calls = warn.mock.calls.filter(([o]) => (o as { event?: string }).event === "gateway_identity_repinned");
+      expect(calls.map(([o]) => o)).toEqual([{ event: "gateway_identity_repinned", oldKeyId: pinned, newKeyId: fake.identity.keyId }]);
+    } finally { t.config.agents!.acceptNewGatewayIdentity = false; warn.mockRestore(); await t.prisma.gatewayIdentity.deleteMany(); }
   });
 
   it("an agent of another org is 404", async () => {
