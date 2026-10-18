@@ -5,7 +5,7 @@ import { loadKek } from "./kek.js";
 
 const [cmd] = process.argv.slice(2);
 if (cmd !== "identity") {
-  console.error("usage: clane-gateway identity");
+  console.error("usage: clane-vault-agent-gateway identity");
   process.exit(2);
 }
 try {

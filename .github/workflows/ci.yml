@@ -28,10 +28,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f apps/gateway/Dockerfile -t clane-gateway:ci .
+      - run: docker build -f apps/gateway/Dockerfile -t clane-vault-agent-gateway:ci .
       # Without config it must exit 1 with a one-line config_error (no stack trace).
       - run: |
           set +e
-          out=$(docker run --rm clane-gateway:ci 2>&1); code=$?
+          out=$(docker run --rm clane-vault-agent-gateway:ci 2>&1); code=$?
           echo "$out"
           [ "$code" -eq 1 ] && [ "$(echo "$out" | wc -l)" -eq 1 ] && echo "$out" | grep -q '"event":"config_error"'

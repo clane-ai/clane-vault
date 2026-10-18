@@ -1,6 +1,6 @@
 # Releasing Clane Vault
 
-Images are published to `ghcr.io/clane-ai/clane-vault` and `ghcr.io/clane-ai/clane-gateway` (the agent gateway, `docs/agents.md`), both public, with the tags `X.Y.Z`, `X.Y`, `latest` and
+Images are published to `ghcr.io/clane-ai/clane-vault` and `ghcr.io/clane-ai/clane-vault-agent-gateway` (the agent gateway, `docs/agents.md`), both public, with the tags `X.Y.Z`, `X.Y`, `latest` and
 `sha-<commit>`. They are built from the tagged commit, so uncommitted work never ends up in an image.
 
 ## Build, check and push a version
@@ -13,12 +13,12 @@ Images are published to `ghcr.io/clane-ai/clane-vault` and `ghcr.io/clane-ai/cla
 
        git tag -a vX.Y.Z -m "Clane Vault X.Y.Z"
        git archive --format=tar vX.Y.Z | docker build -t ghcr.io/clane-ai/clane-vault:X.Y.Z -
-       git archive --format=tar vX.Y.Z | docker build -f apps/gateway/Dockerfile -t ghcr.io/clane-ai/clane-gateway:X.Y.Z -
+       git archive --format=tar vX.Y.Z | docker build -f apps/gateway/Dockerfile -t ghcr.io/clane-ai/clane-vault-agent-gateway:X.Y.Z -
 
 4. Smoke-test the image against a throwaway Postgres, at the root and with `BASE_PATH=/vault`: health answers
    `{"ok":true,"db":true}`, the web app loads, Docker reports the container healthy, `bootstrap.js` prints an invite
    link, and a wrong `SERVER_SECRET` stops it with `server_secret_mismatch`. Smoke-test the gateway image too:
-   `docker run --rm ghcr.io/clane-ai/clane-gateway:X.Y.Z` exits 1 with one `config_error` line; with a 32-byte file
+   `docker run --rm ghcr.io/clane-ai/clane-vault-agent-gateway:X.Y.Z` exits 1 with one `config_error` line; with a 32-byte file
    KEK, the other settings, `--read-only --tmpfs /tmp --cap-drop ALL` and a volume on `/data`, it logs `listening`,
    `POST /mcp` answers 401, and `/nodejs/bin/node dist/cli.js identity` prints a fingerprint.
 5. Scan both images (below), then push the tag and the four tags of each image.

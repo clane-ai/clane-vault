@@ -1,5 +1,5 @@
 # Clane Vault agent gateway (docs/agents.md): the MCP server that holds KMS-wrapped agent keys. Never the API process.
-# Build context: repository root. Image: ghcr.io/clane-ai/clane-gateway.
+# Build context: repository root. Image: ghcr.io/clane-ai/clane-vault-agent-gateway.
 #
 # The runtime stage is distroless Node.js 22 on Debian 13: no shell, no package manager, no npm. It holds only the
 # bundled dist/ (esbuild inlines every dependency, the AWS KMS SDK included). Core dumps are turned off by the compose

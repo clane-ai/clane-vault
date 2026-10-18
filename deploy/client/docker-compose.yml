@@ -16,7 +16,7 @@ services:
   # in .env), so an install without a gateway key keeps working. It reads no .env file: only the values below reach it.
   gateway:
     profiles: ["agents"]
-    image: ${CLANE_GATEWAY_IMAGE:-ghcr.io/clane-ai/clane-gateway}:${CLANE_VAULT_VERSION:-1.7.3}
+    image: ${CLANE_VAULT_AGENT_GATEWAY_IMAGE:-ghcr.io/clane-ai/clane-vault-agent-gateway}:${CLANE_VAULT_VERSION:-1.7.3}
     restart: unless-stopped
     environment:
       API_URL: http://clane-vault:3001${BASE_PATH:-}
