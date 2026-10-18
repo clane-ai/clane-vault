@@ -22,7 +22,7 @@ const log = { warn: (o: object, m: string) => console.error(`${m} ${JSON.stringi
 const r = await resetTwoFactorByEmail({ prisma, mail, productName: () => brand.productName() }, { email, actorId: null, log });
 await prisma.$disconnect();
 if (!r.ok) {
-  console.error(r.error === "not_found" ? `No account for ${email}.` : `${email} is disabled: enable the account first.`);
+  console.error(r.error === "not_found" ? `No account for ${email}.` : r.error === "is_agent" ? `${email} is an agent, not a person.` : `${email} is disabled: enable the account first.`);
   process.exit(1);
 }
 console.log(`${email}: authenticator reset and signed out everywhere. They set up a new one at their next sign-in.${r.emailed ? " They were emailed." : " No email was sent (email isn't set up or failed): tell them yourself."}`);

@@ -3,6 +3,8 @@ import { deriveLoginKeys } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, freshTotp, wrongTotp } from "./helpers.js";
 import { LOCK_AFTER } from "../src/lib/lockout.js";
 import { resetTwoFactorByEmail } from "../src/lib/twoFactor.js";
+import { agentEmail } from "../src/lib/agents.js";
+import { createTestAgent } from "./agentHelpers.js";
 
 // The instance-level authenticator reset by email address, which reaches organisation owners (docs/recovery.md), and
 // its core function, which the operator's reset-2fa CLI runs.
@@ -79,6 +81,16 @@ describe("resetting someone's authenticator by email address (instance admins)",
     expect((await reset(ia, admin.email)).json()).toEqual({ error: "disabled" });
     for (const id of [owner.id, ia.id]) expect((await t.prisma.user.findUniqueOrThrow({ where: { id } })).status).toBe("active");
     expect(await t.prisma.event.count({ where: { action: "instance.reset_2fa" } })).toBe(0);
+  });
+
+  it("refuses an agent (409 is_agent): no authenticator to reset, and never a customer organisation's owner", async () => {
+    const ia = await instanceAdmin();
+    const agent = await createTestAgent(t, { orgId: ia.orgId, createdById: ia.id, verified: true });
+    const r = await reset(ia, agentEmail(agent.id));
+    expect([r.statusCode, r.json().error]).toEqual([409, "is_agent"]);
+    const c = await call(ia, "POST", "/admin/instance/orgs", { name: "Bots Ltd", ownerEmail: agentEmail(agent.id) }, null);
+    expect([c.statusCode, c.json().error]).toEqual([409, "is_agent"]);
+    expect(await t.prisma.event.count({ where: { action: { in: ["instance.reset_2fa", "instance.customer_org_create"] } } })).toBe(0);
   });
 
   it("needs the instance admin's own fresh authenticator code, checked before the address and counted toward their lockout", async () => {

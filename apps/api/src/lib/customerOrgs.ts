@@ -79,7 +79,7 @@ async function sendOwnerInvite(app: FastifyInstance, org: { id: string; name: st
   return { emailed, inviteUrl };
 }
 
-export type CreateResult = { ok: true; org: CustomerOrgView; emailed: boolean; inviteUrl: string | null } | { ok: false; error: "self" | "email_required" };
+export type CreateResult = { ok: true; org: CustomerOrgView; emailed: boolean; inviteUrl: string | null } | { ok: false; error: "self" | "email_required" | "is_agent" };
 
 /**
  * Creates the organisation with no members and its owner invitation. Not limited by ALLOW_ORG_CREATION or
@@ -88,7 +88,9 @@ export type CreateResult = { ok: true; org: CustomerOrgView; emailed: boolean; i
 export async function createCustomerOrg(app: FastifyInstance, o: { name: string; ownerEmail: string; actorId: string; log: Log; meta?: { ip?: string; userAgent?: string } }): Promise<CreateResult> {
   const hosted = !!app.config.hostedMode;
   const email = o.ownerEmail.trim().toLowerCase();
-  const existing = await app.prisma.user.findUnique({ where: { email }, select: { id: true } });
+  const existing = await app.prisma.user.findUnique({ where: { email }, select: { id: true, kind: true } });
+  // Agents are not people, so never an organisation's owner (their addresses are all under .invalid, so resend needs no check).
+  if (existing?.kind === "agent" || email.endsWith("@agents.invalid")) return { ok: false, error: "is_agent" };
   // The operator would become a member of the customer's organisation: they create organisations for themselves in the app.
   if (existing?.id === o.actorId) return { ok: false, error: "self" };
   // HOSTED_MODE: invitations are only ever emailed, so there must be a way to send one.
