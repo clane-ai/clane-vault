@@ -4,6 +4,7 @@ import { decodeJwt, exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
 import { createTestAgent } from "./agentHelpers.js";
 import { startFakeGateway } from "./fakeGateway.js";
+import { sweepOAuthClients } from "../src/routes/oauth.js";
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
@@ -275,5 +276,78 @@ describe("revoking grants", () => {
     expect(await t.prisma.event.findMany({ where: { action: "agent.grant_revoke" } })).toMatchObject([{ actorId: g.owner.id, targetUserId: g.agent.id, meta: { grantId: g.grantId } }]);
     expect((await call(g.owner, "GET", "/admin/agents")).json().agents[0].grants).toEqual([]);
     expect((await call(g.owner, "DELETE", `/admin/agents/${g.agent.id}/grants/${crypto.randomUUID()}`)).statusCode).toBe(404);
+  });
+});
+
+describe("review round 1", () => {
+  it("a refresh with a client_id that isn't a uuid is invalid_grant, not a 500", async () => {
+    const g = await granted();
+    const r = await refresh("not-a-uuid", g.refresh_token);
+    expect([r.statusCode, r.json().error]).toEqual([400, "invalid_grant"]);
+  });
+
+  it("a used code replayed with the right verifier revokes its grant; with a wrong verifier it doesn't", async () => {
+    const { owner, agent, clientId } = await setup();
+    const c = await consent(owner, clientId, agent.id);
+    const first = (await exchange(clientId, c.code, c.verifier)).json();
+    expect((await exchange(clientId, c.code, pkce().verifier)).json().error).toBe("invalid_grant");
+    expect((await sync(first.access_token)).statusCode).toBe(200);
+    expect(await t.prisma.event.count({ where: { action: "agent.grant_revoke" } })).toBe(0);
+    expect((await exchange(clientId, c.code, c.verifier)).json().error).toBe("invalid_grant");
+    expect((await sync(first.access_token)).statusCode).toBe(401);
+    expect(await t.prisma.event.findFirst({ where: { action: "agent.grant_revoke" } })).toMatchObject({ targetUserId: agent.id, meta: { reason: "code_reuse" } });
+  });
+
+  it("refresh refuses a foreign resource", async () => {
+    const g = await granted();
+    const r = await form("/oauth/token", { grant_type: "refresh_token", refresh_token: g.refresh_token, client_id: g.clientId, resource: "https://other.test/mcp" });
+    expect([r.statusCode, r.json().error]).toEqual([400, "invalid_target"]);
+  });
+
+  it("DCR refuses control and bidi characters in client_name", async () => {
+    for (const client_name of ["Claude‮evil", "Claude\u0007", "a​b"])
+      expect((await t.app.inject({ method: "POST", url: "/api/v1/oauth/register", remoteAddress: ip(), payload: { client_name, redirect_uris: [CB] } })).statusCode).toBe(400);
+  });
+
+  it("info caps state at 1000 characters", async () => {
+    const { owner, clientId } = await setup();
+    const q = (state: string) => call(owner, "GET", `/oauth/authorize/info?${infoQuery({ client_id: clientId, code_challenge: pkce().challenge, state })}`, undefined, {});
+    expect((await q("s".repeat(1000))).statusCode).toBe(200);
+    expect((await q("s".repeat(1001))).json().error).toBe("invalid_request");
+  });
+
+  it("grant events carry the request metadata; a refresh replay logs no actor", async () => {
+    const g = await granted();
+    expect(await t.prisma.event.findFirst({ where: { action: "agent.grant" } })).toMatchObject({ ip: expect.any(String), userAgent: expect.any(String) });
+    expect((await refresh(g.clientId, g.refresh_token)).statusCode).toBe(200);
+    await t.prisma.agentGrant.update({ where: { id: g.grantId }, data: { rotatedAt: new Date(Date.now() - 60_000) } });
+    await refresh(g.clientId, g.refresh_token);
+    expect(await t.prisma.event.findFirst({ where: { action: "agent.grant_revoke" } })).toMatchObject({ actorId: null, ip: expect.any(String), meta: { reason: "refresh_reuse" } });
+  });
+
+  it("metadata names the revocation auth method", async () => {
+    expect((await t.app.inject({ method: "GET", url: "/.well-known/oauth-authorization-server" })).json().revocation_endpoint_auth_methods_supported).toEqual(["none"]);
+  });
+
+  it("consent refuses a foreign resource; an exchange without code_verifier is invalid_request", async () => {
+    const { owner, agent, clientId } = await setup();
+    const r = await call(owner, "POST", "/oauth/authorize", { clientId, redirectUri: CB, codeChallenge: pkce().challenge, codeChallengeMethod: "S256", agentId: agent.id, resource: "https://other.test/mcp" });
+    expect([r.statusCode, r.json().error]).toEqual([400, "invalid_target"]);
+    const c = await consent(owner, clientId, agent.id);
+    const x = await form("/oauth/token", { grant_type: "authorization_code", code: c.code, client_id: clientId, redirect_uri: CB });
+    expect([x.statusCode, x.json().error]).toEqual([400, "invalid_request"]);
+  });
+
+  it("the sweep deletes clients over 30 days old with no codes and no grants", async () => {
+    const { owner, agent } = await setup();
+    const old = new Date(Date.now() - 31 * 864e5);
+    const mk = (createdAt: Date) => t.prisma.agentOAuthClient.create({ data: { name: "c", redirectUris: [CB], createdAt } });
+    const [stale, fresh, withCode, withGrant] = await Promise.all([mk(old), mk(new Date()), mk(old), mk(old)]);
+    await t.prisma.agentOAuthCode.create({ data: { codeHash: "x", clientId: withCode.id, agentId: agent.id, grantedById: owner.id, codeChallenge: "c", redirectUri: CB, expiresAt: new Date() } });
+    await t.prisma.agentGrant.create({ data: { agentId: agent.id, clientId: withGrant.id, grantedById: owner.id, refreshHash: "rh", expiresAt: new Date() } });
+    expect(await sweepOAuthClients(t.prisma)).toBe(1);
+    const left = (await t.prisma.agentOAuthClient.findMany({ select: { id: true } })).map((c) => c.id);
+    expect(left).not.toContain(stale.id);
+    expect(left).toEqual(expect.arrayContaining([fresh.id, withCode.id, withGrant.id]));
   });
 });

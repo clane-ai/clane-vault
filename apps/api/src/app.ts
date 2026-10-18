@@ -47,7 +47,7 @@ import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
-import { authServerMetadata, oauthRoutes } from "./routes/oauth.js";
+import { authServerMetadata, oauthRoutes, sweepOAuthClients } from "./routes/oauth.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -183,6 +183,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     opts.prisma.ssoProof.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.m365Connect.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.agentOAuthCode.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
+    sweepOAuthClients(opts.prisma).catch((e: unknown) => app.log.error(e));
     // Attachments: abandoned uploads (24 h), removed files and purged S3 objects (docs/attachments.md).
     sweeper.run().catch((e: unknown) => app.log.error(e));
   }, SWEEP_INTERVAL_MS);

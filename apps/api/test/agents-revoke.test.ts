@@ -71,8 +71,7 @@ describe("DELETE /admin/agents/:id", () => {
     expect(r.statusCode).toBe(200);
     expect(r.json().rotate.records).toBe(3);
     expect(r.json().rotate.folders.map((f: { id: string }) => f.id).sort()).toEqual([f1.id, f2.id].sort());
-    // offboard leaves trashed folders alone (as for people); the trashed one is in `rotate` above instead.
-    expect(await t.prisma.folderMember.count({ where: { userId: agent.id, folder: { deletedAt: null } } })).toBe(0);
+    expect(await t.prisma.folderMember.count({ where: { userId: agent.id } })).toBe(0);
     expect(await t.prisma.recordAccess.count({ where: { holderType: "user", holderId: agent.id } })).toBe(0);
     expect(await t.prisma.membership.count({ where: { userId: agent.id } })).toBe(0);
     expect(await t.prisma.membershipKey.count({ where: { userId: agent.id } })).toBe(0);

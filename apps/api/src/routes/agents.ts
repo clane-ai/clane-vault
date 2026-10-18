@@ -148,7 +148,7 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     const a = await agentIn(req, reply);
     if (!a) return reply;
     if (!(await app.prisma.agentGrant.findFirst({ where: { id: grantId, agentId: a.userId }, select: { id: true } }))) return reply.code(404).send({ error: "not_found" });
-    await revokeGrant(app, { id: grantId, agentId: a.userId }, { actorId: req.auth.userId, ip: req.ip });
+    await revokeGrant(app, { id: grantId, agentId: a.userId }, { actorId: req.auth.userId, req });
     return reply.code(204).send();
   });
 
@@ -187,6 +187,8 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
         { holderType: "folder", holderId: { in: folders.map((f) => f.id) } },
         { holderType: "user", holderId: userId, orgId: org }] }, select: { recordId: true }, distinct: ["recordId"] });
       await offboard(tx, org, userId, "remove", now);
+      // offboard leaves trashed folders alone; a revoked agent must not come back with a restored one.
+      await tx.folderMember.deleteMany({ where: { userId, folder: { orgId: org } } });
       await tx.agentToken.updateMany({ where: { agentId: userId, revokedAt: null }, data: { revokedAt: now } });
       await tx.agentGrant.updateMany({ where: { agentId: userId, revokedAt: null }, data: { revokedAt: now } });
       await tx.user.update({ where: { id: userId }, data: { status: "disabled" } });
