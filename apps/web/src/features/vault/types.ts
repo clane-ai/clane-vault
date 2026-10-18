@@ -8,12 +8,18 @@ export type Grant = "edit" | "view" | "use";
  * `membershipKey`: the member's current membership key in this org (what to seal to; null: none yet, their account key).
  * `needsAccess`: their copy of the folder key was sealed to a key they lost (account reset): a key holder gives it again.
  */
-export interface FolderMember { userId: string; name: string; email: string; publicKey: string; membershipKey?: string | null; needsAccess?: boolean; permission: Permission; directPermission?: Permission | null }
+export interface FolderMember {
+  userId: string; name: string; email: string; publicKey: string; membershipKey?: string | null; needsAccess?: boolean; permission: Permission; directPermission?: Permission | null;
+  /** Agents (use only): the gateway's attestation of their key, checked before sealing (lib/orgKeys verifyAgentKey). */ kind?: "person" | "agent"; attestation?: string | null; gatewayKeyId?: string | null;
+}
 /** A group a team folder is shared with (docs/groups.md). */
 export interface FolderGroupGrant { id: string; name: string; permission: Grant; memberIds: string[] }
 export interface ShareInfo { userId: string; name: string; permission: Permission; needsAccess?: boolean }
 /** `membershipKey`: their membership key in the active org (docs/design/2026-10-08-per-org-keypairs.md). */
-export interface Person { id: string; name: string; email: string; publicKey: string; membershipKey?: string | null }
+export interface Person {
+  id: string; name: string; email: string; publicKey: string; membershipKey?: string | null;
+  /** Agents (use only): the gateway's attestation of their key, checked before sealing (lib/orgKeys verifyAgentKey). */ kind?: "person" | "agent"; attestation?: string | null; gatewayKeyId?: string | null;
+}
 
 export interface SyncFolder {
   id: string; kind: "private" | "team"; encName: string; ownerId?: string; deletedAt: string | null;

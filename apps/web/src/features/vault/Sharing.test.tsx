@@ -1,13 +1,18 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { b64url, decryptRecordBody, encryptNewRecord, generateKeyPair, openFolderKey, openSharedRecordKey, randomBytes } from "@clane-vault/crypto";
+import {
+  b64url, decryptRecordBody, encryptNewRecord, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openFolderKey, openSharedRecordKey, randomBytes, signAgentKey,
+} from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
+import { AgentAttestationError, pinGateway } from "@/lib/orgKeys";
 import VaultPage from "./VaultPage";
+import { AGENT_DISCLOSURE, AGENT_WARNING } from "./AgentWarning";
+import { useVault } from "./useVault";
 
 const me = { userKey: randomBytes(32), ...(await generateKeyPair()) };
 const bob = await generateKeyPair();
@@ -129,5 +134,104 @@ describe("sharing", () => {
     const bobs = await openFolderKey(member.wrappedFolderKey!, folder.id!, bob);
     expect(bobs).toEqual(mine);
     expect(member).toMatchObject({ userId: "u2", permission: "view" });
+  });
+});
+
+// An agent the gateway enrolled: its key, signed by the gateway identity over agent-key:<org>:<agent>:<key>.
+const gw = await generateIdentityKeyPair();
+const GATEWAY = { keyId: await gatewayKeyId(gw.publicKey), publicKey: b64url.encode(gw.publicKey) };
+const bot = await generateKeyPair();
+const BOT_KEY = b64url.encode(bot.publicKey);
+const BOT = { id: "a1", name: "Billing bot", email: "agent+a1@agents.invalid", kind: "agent", publicKey: BOT_KEY, membershipKey: null,
+  attestation: await signAgentKey(gw.privateKey, GATEWAY.keyId, { orgId: "o1", agentId: "a1", publicKey: BOT_KEY }), gatewayKeyId: GATEWAY.keyId };
+
+describe("sharing to agents", () => {
+  beforeEach(() => { localStorage.clear(); });
+  async function openShareSheet(users: unknown[]) {
+    const id = crypto.randomUUID();
+    const enc = await encryptNewRecord(id, { type: "login", title: "Stripe", password: "pw" }, me.userKey);
+    const posted: { userId: string; permission: string; sealedRecordKey: string }[] = [];
+    server.use(
+      http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [{ id, folderId: null, type: "login", encBody: enc.encBody, wrappedRecordKey: enc.wrappedRecordKey,
+        revision: 1, updatedAt: "2026-10-04T10:00:00Z", deletedAt: null, permission: "owner", holderType: "user", ownerId: "u1", ownerName: "Sara", sharedWith: [] }] })),
+      http.get("/api/v1/users", () => HttpResponse.json({ users })),
+      http.get("/api/v1/records/:id/activity", () => HttpResponse.json({ events: [] })),
+      http.post("/api/v1/records/:id/shares", async ({ request }) => { posted.push((await request.json()) as never); return HttpResponse.json({ ok: true }, { status: 201 }); }),
+    );
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /^Shared directly/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Share" }));
+    const sheet = await screen.findByRole("dialog");
+    const pick = async (name: RegExp) => {
+      await userEvent.click(within(sheet).getByRole("combobox", { name: "Person" }));
+      await userEvent.click(await screen.findByRole("option", { name }));
+    };
+    return { id, enc, posted, sheet, pick };
+  }
+
+  it("an agent is locked to Use only, the warning sits above the confirm button every time, and the key is sealed to the attested agent key", async () => {
+    pinGateway("o1", GATEWAY);
+    const { id, enc, posted, sheet, pick } = await openShareSheet([BOB, BOT]);
+    await userEvent.click(within(sheet).getByRole("combobox", { name: "Person" }));
+    const option = await screen.findByRole("option", { name: /Billing bot/ });
+    expect(within(option).getByRole("img", { name: "Agent" })).toBeInTheDocument();
+    await userEvent.click(option);
+    const perm = within(sheet).getByRole("combobox", { name: "Permission for new person" });
+    expect(perm).toHaveTextContent("Use only");
+    expect(perm).toBeDisabled();
+    const warning = within(sheet).getByRole("note", { name: "Sharing with an agent" });
+    expect(warning).toHaveTextContent(AGENT_WARNING);
+    expect(warning).toHaveTextContent(AGENT_DISCLOSURE);
+    expect(within(warning).queryByRole("button")).not.toBeInTheDocument(); // never dismissable
+    const confirm = within(sheet).getByRole("button", { name: "Share" });
+    expect(warning.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(confirm);
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({ userId: "a1", permission: "use" });
+    const rk = await openSharedRecordKey(posted[0]!.sealedRecordKey, id, bot);
+    expect((await decryptRecordBody(id, enc.encBody, rk)).title).toBe("Stripe");
+    // The next agent selection shows the warning again.
+    await waitFor(() => expect(within(sheet).queryByRole("note", { name: "Sharing with an agent" })).not.toBeInTheDocument());
+    await pick(/Billing bot/);
+    expect(within(sheet).getByRole("note", { name: "Sharing with an agent" })).toHaveTextContent(AGENT_WARNING);
+  });
+
+  it("a person gets no agent warning and keeps the permission choice", async () => {
+    pinGateway("o1", GATEWAY);
+    const { sheet, pick } = await openShareSheet([BOB, BOT]);
+    await pick(/Bob Stone/);
+    expect(within(sheet).queryByRole("note", { name: "Sharing with an agent" })).not.toBeInTheDocument();
+    expect(within(sheet).getByRole("combobox", { name: "Permission for new person" })).toBeEnabled();
+  });
+
+  it("refuses to seal to an agent when no gateway identity is pinned, or when the server swapped the agent's key", async () => {
+    const { posted, sheet, pick } = await openShareSheet([{ ...BOT, publicKey: b64url.encode((await generateKeyPair()).publicKey) }]);
+    await pick(/Billing bot/);
+    await userEvent.click(within(sheet).getByRole("button", { name: "Share" }));
+    expect(await within(sheet).findByText(/hasn't confirmed the agent gateway's identity/)).toBeInTheDocument();
+    pinGateway("o1", GATEWAY);
+    await userEvent.click(within(sheet).getByRole("button", { name: "Share" }));
+    expect(await within(sheet).findByText(/The gateway did not sign this agent's key/)).toBeInTheDocument();
+    expect(posted).toHaveLength(0);
+  });
+
+  it("Give access again re-verifies an agent's attestation from /sync before resealing", async () => {
+    const puts: unknown[] = [];
+    server.use(
+      http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [] })),
+      http.put("/api/v1/folders/:id/members/:uid/key", async ({ request }) => { puts.push(await request.json()); return HttpResponse.json({ ok: true }); }),
+    );
+    const { result } = renderHook(() => useVault(), { wrapper: ({ children }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider> });
+    const folder = { id: crypto.randomUUID(), name: "Infra", kind: "team" as const, deleted: false, myPermission: "owner" as const, folderKey: randomBytes(32) };
+    const member = { userId: "a1", name: "Billing bot", email: BOT.email, kind: "agent" as const, publicKey: BOT_KEY, membershipKey: null, permission: "use" as const,
+      attestation: BOT.attestation, gatewayKeyId: GATEWAY.keyId, needsAccess: true };
+    pinGateway("o1", GATEWAY);
+    const swapped = b64url.encode((await generateKeyPair()).publicKey);
+    await expect(act(() => result.current.giveAccessAgain(folder, { ...member, publicKey: swapped }))).rejects.toBeInstanceOf(AgentAttestationError);
+    expect(puts).toHaveLength(0);
+    await act(() => result.current.giveAccessAgain(folder, member));
+    const sealed = puts[0] as { wrappedFolderKey: string };
+    expect(await openFolderKey(sealed.wrappedFolderKey, folder.id, bot)).toEqual(folder.folderKey);
   });
 });

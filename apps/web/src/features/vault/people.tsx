@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
+import { Bot } from "lucide-react";
 import { b64url, keyFingerprint } from "@clane-vault/crypto";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -19,7 +20,13 @@ export function initials(name: string) {
 const TINTS = ["bg-blue-tint text-blue-500", "bg-orange-tint text-orange-ink", "bg-green-tint text-green-600", "bg-purple-tint text-purple-ink"] as const;
 const tintFor = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return TINTS[Math.abs(h) % TINTS.length]; };
 
-export function PersonAvatar({ name, id, size = 32, className }: { name: string; id?: string; size?: 24 | 32; className?: string }) {
+/** `agent`: a Bot icon instead of initials (labelled "Agent"). */
+export function PersonAvatar({ name, id, size = 32, className, agent }: { name: string; id?: string; size?: 24 | 32; className?: string; agent?: boolean }) {
+  if (agent) return (
+    <span role="img" aria-label="Agent" className={cn("grid shrink-0 place-items-center rounded-full bg-well text-text-secondary", size === 24 ? "size-6" : "size-8", className)}>
+      <Bot className={size === 24 ? "size-3.5" : "size-4"} />
+    </span>
+  );
   return (
     <span aria-hidden="true" className={cn("grid shrink-0 place-items-center rounded-full font-display font-semibold select-none", tintFor(id ?? name),
       size === 24 ? "size-6 text-[9.5px] tracking-[-.02em]" : "size-8 text-[12px]", className)}>{initials(name)}</span>
@@ -62,15 +69,16 @@ export function PermissionSelect({ value, onChange, label, disabled, className }
 }
 
 /** One person row: avatar · name/email/fingerprint · trailing controls. */
-export function PersonRow({ id, name, email, publicKey, badge, href, children }: { id: string; name: string; email?: string; publicKey?: string; badge?: React.ReactNode;
+export function PersonRow({ id, name, email, publicKey, badge, href, agent, children }: { id: string; name: string; email?: string; publicKey?: string; badge?: React.ReactNode;
+  /** An agent: Bot avatar and an "Agent" badge. */ agent?: boolean;
   /** Opens the person's page (admin People → member). */ href?: string; children?: React.ReactNode }) {
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border-default py-2.5 last:border-b-0" aria-label={name}>
-      <PersonAvatar id={id} name={name} />
+      <PersonAvatar id={id} name={name} agent={agent} />
       {/* Phones: the actions (permission, buttons) get their own line under the name. */}
       <span className="min-w-0 flex-1 max-[560px]:basis-[calc(100%-3rem)]">
         <span className="flex items-center gap-2">{href ? <Link to={href} className="truncate text-[14px] font-medium text-text-primary underline-offset-2 hover:underline">{name}</Link>
-          : <span className="truncate text-[14px] font-medium text-text-primary">{name}</span>}{badge}</span>
+          : <span className="truncate text-[14px] font-medium text-text-primary">{name}</span>}{agent && <AgentChip />}{badge}</span>
         {email && <span className="block truncate text-[12.5px] text-text-secondary">{email}</span>}
         <Fingerprint publicKey={publicKey} className="block" />
       </span>
@@ -78,6 +86,8 @@ export function PersonRow({ id, name, email, publicKey, badge, href, children }:
     </li>
   );
 }
+
+export const AgentChip = () => <Chip><Bot className="mr-1 size-3" />Agent</Chip>;
 
 export function Chip({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "blue" | "green" | "orange" | "red" }) {
   const t = { neutral: "border-border-default bg-app text-text-secondary", blue: "border-[var(--blue-tint-border)] bg-blue-tint text-blue-ink", green: "border-[var(--green-tint-border)] bg-green-tint text-green-600",

@@ -196,7 +196,10 @@ export function useVault() {
   const giveAccessAgain = useMutation({ mutationFn: async (v: { folder: VaultFolder; member: FolderMember }) => {
     if (!org) throw new Error("No organisation");
     return withSecret(v.folder.folderKey, "folder", async (fk, assertOpen) => {
-      const sealed = await sealFolderKeyTo(fk, { orgId: org.id, folderId: v.folder.id }, { id: v.member.userId, publicKey: v.member.publicKey, membershipKey: v.member.membershipKey ?? null });
+      // Agent fields go along: sealing checks an agent's attestation (ruling R41).
+      const m = v.member;
+      const sealed = await sealFolderKeyTo(fk, { orgId: org.id, folderId: v.folder.id },
+        { id: m.userId, publicKey: m.publicKey, membershipKey: m.membershipKey ?? null, kind: m.kind, email: m.email, attestation: m.attestation, gatewayKeyId: m.gatewayKeyId });
       assertOpen();
       await oapi.put(`/folders/${v.folder.id}/members/${v.member.userId}/key`, sealed);
       if (user) pinKey(user.id, org.id, v.member.userId, v.member.membershipKey, v.member.publicKey);

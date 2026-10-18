@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { isAgent } from "@/lib/orgKeys";
 import { PeoplePicker } from "./PeoplePicker";
 import { PermissionSelect, PersonRow } from "./people";
 import type { Grant, Person } from "./types";
@@ -38,8 +39,8 @@ export function TeamFolderDialog({ open, onSave, onCancel }: { open: boolean; on
             {people.length > 0 && (
               <ul className="rounded-[12px] border border-border-default px-3">
                 {people.map(({ person, permission }) => (
-                  <PersonRow key={person.id} id={person.id} name={person.name} email={person.email} publicKey={person.membershipKey ?? person.publicKey}>
-                    <PermissionSelect value={permission} label={`Permission for ${person.name}`} onChange={(p) => setPeople((xs) => xs.map((x) => (x.person.id === person.id ? { ...x, permission: p } : x)))} />
+                  <PersonRow key={person.id} id={person.id} name={person.name} email={person.email} publicKey={person.membershipKey ?? person.publicKey} agent={isAgent(person)}>
+                    <PermissionSelect value={permission} disabled={isAgent(person)} label={`Permission for ${person.name}`} onChange={(p) => setPeople((xs) => xs.map((x) => (x.person.id === person.id ? { ...x, permission: p } : x)))} />
                     <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${person.name}`} onClick={() => setPeople((xs) => xs.filter((x) => x.person.id !== person.id))}><X className="size-4" /></Button>
                   </PersonRow>
                 ))}

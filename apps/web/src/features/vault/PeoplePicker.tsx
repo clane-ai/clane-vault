@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Mail, Search, ShieldCheck, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { KeyChangedError, pinKey, pinStatus } from "@/lib/orgKeys";
+import { AgentAttestationError, isAgent, KeyChangedError, pinKey, pinStatus, verifyAgentKey } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
+import { AgentWarning } from "./AgentWarning";
 import { Fingerprint, PermissionSelect, PersonAvatar } from "./people";
 import type { Grant, Person } from "./types";
 import { usePeople } from "./useVault";
@@ -21,7 +22,7 @@ function useInvited() {
   });
 }
 
-/** Pick an active person and a permission, then add them. */
+/** Pick an active person (or agent: locked to Use only, with the restricted-credential warning) and a permission, then add them. */
 export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: string[]; onAdd: (p: Person, permission: Grant) => Promise<unknown>; addLabel?: string }) {
   const { user } = useSession();
   const org = useScopeOrg();
@@ -39,29 +40,37 @@ export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: st
     const p = options.find((x) => x.id === personId);
     if (!p) return setError("Pick a person first.");
     setBusy(true); setError(null);
-    try { await onAdd(p, permission); setPersonId(""); }
-    catch (e) { setError(e instanceof KeyChangedError ? `${p.name}'s key changed. Check the new fingerprint with them first.` : `Couldn't add ${p.name}. Try again.`); }
+    try {
+      // Checked here too (sealing checks again), so a team folder being set up never lists an agent whose key isn't attested.
+      if (isAgent(p)) { if (!org) throw new Error("No organisation"); await verifyAgentKey(org.id, p); }
+      await onAdd(p, isAgent(p) ? "use" : permission); setPersonId("");
+    }
+    catch (e) {
+      setError(e instanceof KeyChangedError ? `${p.name}'s key changed. Check the new fingerprint with them first.` : e instanceof AgentAttestationError ? e.message : `Couldn't add ${p.name}. Try again.`);
+    }
     finally { setBusy(false); }
   }
 
   const selected = options.find((x) => x.id === personId);
+  const agent = !!selected && isAgent(selected);
   // The key sealing will use (membership key, else account key) and how it compares with this device's pin.
   const sealKey = selected && (selected.membershipKey ?? selected.publicKey);
   const pin = selected && user && org ? pinStatus(user.id, org.id, selected.id, selected.membershipKey, selected.publicKey) : null;
   const previous = pin?.previous?.replace(/^acct:/, "");
   return (
     <div className="flex flex-col gap-2.5">
+      {agent && <AgentWarning />}
       <div className="flex flex-wrap items-center gap-2">
         <Select value={personId} onValueChange={(v) => { setPersonId(v); setError(null); }}>
           <SelectTrigger aria-label="Person" className="h-10 min-w-0 flex-[1_1_160px] pl-2.5">
             <SelectValue placeholder={<span className="flex items-center gap-2 pl-0.5"><Search className="size-4 text-text-tertiary" />{people.isLoading ? "Loading people…" : options.length ? "Choose a person" : "No one else to add"}</span>}>
-              {selected && <span className="flex min-w-0 items-center gap-2"><PersonAvatar id={selected.id} name={selected.name} size={24} /><span className="truncate">{selected.name}</span></span>}
+              {selected && <span className="flex min-w-0 items-center gap-2"><PersonAvatar id={selected.id} name={selected.name} size={24} agent={agent} /><span className="truncate">{selected.name}</span></span>}
             </SelectValue>
           </SelectTrigger>
           <SelectContent align="start" className="max-w-[min(420px,calc(100vw-32px))]">
             {options.map((p) => (
               <SelectItem key={p.id} value={p.id} textValue={p.name} className="py-1.5">
-                <PersonAvatar id={p.id} name={p.name} />
+                <PersonAvatar id={p.id} name={p.name} agent={isAgent(p)} />
                 <span className="flex min-w-0 flex-col leading-tight"><span className="truncate text-text-primary">{p.name}</span><span className="truncate text-[12px] font-normal text-text-tertiary">{p.email}</span></span>
               </SelectItem>
             ))}
@@ -74,7 +83,7 @@ export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: st
           </SelectContent>
         </Select>
         <div className="flex flex-[1_0_auto] items-center gap-2 sm:flex-none">
-          <PermissionSelect value={permission} onChange={setPermission} label="Permission for new person" className="h-10 flex-1 sm:w-[124px] sm:flex-none" />
+          <PermissionSelect value={agent ? "use" : permission} onChange={setPermission} disabled={agent} label="Permission for new person" className="h-10 flex-1 sm:w-[124px] sm:flex-none" />
           <Button type="button" className="h-10 min-w-[84px]" disabled={busy || !personId || pin?.status === "changed"} onClick={() => void add()}><UserPlus className="size-4" />{addLabel}</Button>
         </div>
       </div>

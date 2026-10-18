@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import {
-  createAccount, createMembershipKeys, configureKdfFloor, openMembershipEscrow, openOrgFolderKey, openOrgRecordShare, randomBytes, sealFolderKeyFor,
+  b64url, createAccount, createMembershipKeys, generateKeyPair, configureKdfFloor, openMembershipEscrow, openOrgFolderKey, openOrgRecordShare, randomBytes, sealFolderKeyFor,
   shareRecordKey, unlockMembershipKeys, type KdfParams, type MembershipKeys,
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import { forOrg } from "./api";
-import { assertPinned, KeyChangedError, myMembershipKey, pinKey, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys } from "./orgKeys";
+import { AgentAttestationError, assertPinned, isAgent, KeyChangedError, myMembershipKey, pinGateway, pinKey, pinnedGateway, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys, verifyAgentKey } from "./orgKeys";
 
 configureKdfFloor({ m: 1024, t: 1 });
 const FAST: KdfParams = { alg: "argon2id", m: 1024, t: 1, p: 1 };
@@ -125,5 +125,53 @@ describe("the membership job", () => {
     const next = await unlockMembershipKeys(me.keys.userKey, { orgId: ORG, userId: "u1" }, rotated!);
     expect(await openOrgFolderKey(moved!.folders[0]!.wrappedFolderKey, { orgId: ORG, folderId: fid }, next)).toEqual(fk);
     await expect(openOrgFolderKey(moved!.folders[0]!.wrappedFolderKey, { orgId: ORG, folderId: fid }, old.keys)).rejects.toThrow();
+  });
+});
+
+describe("agent keys: the gateway's attestation is checked against the pinned gateway identity before sealing (R41)", () => {
+  async function setup() {
+    const { gatewayKeyId, generateIdentityKeyPair, signAgentKey, b64url } = await import("@clane-vault/crypto");
+    const gw = await generateIdentityKeyPair();
+    const identity = { keyId: await gatewayKeyId(gw.publicKey), publicKey: b64url.encode(gw.publicKey) };
+    const agentKey = b64url.encode((await generateKeyPair()).publicKey);
+    const attestation = await signAgentKey(gw.privateKey, identity.keyId, { orgId: ORG, agentId: "ag1", publicKey: agentKey });
+    const agent = { id: "ag1", kind: "agent" as const, publicKey: agentKey, membershipKey: agentKey, attestation, gatewayKeyId: identity.keyId };
+    return { identity, agent, agentKey };
+  }
+  const reasonOf = (p: Promise<unknown>) => p.then(() => "ok", (e: unknown) => (e instanceof AgentAttestationError ? e.reason : `other: ${String(e)}`));
+
+  it("pins one gateway identity per org", async () => {
+    const { identity } = await setup();
+    expect(pinnedGateway(ORG)).toBeNull();
+    pinGateway(ORG, identity);
+    expect(pinnedGateway(ORG)).toEqual(identity);
+    expect(pinnedGateway("other-org")).toBeNull();
+  });
+
+  it("passes a correctly attested agent key; refuses missing, unpinned, other-gateway and forged attestations", async () => {
+    const { identity, agent } = await setup();
+    expect(await reasonOf(verifyAgentKey(ORG, agent))).toBe("unpinned");
+    pinGateway(ORG, identity);
+    expect(await reasonOf(verifyAgentKey(ORG, agent))).toBe("ok");
+    expect(await reasonOf(verifyAgentKey(ORG, { ...agent, attestation: undefined }))).toBe("missing");
+    expect(await reasonOf(verifyAgentKey(ORG, { ...agent, gatewayKeyId: "someoneelse00000" }))).toBe("gateway_changed");
+    // The server swaps in a key of its own: the gateway's signature no longer covers it.
+    const swapped = b64url.encode((await generateKeyPair()).publicKey);
+    expect(await reasonOf(verifyAgentKey(ORG, { ...agent, membershipKey: swapped }))).toBe("invalid");
+    expect(await reasonOf(verifyAgentKey(ORG, { ...agent, publicKey: swapped, membershipKey: null }))).toBe("invalid");
+    // Signed for another org or agent id.
+    expect(await reasonOf(verifyAgentKey("other-org", agent))).toBe("unpinned");
+    expect(await reasonOf(verifyAgentKey(ORG, { ...agent, id: "ag2" }))).toBe("invalid");
+  });
+
+  it("sealing refuses an unverified agent, and spots agents by attestation or email even without kind", async () => {
+    const { identity, agent } = await setup();
+    const fk = randomBytes(32), ids = { orgId: ORG, folderId: crypto.randomUUID() };
+    expect(await reasonOf(sealFolderKeyTo(fk, ids, agent))).toBe("unpinned");
+    expect(await reasonOf(sealShareTo(fk, { orgId: ORG, recordId: "r1" }, { ...agent, kind: undefined }))).toBe("unpinned");
+    expect(await reasonOf(sealFolderKeyTo(fk, ids, { id: "x", publicKey: agent.publicKey, email: "agent+x@agents.invalid" }))).toBe("unpinned");
+    pinGateway(ORG, identity);
+    expect((await sealFolderKeyTo(fk, ids, agent)).sealedTo).toBe(agent.membershipKey);
+    expect(isAgent({ id: "u", publicKey: "k" })).toBe(false);
   });
 });
