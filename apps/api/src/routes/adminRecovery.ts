@@ -75,7 +75,7 @@ export const adminRecoveryRoutes: FastifyPluginAsync = async (app) => {
     });
     if (enabled && result.changed) {
       const org = await app.prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { name: true } });
-      const people = await app.prisma.user.findMany({ where: { status: { not: "disabled" }, id: { not: me.id }, memberships: { some: { orgId, status: "active" } } }, select: { email: true } });
+      const people = await app.prisma.user.findMany({ where: { kind: "person", status: { not: "disabled" }, id: { not: me.id }, memberships: { some: { orgId, status: "active" } } }, select: { email: true } });
       for (const p of people) void sendEmail(app.mail, p.email, adminRecoveryOnEmail(await app.brand.productName(), me.name, org.name), req.log);
     }
     if (result.changed || result.escrowsDeleted || result.requestsEnded)
