@@ -34,7 +34,7 @@ afterAll(async () => { cache.release(api.agent.id, keys); await api.close(); });
 
 describe("listItems", () => {
   it("names items by folder and title, and shared/ for direct shares", async () => {
-    const items = await listItems(sync, keys, api.agent.id);
+    const items = await listItems(sync, keys);
     const byId = Object.fromEntries(items.map((i) => [i.recordId, i.handle]));
     expect(byId[ids.ops!]).toBe("ops/stripe");
     expect(byId[ids.gh!]).toBe("shared/github");
@@ -43,7 +43,7 @@ describe("listItems", () => {
 
   it("numbers collisions in record-id order, the same on every call", async () => {
     const [lo, hi] = [ids.pay!, ids.pay2!].sort();
-    const a = await listItems(sync, keys, api.agent.id), b = await listItems(sync, keys, api.agent.id);
+    const a = await listItems(sync, keys), b = await listItems(sync, keys);
     for (const items of [a, b]) {
       const byId = Object.fromEntries(items.map((i) => [i.recordId, i.handle]));
       expect(byId[lo!]).toBe("payments/stripe");
@@ -53,12 +53,12 @@ describe("listItems", () => {
   });
 
   it("lists a record without a policy with no hosts and inject none", async () => {
-    const items = await listItems(sync, keys, api.agent.id);
+    const items = await listItems(sync, keys);
     expect(items.find((i) => i.recordId === ids.nopol)).toMatchObject({ handle: "ops/legacy", hosts: [], inject: { kind: "none" } });
   });
 
   it("contains no secret value", async () => {
-    const json = JSON.stringify(await listItems(sync, keys, api.agent.id));
+    const json = JSON.stringify(await listItems(sync, keys));
     for (const s of SECRETS) expect(json).not.toContain(s);
     expect(json).not.toContain("notes-");
   });
@@ -67,7 +67,7 @@ describe("listItems", () => {
     const lines: Record<string, unknown>[] = [];
     const log: Logger = { info: (f) => lines.push(f), error: (f) => lines.push(f) };
     const bad = { ...sync, records: sync.records.map((r) => (r.id === ids.ops ? { ...r, encBody: r.encBody.slice(0, -8) + "AAAAAAAA" } : r)) };
-    const items = await listItems(bad, keys, api.agent.id, log);
+    const items = await listItems(bad, keys, log);
     expect(items.map((i) => i.recordId)).not.toContain(ids.ops);
     expect(items).toHaveLength(4);
     expect(lines).toEqual([{ event: "item_skipped", recordId: ids.ops, reason: expect.any(String) }]);
@@ -75,16 +75,16 @@ describe("listItems", () => {
 
   it("throws when no record opens at all (a dead key)", async () => {
     const dead = { ...keys, privateKey: new Uint8Array(keys.privateKey.length) };
-    await expect(listItems(sync, dead, api.agent.id)).rejects.toThrow("none of the agent's items could be opened");
+    await expect(listItems(sync, dead)).rejects.toThrow("none of the agent's items could be opened");
   });
 
   it("leaves out trashed records", async () => {
     const trashed = { ...sync, records: sync.records.map((r) => (r.id === ids.ops ? { ...r, deletedAt: new Date().toISOString() } : r)) };
-    const items = await listItems(trashed, keys, api.agent.id);
+    const items = await listItems(trashed, keys);
     expect(items.map((i) => i.recordId)).not.toContain(ids.ops);
     const held = new HeldSecrets();
-    expect(await withItem(trashed, keys, api.agent.id, "ops/stripe", held, async () => "used")).toEqual({ error: "refused", reason: "not_found" });
-    expect(await withItem(trashed, keys, api.agent.id, ids.ops!, held, async () => "used")).toEqual({ error: "refused", reason: "not_found" });
+    expect(await withItem(trashed, keys, "ops/stripe", held, async () => "used")).toEqual({ error: "refused", reason: "not_found" });
+    expect(await withItem(trashed, keys, ids.ops!, held, async () => "used")).toEqual({ error: "refused", reason: "not_found" });
   });
 });
 
@@ -92,7 +92,7 @@ describe("withItem", () => {
   it("hands f the secret, held while f runs and released after", async () => {
     const held = new HeldSecrets();
     const [lo] = [ids.pay!, ids.pay2!].sort();
-    const seen = await withItem(sync, keys, api.agent.id, "payments/stripe", held, async (x) => {
+    const seen = await withItem(sync, keys, "payments/stripe", held, async (x) => {
       expect(held.redact(x.secret)).not.toBe(x.secret);
       return { secret: x.secret, recordId: x.recordId, username: x.username, hosts: x.policy.hosts };
     });
@@ -102,7 +102,7 @@ describe("withItem", () => {
 
   it("matches a record id too, and releases when f throws", async () => {
     const held = new HeldSecrets();
-    await expect(withItem(sync, keys, api.agent.id, ids.gh!, held, async (x) => { throw new Error(`boom ${x.username}`); })).rejects.toThrow("boom bot");
+    await expect(withItem(sync, keys, ids.gh!, held, async (x) => { throw new Error(`boom ${x.username}`); })).rejects.toThrow("boom bot");
     expect(held.redact("ghp_3")).toBe("ghp_3");
   });
 
@@ -110,9 +110,9 @@ describe("withItem", () => {
     const held = new HeldSecrets();
     let called = false;
     const f = async () => { called = true; return "used"; };
-    expect(await withItem(sync, keys, api.agent.id, "ops/legacy", held, f)).toEqual({ error: "refused", reason: "no_policy" });
-    expect(await withItem(sync, keys, api.agent.id, "ops/nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
-    expect(await withItem(sync, keys, api.agent.id, "nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
+    expect(await withItem(sync, keys, "ops/legacy", held, f)).toEqual({ error: "refused", reason: "no_policy" });
+    expect(await withItem(sync, keys, "ops/nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
+    expect(await withItem(sync, keys, "nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
     expect(called).toBe(false);
   });
 });

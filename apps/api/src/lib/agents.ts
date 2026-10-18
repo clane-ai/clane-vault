@@ -4,8 +4,6 @@ import type { Db } from "./access.js";
 import { orgEntitlements } from "./plans.js";
 import { lockSeats } from "./seats.js";
 
-export { capForAgent } from "./access.js";
-
 /** An agent's User.email: unique, and never deliverable (reserved TLD). */
 export const agentEmail = (userId: string) => `agent+${userId}@agents.invalid`;
 

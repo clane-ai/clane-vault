@@ -66,7 +66,7 @@ export function refreshGenOf(cfg: Config, grantId: string, current: number, secr
   return null;
 }
 
-const isUuid =(s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
+const isUuid = (s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
 export const reqMeta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
 
 /** https, or http on loopback (native and CLI clients); never a fragment. */

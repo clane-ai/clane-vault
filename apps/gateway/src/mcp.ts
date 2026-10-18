@@ -65,7 +65,7 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
 
   return {
     async listSecrets(p: AgentPrincipal): Promise<SecretListing[]> {
-      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, p.agentId, d.log));
+      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log));
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
         ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}) }));
     },
@@ -75,7 +75,7 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
       let ran = false;
       const r = await asAgent(p, async (sync, keys) => {
         try {
-          return await withItem(sync, keys, p.agentId, item, d.held, async (x) => {
+          return await withItem(sync, keys, item, d.held, async (x) => {
             ran = true;
             const o = await performRequest(req, { policy: x.policy, secret: x.secret, username: x.username, cfg: d.cfg, allow, resolve: d.resolve });
             // The host comes from the outcome: the policy's may be a wildcard.

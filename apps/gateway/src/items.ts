@@ -95,13 +95,13 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
 }
 
 /** `keys` come from `AgentKeyCache.use` (or open + release in finally). */
-export async function listItems(sync: AgentSync, keys: MembershipKeys, _agentId: string, log?: Logger): Promise<ItemSummary[]> {
+export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Logger): Promise<ItemSummary[]> {
   return summarize(sync, keys, log);
 }
 
 /** `item` is a handle or a record id. The secret is held in `held` (scrubbed from logs) only while `f` runs. */
-export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, _agentId: string, item: string, held: HeldSecrets,
-  f: (x: { recordId: string; host: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>, log?: Logger): Promise<T | Refusal> {
+export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, item: string, held: HeldSecrets,
+  f: (x: { recordId: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>, log?: Logger): Promise<T | Refusal> {
   let r = live(sync).find((x) => x.id === item);
   const slash = item.indexOf("/");
   if (!r && slash > 0) {
@@ -117,8 +117,7 @@ export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, _agentI
   const username = basicUsername(body);
   const release = held.hold(secret, policy.inject.kind === "basic" ? username : undefined);
   try {
-    // A policy host can be a wildcard pattern; Task 11 takes the event host from performRequest's outcome.
-    return await f({ recordId: r.id, host: "", policy, secret, username });
+    return await f({ recordId: r.id, policy, secret, username });
   } finally {
     release();
   }

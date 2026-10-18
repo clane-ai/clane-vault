@@ -161,8 +161,8 @@ export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string,
   if (pinned) return { identity: pinned, pinnedNow: false };
   let identity: GatewayIdentity;
   try {
-    const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string; keyId?: string; publicKey?: string }>("/org/agents/gateway");
-    identity = { keyId: r.identityKeyId ?? r.keyId ?? "", publicKey: r.identityPublicKey ?? r.publicKey ?? "" };
+    const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string }>("/org/agents/gateway");
+    identity = { keyId: r.identityKeyId ?? "", publicKey: r.identityPublicKey ?? "" };
   } catch { throw new AgentAttestationError("unpinned"); }
   if (!await gatewayConsistent(identity)) throw new AgentAttestationError("unpinned");
   // Pinned meanwhile: the same identity is fine, another one is gateway_changed (pinGateway never repins here).
