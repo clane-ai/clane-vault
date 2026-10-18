@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
-import { decodeJwt, decodeProtectedHeader, exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
+import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, exportPKCS8, generateKeyPair as joseKeyPair, jwtVerify } from "jose";
 import { b64url, createTeamFolder, encryptNewRecord, openOrgFolderKey, sealOrgFolderKey, wrapKey } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
 import { createTestAgent } from "./agentHelpers.js";
@@ -202,5 +202,114 @@ describe("rate limits (preflight #12)", () => {
     expect(await codes(tokens[1]!, 3)).toEqual([200, 200, 200]);
     // Without the gateway token the key is the address, which agent 0's calls didn't use up.
     expect(await codes(tokens[0]!, 1, null)).toEqual([401]);
+  });
+});
+
+/** POST /oauth/token as the gateway sends it: form-encoded. */
+const exchange = (token: string, o: { gw?: string | null; grantType?: string; app?: typeof t.app; remoteAddress?: string } = {}) =>
+  (o.app ?? t.app).inject({ method: "POST", url: "/api/v1/oauth/token", remoteAddress: o.remoteAddress ?? ip(),
+    payload: new URLSearchParams({ grant_type: o.grantType ?? "urn:clane:agent-token", token }).toString(),
+    headers: { "content-type": "application/x-www-form-urlencoded", ...(o.gw === null ? {} : { "x-gateway-token": o.gw ?? fake.token }) } });
+async function issued() {
+  const owner = await createActiveUser(t, { role: "owner" });
+  const agent = await createTestAgent(t, { orgId: owner.orgId, createdById: owner.id, verified: true });
+  const r = await call(owner, "POST", `/admin/agents/${agent.id}/tokens`, { label: "CI" });
+  expect(r.statusCode).toBe(201);
+  return { owner, agent, ...(r.json() as { id: string; token: string }) };
+}
+
+describe("static cvat_ tokens", () => {
+  it("shown once, hash only; exchanged at /oauth/token for an ES256 access token the JWKS verifies", async () => {
+    const { owner, agent, id, token } = await issued();
+    expect(token).toMatch(/^cvat_[0-9a-f-]{36}_[A-Za-z0-9_-]{43}$/);
+    expect(token.slice(5, 41)).toBe(id);
+    const list = await call(owner, "GET", "/admin/agents");
+    expect(list.body).not.toContain(token.slice(42));
+    const view = list.json().agents.find((a: { id: string }) => a.id === agent.id);
+    expect(view.tokens).toEqual([{ id, label: "CI", createdAt: expect.any(String), expiresAt: null, lastUsedAt: null, revokedAt: null }]);
+    expect((await t.prisma.agentToken.findUniqueOrThrow({ where: { id } })).tokenHash).toBe(hashToken(token));
+    expect(await t.prisma.event.count({ where: { action: "agent.token_create", targetUserId: agent.id, meta: { equals: { tokenId: id } } } })).toBe(1);
+
+    const r = await exchange(token);
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body).toEqual({ access_token: expect.any(String), token_type: "Bearer", expires_in: 900 });
+    expect(decodeProtectedHeader(body.access_token).alg).toBe("ES256");
+    expect(decodeJwt(body.access_token)).toMatchObject({ scope: "agent", aud: "https://gw.test/mcp", sub: agent.id, org: owner.orgId, grant: id });
+    const jwks = await t.app.inject({ method: "GET", url: "/api/v1/.well-known/jwks.json", remoteAddress: ip() });
+    expect(jwks.statusCode).toBe(200);
+    expect(jwks.json().keys[0]).not.toHaveProperty("d");
+    await jwtVerify(body.access_token, createLocalJWKSet(jwks.json()), { audience: "https://gw.test/mcp", issuer: t.config.publicUrl });
+    expect((await t.prisma.agentToken.findUniqueOrThrow({ where: { id } })).lastUsedAt).not.toBeNull();
+    // The exchanged token works end to end.
+    expect((await agentCall(body.access_token, "GET", "/agent/sync")).statusCode).toBe(200);
+  });
+
+  it("invalid_client without the gateway token; unsupported_grant_type; invalid_grant for an unknown or wrong secret", async () => {
+    const { token } = await issued();
+    const res = (r: { statusCode: number; json: () => unknown }) => [r.statusCode, r.json()];
+    expect(res(await exchange(token, { gw: null }))).toEqual([401, { error: "invalid_client" }]);
+    expect(res(await exchange(token, { gw: "y".repeat(40) }))).toEqual([401, { error: "invalid_client" }]);
+    expect(res(await exchange(token, { grantType: "client_credentials" }))).toEqual([400, { error: "unsupported_grant_type" }]);
+    expect(res(await exchange(token, { grantType: "constructor" }))).toEqual([400, { error: "unsupported_grant_type" }]);
+    expect(res(await exchange(`${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`))).toEqual([400, { error: "invalid_grant" }]);
+    expect(res(await exchange(`cvat_${crypto.randomUUID()}_${"A".repeat(43)}`))).toEqual([400, { error: "invalid_grant" }]);
+    expect(res(await exchange("not-a-token"))).toEqual([400, { error: "invalid_grant" }]);
+  });
+
+  it("revoke: the next sync is 401, the next exchange invalid_grant, the gateway told to drop; an expired token or a revoked agent: invalid_grant", async () => {
+    const { owner, agent, id, token } = await issued();
+    const access = (await exchange(token)).json().access_token as string;
+    expect((await call(owner, "DELETE", `/admin/agents/${agent.id}/tokens/${id}`)).statusCode).toBe(204);
+    expect(await t.prisma.event.count({ where: { action: "agent.token_revoke", targetUserId: agent.id, meta: { equals: { tokenId: id } } } })).toBe(1);
+    await expect.poll(() => fake.dropped).toContain(agent.id);
+    expect((await agentCall(access, "GET", "/agent/sync")).statusCode).toBe(401);
+    expect((await exchange(token)).json()).toEqual({ error: "invalid_grant" });
+    expect((await call(owner, "DELETE", `/admin/agents/${agent.id}/tokens/${crypto.randomUUID()}`)).statusCode).toBe(404);
+    expect((await call(owner, "GET", "/admin/agents")).json().agents[0].tokens[0].revokedAt).toEqual(expect.any(String));
+
+    const e = await issued();
+    await t.prisma.agentToken.update({ where: { id: e.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await exchange(e.token)).json()).toEqual({ error: "invalid_grant" });
+    const v = await issued();
+    await t.prisma.agent.update({ where: { userId: v.agent.id }, data: { revokedAt: new Date() } });
+    expect((await exchange(v.token)).json()).toEqual({ error: "invalid_grant" });
+    expect((await call(v.owner, "POST", `/admin/agents/${v.agent.id}/tokens`, { label: "x" })).json()).toEqual({ error: "agent_revoked" });
+    expect((await call(v.owner, "POST", `/admin/agents/${v.agent.id}/tokens`, { label: "" })).statusCode).toBe(400);
+    expect((await call(v.owner, "POST", `/admin/agents/${v.agent.id}/tokens`, { label: "x".repeat(61) })).statusCode).toBe(400);
+  });
+
+  it("rate limit 30/min, per token for the gateway, per address otherwise", async () => {
+    const a = await issued(), b = await issued();
+    const gw = "10.251.0.1";
+    const codes: number[] = [];
+    for (let i = 0; i < 31; i++) codes.push((await exchange(a.token, { remoteAddress: gw })).statusCode);
+    expect(codes.slice(0, 30).every((c) => c === 200)).toBe(true);
+    expect(codes[30]).toBe(429);
+    expect((await exchange(b.token, { remoteAddress: gw })).statusCode).toBe(200);
+    // Without the gateway token the key is the address, which a's exchanges didn't use up.
+    expect((await exchange(a.token, { remoteAddress: gw, gw: null })).statusCode).toBe(401);
+  });
+
+  it("agents off: /oauth/token and the JWKS are 404", async () => {
+    expect((await off.app.inject({ method: "GET", url: "/api/v1/.well-known/jwks.json", remoteAddress: ip() })).statusCode).toBe(404);
+    expect((await exchange("x", { app: off.app })).statusCode).toBe(404);
+  });
+});
+
+describe("POST /agent/events: event time", () => {
+  it("the gateway's `at` is clamped to [now - 1 h, now]", async () => {
+    const { agent, access } = await setup();
+    const at = (ms: number) => ({ at: new Date(Date.now() + ms).toISOString(), action: "refused", host: "h", method: "GET" });
+    const before = Date.now();
+    expect((await agentCall(access, "POST", "/agent/events", { events: [at(-2 * 3600e3), at(3600e3), at(-60e3)] })).statusCode).toBe(200);
+    const after = Date.now();
+    const ts = (await t.prisma.event.findMany({ where: { actorId: agent.id, action: "agent.refused" }, orderBy: { id: "asc" } })).map((r) => r.at.getTime());
+    expect(ts[0]).toBeGreaterThanOrEqual(before - 3600e3);
+    expect(ts[0]).toBeLessThanOrEqual(after - 3600e3);
+    expect(ts[1]).toBeGreaterThanOrEqual(before);
+    expect(ts[1]).toBeLessThanOrEqual(after);
+    expect(ts[2]).toBeGreaterThanOrEqual(before - 60e3 - 1000);
+    expect(ts[2]).toBeLessThanOrEqual(after - 60e3 + 1000);
   });
 });

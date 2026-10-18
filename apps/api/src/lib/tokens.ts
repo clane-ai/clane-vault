@@ -80,7 +80,18 @@ export async function verifyAgentAccess(cfg: Config, token: string): Promise<{ s
   return { sub: p.sub, org: p.org, grant: p.grant, jti: p.jti };
 }
 
+/** What /.well-known/jwks.json publishes: the gateway verifies agent access tokens with it. */
+export async function agentJwks(cfg: Config): Promise<{ keys: JsonWebKey[] }> {
+  return { keys: [(await agentSigningKey(cfg.agents!)).jwk] };
+}
+
 export const hashToken = (secret: string) => createHash("sha256").update(secret).digest("hex");
+
+/** A static agent token "cvat_<AgentToken.id>_<secret>": shown once, only the hash of the whole token is kept. */
+export function newAgentToken(id: string) {
+  const token = `cvat_${id}_${randomBytes(32).toString("base64url")}`;
+  return { token, hash: hashToken(token) };
+}
 
 export function newRefreshToken(sessionId: string) {
   const secret = randomBytes(32).toString("base64url");

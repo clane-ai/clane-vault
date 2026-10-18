@@ -47,6 +47,7 @@ import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
+import { oauthRoutes } from "./routes/oauth.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -161,6 +162,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       await api.register(agentAdminRoutes, { prefix: "/admin/agents" });
       await api.register(orgAgentRoutes);
       await api.register(agentApiRoutes);
+      await api.register(oauthRoutes);
     }
   }, { prefix: apiPrefix(opts.config) });
   if (opts.webDist) await registerWeb(app, opts.webDist, opts.config.basePath ?? "");

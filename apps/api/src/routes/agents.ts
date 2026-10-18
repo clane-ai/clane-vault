@@ -6,8 +6,10 @@ import { logEvent } from "../lib/events.js";
 import { agentEmail, assertAgentSlot, fingerprintOf } from "../lib/agents.js";
 import { GatewayUnavailable, pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
 import { isPublicKeyB64 } from "../lib/membershipKeys.js";
+import { newAgentToken } from "../lib/tokens.js";
 
 const idParam = z.object({ id: z.string().uuid() });
+const tokenParam = z.object({ tokenId: z.string().uuid() }).passthrough();
 const expiry = z.string().datetime({ offset: true }).transform((s) => new Date(s)).refine((d) => d.getTime() > Date.now(), { message: "past" }).nullable();
 
 /** "g1.<keyId>.<sig>": Ed25519 over "agent-key:<orgId>:<agentId>:<publicKey>" by the pinned identity (packages/crypto agents.ts). */
@@ -68,7 +70,8 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/", async (req) => {
     const org = orgId(req);
-    const rows = await app.prisma.agent.findMany({ where: { orgId: org }, orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } } } });
+    const rows = await app.prisma.agent.findMany({ where: { orgId: org }, orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } },
+      tokens: { orderBy: { createdAt: "asc" }, select: { id: true, label: true, createdAt: true, expiresAt: true, lastUsedAt: true, revokedAt: true } } } });
     const ids = rows.map((r) => r.userId);
     const [folders, groups] = await Promise.all([
       app.prisma.folderMember.findMany({ where: { userId: { in: ids }, folder: { kind: "team", orgId: org, deletedAt: null } }, select: { userId: true, folderId: true } }),
@@ -82,7 +85,10 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
       createdAt: a.createdAt.toISOString(), verifiedAt: a.verifiedAt?.toISOString() ?? null,
       folders: folders.filter((f) => f.userId === a.userId).map((f) => ({ id: f.folderId })),
       groups: groups.filter((g) => g.userId === a.userId).map((g) => g.group),
-      tokens: [], grants: [], // Tasks 5 and 12
+      // Never the token or its hash.
+      tokens: a.tokens.map((k) => ({ id: k.id, label: k.label, createdAt: k.createdAt.toISOString(), expiresAt: k.expiresAt?.toISOString() ?? null,
+        lastUsedAt: k.lastUsedAt?.toISOString() ?? null, revokedAt: k.revokedAt?.toISOString() ?? null })),
+      grants: [], // Task 12
     })) };
   });
 
@@ -101,6 +107,38 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
       app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.verify", targetUserId: a.userId, ...meta(req) } }),
     ]);
     return { ok: true };
+  });
+
+  /** A static token for an API/SDK client: returned once, only its hash is kept. */
+  app.post("/:id/tokens", async (req, reply) => {
+    const b = z.object({ label: z.string().min(1).max(60), expiresAt: expiry.optional() }).parse(req.body);
+    const a = await agentIn(req, reply);
+    if (!a) return reply;
+    if (a.revokedAt) return reply.code(409).send({ error: "agent_revoked" });
+    const id = randomUUID();
+    const { token, hash } = newAgentToken(id);
+    await app.prisma.$transaction([
+      app.prisma.agentToken.create({ data: { id, agentId: a.userId, label: b.label, tokenHash: hash, createdById: req.auth.userId, expiresAt: b.expiresAt ?? null } }),
+      app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_create", targetUserId: a.userId, meta: { tokenId: id }, ...meta(req) } }),
+    ]);
+    return reply.code(201).send({ id, token });
+  });
+
+  app.delete("/:id/tokens/:tokenId", async (req, reply) => {
+    const { tokenId } = tokenParam.parse(req.params);
+    const a = await agentIn(req, reply);
+    if (!a) return reply;
+    const k = await app.prisma.agentToken.findFirst({ where: { id: tokenId, agentId: a.userId }, select: { revokedAt: true } });
+    if (!k) return reply.code(404).send({ error: "not_found" });
+    if (!k.revokedAt) {
+      await app.prisma.$transaction([
+        app.prisma.agentToken.update({ where: { id: tokenId }, data: { revokedAt: new Date() } }),
+        app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_revoke", targetUserId: a.userId, meta: { tokenId }, ...meta(req) } }),
+      ]);
+      // Preflight #11: the gateway forgets its cached keys now rather than in 60 s (best effort).
+      app.gateway.dropAgent(a.userId).catch(() => undefined);
+    }
+    return reply.code(204).send();
   });
 
   app.patch("/:id", async (req, reply) => {

@@ -41,12 +41,16 @@ export const agentApiRoutes: FastifyPluginAsync = async (app) => {
   app.post("/agent/events", opts, async (req) => {
     const b = events.parse(req.body);
     const { userId, orgId } = req.agent;
-    const rows = await Promise.all(b.events.map(async (e) => ({
-      at: new Date(e.at), orgId, actorId: userId, action: `agent.${e.action}`,
-      // Only a record the agent can open is linked; anything else the gateway names stays unlinked.
-      recordId: e.recordId && (await accessFor(app.prisma, userId, e.recordId, orgId)) ? e.recordId : null,
+    // Only a record the agent can open is linked; anything else the gateway names stays unlinked. One lookup per record.
+    const ids = [...new Set(b.events.flatMap((e) => (e.recordId ? [e.recordId] : [])))];
+    const open = new Map(await Promise.all(ids.map(async (id) => [id, !!(await accessFor(app.prisma, userId, id, orgId))] as const)));
+    // The gateway's clock is trusted only to within the last hour.
+    const now = Date.now();
+    const rows = b.events.map((e) => ({
+      at: new Date(Math.min(now, Math.max(now - HOUR, Date.parse(e.at)))), orgId, actorId: userId, action: `agent.${e.action}`,
+      recordId: e.recordId && open.get(e.recordId) ? e.recordId : null,
       meta: { host: e.host, method: e.method, ...(e.reason !== undefined ? { reason: e.reason } : {}), ...(e.truncated !== undefined ? { truncated: e.truncated } : {}) },
-    })));
+    }));
     await app.prisma.event.createMany({ data: rows });
     if (b.events.some((e) => e.action === "use")) await app.prisma.agent.update({ where: { userId }, data: { lastUsedAt: new Date() } });
     return { ok: true };
