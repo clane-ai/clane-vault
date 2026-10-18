@@ -17,7 +17,7 @@ const MARGIN_MS = 30_000;
 
 /** RFC 9728 metadata URL for PUBLIC_URL; every 401 names it (MCP authorization). */
 export const resourceMetadataUrl = (cfg: Pick<GatewayConfig, "publicUrl">) => `${cfg.publicUrl.replace(/\/+$/, "")}/.well-known/oauth-protected-resource`;
-/** `invalid`: a bearer was sent but is bad, expired or revoked (RFC 6750 ง3.1); without a token the challenge names no error. */
+/** `invalid`: a bearer was sent but is bad, expired or revoked (RFC 6750 ยง3.1); without a token the challenge names no error. */
 export const challenge = (cfg: Pick<GatewayConfig, "publicUrl">, invalid = false) =>
   ({ "www-authenticate": `Bearer ${invalid ? 'error="invalid_token", ' : ""}resource_metadata="${resourceMetadataUrl(cfg)}"` });
 

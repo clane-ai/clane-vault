@@ -42,3 +42,34 @@ impact.
 What the server stores in plain text and what a compromised server could still do are described in
 [docs/sharing.md](docs/sharing.md) and [docs/design/](docs/design/). We most want reports that break a stated
 guarantee.
+
+### Agent access: the disclosed exception
+
+Agent access ([docs/agents.md](docs/agents.md)) is off unless the server is configured for it. When it is on, it is a
+deliberate exception to zero-knowledge, limited to what is shared with an agent:
+
+| Data | Server (API, database) | Gateway (hosted: Clane; self-hosted: you) | Model / agent client |
+|---|---|---|---|
+| Records never shared to an agent | ciphertext only (unchanged) | nothing (no key reaches it) | nothing |
+| Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
+| Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
+| Who used what, where, when | metadata events | metadata log | its own calls |
+
+*Sharing with an agent makes those items readable by the gateway operator. Everything else stays end-to-end encrypted.*
+
+Residual risks, which no mitigation in this release removes:
+
+- **A hijacked agent** (prompt injection) can make legitimate-looking calls to an allowed host with bad intent (delete
+  the repo, email the customer list). Per-path policy narrows it; nothing removes it.
+- **A gateway host breach**, with its KMS permissions, can read agent-scoped plaintext. This is the accepted exception
+  until the gateway runs in an enclave (Phase 5).
+- **An insider at the operator** who controls both the deploy pipeline and the KMS key policy can read agent-scoped
+  items until Phase 5.
+- **Legal compulsion**: for agent-scoped data the operator could comply, by deploying a modified gateway. Users with
+  legal exposure should not share such items with agents on the hosted service, or should self-host.
+- **Re-encoding hosts**: an allowed host that re-encodes a secret in a form the scrubber doesn't know can get it into
+  a response, and so to the model provider.
+- **Self-reported use**: `agent.use` events are reported by the gateway itself, so a compromised gateway can
+  under-report. Enrolment, verification, revocation, OAuth grants and KMS audit entries are recorded outside it.
+
+**Rotate every agent-scoped credential after a gateway incident.**

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node build.mjs && node --disable-sigusr1 dist/server.js",
     "build": "node build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"

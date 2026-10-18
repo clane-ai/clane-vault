@@ -9,6 +9,40 @@ services:
       postgres:
         condition: service_healthy
         required: false # ignored when you use your own Postgres (bundled-db profile off)
+    # default: the published port and outbound mail/SSO; internal: the agent gateway's /internal routes.
+    networks: [default, internal]
+
+  # Optional agent access gateway (docs/agents.md). Only started with the agents profile (add agents to COMPOSE_PROFILES
+  # in .env), so an install without a gateway key keeps working. It reads no .env file: only the values below reach it.
+  gateway:
+    profiles: ["agents"]
+    image: ${CLANE_GATEWAY_IMAGE:-ghcr.io/clane-ai/clane-gateway}:${CLANE_VAULT_VERSION:-1.7.3}
+    restart: unless-stopped
+    environment:
+      API_URL: http://clane-vault:3001${BASE_PATH:-}
+      PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN:-}
+      GATEWAY_KEK: file:/run/secrets/gateway-kek
+      GATEWAY_IDENTITY_KEY_FILE: /data/identity.key
+      GATEWAY_CACHE_TTL_SECONDS: ${GATEWAY_CACHE_TTL_SECONDS:-}
+      GATEWAY_AGENT_RATE_PER_MINUTE: ${GATEWAY_AGENT_RATE_PER_MINUTE:-}
+      GATEWAY_MAX_RESPONSE_BYTES: ${GATEWAY_MAX_RESPONSE_BYTES:-}
+      GATEWAY_UPSTREAM_TIMEOUT_MS: ${GATEWAY_UPSTREAM_TIMEOUT_MS:-}
+      GATEWAY_ALLOW_PRIVATE_CIDRS: ${GATEWAY_ALLOW_PRIVATE_CIDRS:-}
+      # A number only (proxies in front); the app's TRUST_PROXY may also be true/false, so the gateway has its own.
+      TRUST_PROXY: ${GATEWAY_TRUST_PROXY:-1}
+    secrets: [gateway-kek]
+    volumes: [gateway-data:/data]
+    # Only the public MCP port (3002). The internal port (3003) is never published: the API reaches it on the internal network.
+    ports: ["${GATEWAY_BIND:-127.0.0.1}:${GATEWAY_PORT:-8081}:3002"]
+    # gateway-egress: its own bridge for outbound calls, shared with no other container; internal: the API only.
+    networks: [gateway-egress, internal]
+    ulimits:
+      core: 0
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   # Optional bundled database. Only started when the bundled-db profile is enabled
   # (install.sh sets COMPOSE_PROFILES=bundled-db in .env, or run: docker compose --profile bundled-db up -d).
@@ -30,3 +64,14 @@ services:
 
 volumes:
   pgdata:
+  gateway-data:
+
+networks:
+  default:
+  gateway-egress:
+  internal:
+    internal: true
+
+secrets:
+  gateway-kek:
+    file: ./secrets/gateway-kek
