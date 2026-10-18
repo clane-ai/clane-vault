@@ -4,12 +4,14 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:agents": "playwright test -c playwright.agents.config.ts",
     "test:extension": "playwright test -c playwright.extension.config.ts",
     "showcase": "node showcase/run.mjs",
     "showcase:flyer": "node showcase/run.mjs --flyer",
     "demo": "node demo/run.mjs"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@playwright/test": "^1.63.0",
     "otplib": "^12.0.1"
   }
