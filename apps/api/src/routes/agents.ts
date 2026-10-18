@@ -3,6 +3,7 @@ import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { z } from "zod";
 import { displayName } from "../lib/names.js";
 import { logEvent } from "../lib/events.js";
+import { offboard } from "../lib/orgs.js";
 import { agentEmail, assertAgentSlot, fingerprintOf } from "../lib/agents.js";
 import { GatewayUnavailable, pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
 import { isPublicKeyB64 } from "../lib/membershipKeys.js";
@@ -128,17 +129,45 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     const { tokenId } = tokenParam.parse(req.params);
     const a = await agentIn(req, reply);
     if (!a) return reply;
-    const k = await app.prisma.agentToken.findFirst({ where: { id: tokenId, agentId: a.userId }, select: { revokedAt: true } });
+    const k = await app.prisma.agentToken.findFirst({ where: { id: tokenId, agentId: a.userId }, select: { id: true } });
     if (!k) return reply.code(404).send({ error: "not_found" });
-    if (!k.revokedAt) {
-      await app.prisma.$transaction([
-        app.prisma.agentToken.update({ where: { id: tokenId }, data: { revokedAt: new Date() } }),
-        app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_revoke", targetUserId: a.userId, meta: { tokenId }, ...meta(req) } }),
-      ]);
-      // Preflight #11: the gateway forgets its cached keys now rather than in 60 s (best effort).
-      app.gateway.dropAgent(a.userId).catch(() => undefined);
-    }
+    // The claim is atomic: of two concurrent revokes only one logs.
+    const claimed = await app.prisma.$transaction(async (tx) => {
+      const r = await tx.agentToken.updateMany({ where: { id: tokenId, agentId: a.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      if (r.count === 1) await logEvent(tx, { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_revoke", targetUserId: a.userId, meta: { tokenId }, ...meta(req) });
+      return r.count === 1;
+    });
+    // Preflight #11: the gateway forgets its cached keys now rather than in 60 s (best effort).
+    if (claimed) app.gateway.dropAgent(a.userId).catch(() => undefined);
     return reply.code(204).send();
+  });
+
+  /** Revokes the agent for good: membership gone, user disabled, key wrapper and every token/grant dead. Answers what to rotate. */
+  app.delete("/:id", async (req, reply) => {
+    const b = z.object({ reason: z.string().max(64).optional() }).nullish().parse(req.body) ?? {};
+    const a = await agentIn(req, reply);
+    if (!a) return reply;
+    const userId = a.userId, org = a.orgId;
+    const out = await app.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      // Claim first: a double revoke finds count 0 and logs nothing.
+      if ((await tx.agent.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now, revokedById: req.auth.userId, wrappedPrivateKey: null } })).count !== 1) return null;
+      const folders = await tx.folder.findMany({ where: { orgId: org, kind: "team", deletedAt: null, members: { some: { userId } } }, select: { id: true } });
+      const open = await tx.recordAccess.findMany({ where: { state: "active", OR: [
+        { holderType: "folder", holderId: { in: folders.map((f) => f.id) } },
+        { holderType: "user", holderId: userId, orgId: org }] }, select: { recordId: true }, distinct: ["recordId"] });
+      await offboard(tx, org, userId, "remove", now);
+      await tx.agentToken.updateMany({ where: { agentId: userId, revokedAt: null }, data: { revokedAt: now } });
+      await tx.agentGrant.updateMany({ where: { agentId: userId, revokedAt: null }, data: { revokedAt: now } });
+      await tx.user.update({ where: { id: userId }, data: { status: "disabled" } });
+      const rotate = { folders: folders.map((f) => ({ id: f.id })), records: open.length };
+      await logEvent(tx, { orgId: org, actorId: req.auth.userId, action: "agent.revoke", targetUserId: userId,
+        meta: { ...(b.reason ? { reason: b.reason } : {}), folders: rotate.folders.length, records: rotate.records }, ...meta(req) });
+      return rotate;
+    });
+    if (!out) return reply.code(409).send({ error: "agent_revoked" });
+    app.gateway.dropAgent(userId).catch(() => undefined);
+    return { rotate: out };
   });
 
   app.patch("/:id", async (req, reply) => {
