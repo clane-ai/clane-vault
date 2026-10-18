@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import {
   b64url, createAccount, createMembershipKeys, generateKeyPair, configureKdfFloor, openMembershipEscrow, openOrgFolderKey, openOrgRecordShare, randomBytes, sealFolderKeyFor,
@@ -6,7 +6,7 @@ import {
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import { forOrg } from "./api";
-import { AgentAttestationError, assertPinned, ensureGatewayPinned, isAgent, KeyChangedError, myMembershipKey, pinGateway, pinKey, pinnedGateway, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys, verifyAgentKey } from "./orgKeys";
+import { AgentAttestationError, assertPinned, ensureGatewayPinned, gatewayPinStatus, isAgent, KeyChangedError, myMembershipKey, pinGateway, pinKey, pinnedGateway, pinStatus, sealFolderKeyTo, sealShareTo, syncMembershipKeys, verifyAgentKey } from "./orgKeys";
 
 configureKdfFloor({ m: 1024, t: 1 });
 const FAST: KdfParams = { alg: "argon2id", m: 1024, t: 1, p: 1 };
@@ -174,6 +174,22 @@ describe("agent keys: the gateway's attestation is checked against the pinned ga
     // Gateway unreachable: refused, nothing pinned.
     server.use(http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: "gateway_unavailable" }, { status: 503 })));
     expect(await reasonOf(ensureGatewayPinned(oapi, "me3", ORG))).toBe("unpinned");
+  });
+
+  it("two concurrent first pins never overwrite each other; only an explicit repin replaces; private mode isn't pinnedNow", async () => {
+    const a = await setup(), b = await setup();
+    const results = await Promise.allSettled([pinGateway("race", ORG, a.identity), pinGateway("race", ORG, b.identity)]);
+    expect(results[0]).toEqual({ status: "fulfilled", value: true });
+    expect(results[1].status === "rejected" && (results[1].reason as AgentAttestationError).reason).toBe("gateway_changed");
+    expect(pinnedGateway("race", ORG)).toEqual(a.identity);
+    expect(gatewayPinStatus("race", ORG, b.identity).status).toBe("changed");
+    expect(await pinGateway("race", ORG, a.identity)).toBe(false);
+    expect(await pinGateway("race", ORG, b.identity, { repin: true })).toBe(true);
+    expect(gatewayPinStatus("race", ORG, b.identity).status).toBe("same");
+    // Private mode: setItem throws, so nothing was pinned now.
+    server.use(http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ url: "https://gw/mcp", identityKeyId: a.identity.keyId, identityPublicKey: a.identity.publicKey })));
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+    try { expect(await ensureGatewayPinned(forOrg(ORG), "private", ORG)).toEqual({ identity: a.identity, pinnedNow: false }); } finally { set.mockRestore(); }
   });
 
   it("passes a correctly attested agent key; refuses missing, unpinned, other-gateway and forged attestations", async () => {

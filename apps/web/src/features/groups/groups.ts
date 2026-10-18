@@ -39,14 +39,17 @@ export function useAdminGroups() {
  */
 async function sealAll(oapi: Pick<OrgApi, "get">, orgId: string, folder: VaultFolder, people: Recipient[], assertOpen: () => void, me: string, accepted = false) {
   if (!folder.folderKey) throw new Error("This folder's key isn't available");
-  // Trust on first use for the gateway identity; if that fails the agents are refused below, the people still go ahead.
-  if (people.some(isAgent)) await ensureGatewayPinned(oapi, me, orgId).catch(() => undefined);
+  // Trust on first use for the gateway identity; if that fails the agents are refused below with its reason, the people still go ahead.
+  const gatewayError = people.some(isAgent)
+    ? await ensureGatewayPinned(oapi, me, orgId).then(() => null, (e: unknown) => (e instanceof AgentAttestationError ? e.reason : "unpinned" as const))
+    : null;
   const fk = folder.folderKey.slice();
   try {
     const wraps: { userId: string; wrappedFolderKey: string; sealedTo: string | null }[] = [];
     const refused: AgentAttestationError[] = [];
     for (const p of people) {
       if (!accepted && pinStatus(me, orgId, p.id, p.membershipKey, p.publicKey).status === "changed") continue;
+      if (gatewayError && isAgent(p)) { refused.push(new AgentAttestationError(gatewayError, p.id)); continue; }
       try { wraps.push({ userId: p.id, ...(await sealFolderKeyTo(fk, { orgId, folderId: folder.id }, p, me)) }); }
       catch (e) { if (e instanceof AgentAttestationError) { refused.push(e); continue; } throw e; }
       pinKey(me, orgId, p.id, p.membershipKey, p.publicKey);

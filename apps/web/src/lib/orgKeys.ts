@@ -116,10 +116,25 @@ export function pinnedGateway(me: string, orgId: string): GatewayIdentity | null
   } catch { return null; }
 }
 /** A keyId that isn't derived from the public key (`gatewayKeyId`) is refused: the pair would let attestations of another key pass. */
-const consistent = async (g: GatewayIdentity) => { try { return g.keyId === await gatewayKeyId(b64url.decode(g.publicKey)); } catch { return false; } };
-export async function pinGateway(me: string, orgId: string, identity: GatewayIdentity) {
-  if (!await consistent(identity)) throw new Error("Gateway identity refused: its key id doesn't match its public key");
-  try { localStorage.setItem(GATEWAY(me, orgId), JSON.stringify({ keyId: identity.keyId, publicKey: identity.publicKey })); } catch { /* private mode */ }
+export const gatewayConsistent = async (g: GatewayIdentity) => { try { return g.keyId === await gatewayKeyId(b64url.decode(g.publicKey)); } catch { return false; } };
+const sameGateway = (a: GatewayIdentity, b: GatewayIdentity) => a.keyId === b.keyId && a.publicKey === b.publicKey;
+/** The served identity against this user's pin: "changed" (a replaced gateway, whatever its key id) is never repinned silently. */
+export function gatewayPinStatus(me: string, orgId: string, identity: GatewayIdentity): { status: "new" | "same" | "changed"; previous?: GatewayIdentity } {
+  const prev = pinnedGateway(me, orgId);
+  return !prev ? { status: "new" } : sameGateway(prev, identity) ? { status: "same" } : { status: "changed", previous: prev };
+}
+/**
+ * Pins the gateway identity; true only if it was stored now (not already pinned, not private mode). A different identity
+ * already pinned is `gateway_changed` unless `repin`: only the admin's verify dialog passes it, after the admin compared
+ * both fingerprints with what the gateway operator publishes. The slot is re-read right before writing, with no await in
+ * between, so two concurrent first pins can't overwrite each other.
+ */
+export async function pinGateway(me: string, orgId: string, identity: GatewayIdentity, opts: { repin?: boolean } = {}): Promise<boolean> {
+  if (!await gatewayConsistent(identity)) throw new Error("Gateway identity refused: its key id doesn't match its public key");
+  const prev = pinnedGateway(me, orgId);
+  if (prev && sameGateway(prev, identity)) return false;
+  if (prev && !opts.repin) throw new AgentAttestationError("gateway_changed");
+  try { localStorage.setItem(GATEWAY(me, orgId), JSON.stringify({ keyId: identity.keyId, publicKey: identity.publicKey })); return true; } catch { return false; /* private mode */ }
 }
 
 export type AgentAttestationReason = "missing" | "unpinned" | "gateway_changed" | "invalid";
@@ -139,7 +154,7 @@ export class AgentAttestationError extends Error {
  * consistent keyId/publicKey pair only). Never repins: an identity pinned meanwhile that differs is `gateway_changed`, and a
  * gateway that changes later shows up in `verifyAgentKey` (attestations by another keyId). Changing the pin is an admin
  * action (Agents page). Called only before sealing to an agent, so people-only shares make no request.
- * `pinnedNow`: this call pinned it (show the fingerprint).
+ * `pinnedNow`: this call stored the pin (show the fingerprint); false in private mode, where nothing is kept.
  */
 export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string, orgId: string): Promise<{ identity: GatewayIdentity; pinnedNow: boolean }> {
   const pinned = pinnedGateway(me, orgId);
@@ -149,14 +164,9 @@ export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string,
     const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string; keyId?: string; publicKey?: string }>("/org/agents/gateway");
     identity = { keyId: r.identityKeyId ?? r.keyId ?? "", publicKey: r.identityPublicKey ?? r.publicKey ?? "" };
   } catch { throw new AgentAttestationError("unpinned"); }
-  if (!await consistent(identity)) throw new AgentAttestationError("unpinned");
-  const meanwhile = pinnedGateway(me, orgId);
-  if (meanwhile) {
-    if (meanwhile.keyId !== identity.keyId || meanwhile.publicKey !== identity.publicKey) throw new AgentAttestationError("gateway_changed");
-    return { identity: meanwhile, pinnedNow: false };
-  }
-  await pinGateway(me, orgId, identity);
-  return { identity, pinnedNow: true };
+  if (!await gatewayConsistent(identity)) throw new AgentAttestationError("unpinned");
+  // Pinned meanwhile: the same identity is fine, another one is gateway_changed (pinGateway never repins here).
+  return { identity, pinnedNow: await pinGateway(me, orgId, identity) };
 }
 
 /**
