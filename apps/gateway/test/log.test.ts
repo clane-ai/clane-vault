@@ -84,6 +84,12 @@ describe("assertSafeRuntime", () => {
     expect(ok(proc(SAFE, ""))).not.toThrow();
     expect(ok(proc(SAFE))).not.toThrow();
   });
+  it("refuses any non-empty NODE_DEBUG or NODE_V8_COVERAGE (undici's debug log prints request paths, query secrets among them)", () => {
+    for (const k of ["NODE_DEBUG", "NODE_V8_COVERAGE"]) {
+      for (const v of ["undici", "fetch,net", "/tmp/cov", " "]) expect(() => assertSafeRuntime({ ...proc(SAFE), env: { [k]: v } } as never, () => undefined)).toThrow(`${k} is not allowed for the gateway`);
+      expect(() => assertSafeRuntime({ ...proc(SAFE), env: { [k]: "" } } as never, () => undefined)).not.toThrow();
+    }
+  });
   it("refuses an execArgv entry outside the allowlist, after _ to - normalisation", () => {
     for (const a of ["--heap_prof", "--heap-prof", "--inspect", "--cpu-prof", "--report-on-fatalerror", "--max-old-space-size=512", "--enable-source-maps=1"])
       expect(ok(proc([...SAFE, a]))).toThrow();

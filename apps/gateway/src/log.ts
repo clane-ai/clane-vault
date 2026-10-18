@@ -61,7 +61,8 @@ const MEMORY = "it could expose process memory or the environment";
  * would expose keys and secrets, so the gateway refuses to start unless the runtime is known safe.
  */
 export function assertSafeRuntime(proc: Pick<NodeJS.Process, "execArgv" | "env" | "report">, openInspectorUrl: () => string | undefined = inspectorUrl): void {
-  if (proc.env.NODE_OPTIONS) throw new Error("NODE_OPTIONS is not allowed for the gateway");
+  // NODE_DEBUG: undici's debug log prints request paths, which can hold a query-injected secret. NODE_V8_COVERAGE: coverage files.
+  for (const k of ["NODE_OPTIONS", "NODE_DEBUG", "NODE_V8_COVERAGE"]) if (proc.env[k]) throw new Error(`${k} is not allowed for the gateway`);
   // Node treats "_" and "-" alike in flag names.
   const argv = proc.execArgv.map((a) => a.replace(/_/g, "-"));
   if (argv.some((a) => !ALLOWED_ARGV.has(a)))
