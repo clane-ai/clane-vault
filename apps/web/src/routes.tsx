@@ -11,6 +11,7 @@ import Register from "@/features/auth/Register";
 import TwoFactorSetup from "@/features/auth/TwoFactorSetup";
 import Unlock from "@/features/auth/Unlock";
 import SsoComplete from "@/features/auth/SsoComplete";
+import OAuthAuthorize from "@/features/auth/OAuthAuthorize";
 import { JoinClaim, JoinRequest } from "@/features/auth/Join";
 import VaultScreen from "@/features/vault/VaultScreen";
 import PublicLinkPage from "@/features/links/PublicLinkPage";
@@ -141,6 +142,7 @@ export function AppRoutes() {
       <Route path="/recover/:id" element={<AdminRecoveryLinkPage />} />
       <Route path="/setup-2fa" element={<TwoFactorSetup />} />
       <Route path="/sso/complete" element={<SsoComplete />} />
+      <Route path="/oauth/authorize" element={<OAuthAuthorize />} />
       <Route path="/*" element={<Guard />} />
     </Routes>
     </>
