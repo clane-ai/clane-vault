@@ -1023,8 +1023,8 @@ model AgentGrant {
   clientId        String    @db.Uuid
   grantedById     String    @db.Uuid
   refreshHash     String    @unique
-  /// The previous refresh hash, kept so a replayed (already rotated) refresh token is detected.
-  prevRefreshHash String?
+  /// The refresh secret is an HMAC of (grant, generation): any older generation presented is a replay.
+  refreshGen      Int       @default(0)
   rotatedAt       DateTime?
   expiresAt       DateTime
   revokedAt       DateTime?

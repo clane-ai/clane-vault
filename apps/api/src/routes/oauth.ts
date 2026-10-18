@@ -1,10 +1,10 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { logEvent } from "../lib/events.js";
-import { agentJwks, hashToken, newRefreshToken, signAgentAccess, splitRefresh } from "../lib/tokens.js";
+import { agentJwks, hashToken, signAgentAccess, splitRefresh } from "../lib/tokens.js";
 import { fromGateway } from "../plugins/agent.js";
 
 const STATIC = /^cvat_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_[A-Za-z0-9_-]{43}$/;
@@ -41,7 +41,32 @@ function grantIdFor(codeHash: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-const isUuid = (s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
+/**
+ * Refresh secrets are HMAC-SHA256(K, "agent-refresh:<grantId>:<gen>"), so the server can tell which generation a
+ * presented token is. K is HKDF-SHA256 of JWT_SECRET (always set) under a label nothing else uses.
+ */
+const refreshKeys = new WeakMap<Config, Buffer>();
+function refreshMac(cfg: Config, grantId: string, gen: number): Buffer {
+  let k = refreshKeys.get(cfg);
+  if (!k) { k = Buffer.from(hkdfSync("sha256", cfg.jwtSecret, "", "clane-vault agent-refresh-key v1", 32)); refreshKeys.set(cfg, k); }
+  return createHmac("sha256", k).update(`agent-refresh:${grantId}:${gen}`).digest();
+}
+/** The `<grantId>.<secret>` token of a generation, and the hash stored for it. */
+export function refreshFor(cfg: Config, grantId: string, gen: number) {
+  const secret = refreshMac(cfg, grantId, gen).toString("base64url");
+  return { token: `${grantId}.${secret}`, hash: hashToken(secret) };
+}
+const MAX_GEN_SCAN = 1000;
+/** The generation `secret` was issued for (current first, constant-time compares), or null when it was never issued. */
+export function refreshGenOf(cfg: Config, grantId: string, current: number, secret: string): number | null {
+  const presented = Buffer.from(secret, "base64url");
+  if (presented.length !== 32) return null;
+  for (let gen = current; gen >= 0 && gen > current - MAX_GEN_SCAN; gen--)
+    if (timingSafeEqual(refreshMac(cfg, grantId, gen), presented)) return gen;
+  return null;
+}
+
+const isUuid =(s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
 export const reqMeta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
 
 /** https, or http on loopback (native and CLI clients); never a fragment. */
@@ -141,10 +166,10 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
   /** RFC 7009 for refresh tokens: 200 whatever the token was. */
   app.post("/oauth/revoke", { config: PER_MINUTE }, async (req) => {
     const p = splitRefresh((req.body as Form | undefined)?.token);
-    if (p) {
-      const h = hashToken(p.secret);
-      await revokeGrant(app, { id: p.sessionId, OR: [{ refreshHash: h }, { prevRefreshHash: h }] }, { reason: "client_revoke", req });
-    }
+    const g = p ? await app.prisma.agentGrant.findUnique({ where: { id: p.sessionId }, select: { refreshGen: true } }) : null;
+    // Any generation the server issued for this grant (it can't be forged without K).
+    if (p && g && refreshGenOf(app.config, p.sessionId, g.refreshGen, p.secret) !== null)
+      await revokeGrant(app, { id: p.sessionId }, { reason: "client_revoke", req });
     return {};
   });
 
@@ -184,7 +209,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     if (row.usedAt) { if (pkceOk) await revokeGrant(app, { id }, { reason: "code_reuse", req }); return invalidGrant(reply); }
     if (!pkceOk || row.expiresAt <= now || row.clientId !== clientId || row.redirectUri !== redirectUri) return invalidGrant(reply);
     const client = await app.prisma.agentOAuthClient.findUnique({ where: { id: row.clientId }, select: { name: true } });
-    const refresh = newRefreshToken(id);
+    const refresh = refreshFor(app.config, id, 0);
     const orgId = await app.prisma.$transaction(async (tx) => {
       // Single use: of two concurrent exchanges only one claims the code.
       if ((await tx.agentOAuthCode.updateMany({ where: { codeHash, usedAt: null }, data: { usedAt: now } })).count !== 1) return null;
@@ -199,7 +224,11 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refresh.token };
   };
 
-  /** Rotation as /auth/refresh does it (auth.ts): compare-and-swap, a grace window for concurrent callers, a replay revokes the grant. */
+  /**
+   * Rotation with deterministic secrets: the presented secret's generation decides. Current → rotate (compare-and-swap);
+   * the previous one within the grace window → the current token again; any older generation → replay, the grant ends;
+   * no generation → a forgery, refused without touching the grant.
+   */
   const refreshGrant: Grant = async (req, reply, form) => {
     if (!form.refresh_token || !form.client_id) return reply.code(400).send({ error: "invalid_request" });
     if (badResource(form.resource)) return reply.code(400).send({ error: "invalid_target" });
@@ -207,27 +236,29 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     // client_id is a uuid column: anything else would be a database error, not a refusal.
     if (!p || !isUuid(form.client_id)) return invalidGrant(reply);
     const load = () => app.prisma.agentGrant.findFirst({ where: { id: p.sessionId, clientId: form.client_id },
-      select: { id: true, agentId: true, refreshHash: true, prevRefreshHash: true, rotatedAt: true, revokedAt: true, expiresAt: true, agent: { select: { orgId: true } } } });
+      select: { id: true, agentId: true, refreshGen: true, rotatedAt: true, revokedAt: true, expiresAt: true, agent: { select: { orgId: true } } } });
     type Row = NonNullable<Awaited<ReturnType<typeof load>>>;
     const live = async (g: Row) => !g.revokedAt && g.expiresAt > new Date()
       && !!(await app.prisma.agent.findFirst({ where: { userId: g.agentId, ...grantableAgent(new Date()) }, select: { userId: true } }));
     let g = await load();
     if (!g || !(await live(g))) return invalidGrant(reply);
-    const h = hashToken(p.secret);
-    const sign = async (r: Row, refreshToken?: string) => {
+    const gen = refreshGenOf(app.config, g.id, g.refreshGen, p.secret);
+    if (gen === null) return invalidGrant(reply); // a stranger's guess never ends someone's grant
+    const sign = async (r: Row, refreshToken: string) => {
       const { token, expiresIn } = await signAgentAccess(app.config, { agentId: r.agentId, orgId: r.agent.orgId, grant: r.id });
-      return { access_token: token, token_type: "Bearer", expires_in: expiresIn, ...(refreshToken ? { refresh_token: refreshToken } : {}) };
+      return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refreshToken };
     };
-    if (h === g.refreshHash) {
-      const next = newRefreshToken(g.id);
-      const { count } = await app.prisma.agentGrant.updateMany({ where: { id: g.id, refreshHash: h, revokedAt: null }, data: { prevRefreshHash: h, refreshHash: next.hash, rotatedAt: new Date() } });
+    if (gen === g.refreshGen) {
+      const next = refreshFor(app.config, g.id, gen + 1);
+      const { count } = await app.prisma.agentGrant.updateMany({ where: { id: g.id, refreshGen: gen, revokedAt: null }, data: { refreshGen: gen + 1, refreshHash: next.hash, rotatedAt: new Date() } });
       if (count === 1) return sign(g, next.token);
       g = await load(); // lost a concurrent rotation; re-evaluate against the fresh row
       if (!g || !(await live(g))) return invalidGrant(reply);
     }
-    if (h === g.prevRefreshHash && g.rotatedAt && Date.now() - g.rotatedAt.getTime() <= REFRESH_GRACE_MS)
-      return sign(g); // concurrent request: the caller already holds (or is about to receive) the newer refresh token
-    if (h === g.prevRefreshHash) await revokeGrant(app, { id: g.id }, { reason: "refresh_reuse", req });
+    // A concurrent request: the caller gets the current token too, so it can't end up holding a stale one.
+    if (gen === g.refreshGen - 1 && g.rotatedAt && Date.now() - g.rotatedAt.getTime() <= REFRESH_GRACE_MS)
+      return sign(g, refreshFor(app.config, g.id, g.refreshGen).token);
+    await revokeGrant(app, { id: g.id }, { reason: "refresh_reuse", req });
     return invalidGrant(reply);
   };
 

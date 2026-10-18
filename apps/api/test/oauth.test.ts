@@ -351,3 +351,47 @@ describe("review round 1", () => {
     expect(left).toEqual(expect.arrayContaining([fresh.id, withCode.id, withGrant.id]));
   });
 });
+
+describe("review round 2: generation-based refresh", () => {
+  it("rotating twice and then presenting generation 0 revokes the grant (the thief can't outrun the client)", async () => {
+    const g = await granted();
+    const one = (await refresh(g.clientId, g.refresh_token)).json();
+    const two = (await refresh(g.clientId, one.refresh_token)).json();
+    expect(typeof two.refresh_token).toBe("string");
+    const r = await refresh(g.clientId, g.refresh_token); // within the grace window, but two generations old
+    expect(r.json().error).toBe("invalid_grant");
+    expect((await t.prisma.agentGrant.findUniqueOrThrow({ where: { id: g.grantId } })).revokedAt).not.toBeNull();
+    expect(await t.prisma.event.findFirst({ where: { action: "agent.grant_revoke" } })).toMatchObject({ actorId: null, meta: { reason: "refresh_reuse" } });
+    expect((await sync(two.access_token)).statusCode).toBe(401);
+  });
+
+  it("concurrent refreshes within grace get the same current refresh token, and the client can keep using it", async () => {
+    const g = await granted();
+    const rs = (await Promise.all([refresh(g.clientId, g.refresh_token), refresh(g.clientId, g.refresh_token)])).map((r) => r.json());
+    expect(rs[0].refresh_token).toBe(rs[1].refresh_token);
+    // A sequential retry within grace (what a client that lost the race sees) also gets the current token.
+    const retry = (await refresh(g.clientId, g.refresh_token)).json();
+    expect(retry.refresh_token).toBe(rs[0].refresh_token);
+    await t.prisma.agentGrant.update({ where: { id: g.grantId }, data: { rotatedAt: new Date(Date.now() - 60_000) } });
+    const next = await refresh(g.clientId, retry.refresh_token);
+    expect(next.statusCode).toBe(200);
+    expect((await t.prisma.agentGrant.findUniqueOrThrow({ where: { id: g.grantId } })).revokedAt).toBeNull();
+    expect((await sync(next.json().access_token)).statusCode).toBe(200);
+  });
+
+  it("a forged secret is invalid_grant and leaves the grant intact", async () => {
+    const g = await granted();
+    const forged = `${g.grantId}.${randomBytes(32).toString("base64url")}`;
+    expect((await refresh(g.clientId, forged)).json().error).toBe("invalid_grant");
+    expect((await form("/oauth/revoke", { token: forged })).statusCode).toBe(200);
+    expect((await t.prisma.agentGrant.findUniqueOrThrow({ where: { id: g.grantId } })).revokedAt).toBeNull();
+    expect((await refresh(g.clientId, g.refresh_token)).statusCode).toBe(200);
+  });
+
+  it("/oauth/revoke accepts an older generation of the grant's token", async () => {
+    const g = await granted();
+    await refresh(g.clientId, g.refresh_token);
+    expect((await form("/oauth/revoke", { token: g.refresh_token })).statusCode).toBe(200);
+    expect((await t.prisma.agentGrant.findUniqueOrThrow({ where: { id: g.grantId } })).revokedAt).not.toBeNull();
+  });
+});

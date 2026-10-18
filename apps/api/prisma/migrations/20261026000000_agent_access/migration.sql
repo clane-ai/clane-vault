@@ -71,7 +71,7 @@ CREATE TABLE "AgentGrant" (
     "clientId" UUID NOT NULL,
     "grantedById" UUID NOT NULL,
     "refreshHash" TEXT NOT NULL,
-    "prevRefreshHash" TEXT,
+    "refreshGen" INTEGER NOT NULL DEFAULT 0,
     "rotatedAt" TIMESTAMP(3),
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "revokedAt" TIMESTAMP(3),
