@@ -8,11 +8,11 @@ import type { Identity } from "./identity.js";
 import type { Kek } from "./kek.js";
 import { safeError, type HeldSecrets, type Logger } from "./log.js";
 import { apiClient } from "./apiClient.js";
-import { bearerAuth, unavailable } from "./auth.js";
+import { ApiUnavailable, bearerAuth } from "./auth.js";
 import { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
 import { AgentKeyCache, SyncCache } from "./keys.js";
-import { mcpHandler } from "./mcp.js";
+import { ADDRESS_PER_MINUTE, clientAddress, mcpHandler } from "./mcp.js";
 import { defaultResolver, type Resolver } from "./outbound/ssrf.js";
 import { RateLimiter } from "./rateLimit.js";
 
@@ -29,7 +29,8 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const keys = new AgentKeyCache({ ttlMs, kek, now: deps.now });
   const syncs = new SyncCache({ ttlMs, api, now: deps.now });
   const auth = bearerAuth(cfg, api, deps.now);
-  const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter: new RateLimiter(deps.now),
+  const limiter = new RateLimiter(deps.now);
+  const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter,
     log, held, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
   const mcpPath = new URL(cfg.publicUrl).pathname;
   // RFC 9728: under PUBLIC_URL's path, and by path insertion at the root (`/.well-known/oauth-protected-resource/mcp`).
@@ -79,6 +80,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
 
   const handle = (fn: (req: IncomingMessage, res: ServerResponse) => Promise<void>) => (req: IncomingMessage, res: ServerResponse) => {
     fn(req, res).catch((e: unknown) => {
+      if (e instanceof ApiUnavailable) log.error({ event: "api_unavailable", reason: e.reason });
       if (e instanceof HttpError) return send(res, e.status, { error: e.code }, e.headers);
       log.error({ event: "request_error", ...safeError(e, held) });
       if (!res.headersSent) send(res, 500, { error: "internal_error" });
@@ -87,9 +89,12 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   };
 
   async function metadata(req: IncomingMessage, res: ServerResponse) {
+    // The MCP route's per-address window, shared.
+    const r = limiter.take(`addr:${clientAddress(req, cfg.trustProxy)}`, ADDRESS_PER_MINUTE, 60_000);
+    if (!r.ok) return send(res, 429, { error: "rate_limited" }, { "retry-after": String(r.retryAfterSeconds) });
     if (req.method !== "GET") return send(res, 405, { error: "method_not_allowed" }, { allow: "GET" });
     let issuer: string;
-    try { issuer = await api.issuer(); } catch { throw unavailable(); }
+    try { issuer = await api.issuer(); } catch { throw new ApiUnavailable("issuer"); }
     send(res, 200, { resource: cfg.publicUrl, authorization_servers: [issuer], bearer_methods_supported: ["header"] });
   }
 

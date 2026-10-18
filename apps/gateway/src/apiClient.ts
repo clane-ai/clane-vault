@@ -1,5 +1,5 @@
 import type { AgentMethod } from "@clane-vault/crypto";
-import type { GatewayConfig } from "./config.js";
+import { httpsOrLoopback, type GatewayConfig } from "./config.js";
 
 /** GET /agent/sync: the agent's `/sync?space=org` body plus its wrapped key (plan Task 5). Only the fields the gateway reads. */
 export interface AgentSync {
@@ -47,11 +47,13 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
   let issuer: Promise<string> | undefined;
   // API_URL is origin + base path, and the API serves its metadata at `${basePath}/.well-known/...` (plan Task 12).
   async function fetchIssuer(): Promise<string> {
-    const r = await fetchImpl(`${cfg.apiUrl.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const r = await fetchImpl(`${cfg.apiUrl.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`, { redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!r.ok) throw new Error(`API metadata failed (${r.status})`);
     const iss = ((await r.json()) as { issuer?: unknown } | null)?.issuer;
-    if (typeof iss !== "string" || !URL.canParse(iss)) throw new Error("API metadata has no issuer");
-    return iss;
+    const u = typeof iss === "string" && URL.canParse(iss) ? new URL(iss) : null;
+    // RFC 8414 §2: an https URL with no query or fragment (http on loopback for development, as PUBLIC_URL).
+    if (!u || !httpsOrLoopback(u) || /[?#]/.test(iss as string)) throw new Error("API metadata has no valid issuer");
+    return iss as string;
   }
   return {
     issuer() {

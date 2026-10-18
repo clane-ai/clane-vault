@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RecordBody } from "@clane-vault/crypto";
-import { SignJWT } from "jose";
+import { generateKeyPair, SignJWT } from "jose";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createGateway, type GatewayDeps } from "../src/app.js";
@@ -15,7 +15,7 @@ import { EventQueue } from "../src/events.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { AgentKeyCache, SyncCache } from "../src/keys.js";
 import { createLogger, HeldSecrets, type Logger } from "../src/log.js";
-import { agentTools, clientAddress } from "../src/mcp.js";
+import { ADDRESS_PER_MINUTE, agentTools, clientAddress } from "../src/mcp.js";
 import type { Resolver } from "../src/outbound/ssrf.js";
 import { RateLimiter } from "../src/rateLimit.js";
 import { startFakeApi } from "./fakeApi.js";
@@ -33,7 +33,7 @@ const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> =
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
 
-async function fake(o: { metadataDown?: boolean } = {}) {
+async function fake(o: { metadataDown?: boolean; issuer?: string } = {}) {
   const kek = await fileKek();
   const api = await startFakeApi({ kek, aud: AUD, ...o });
   closers.push(api.close);
@@ -129,6 +129,29 @@ describe("bearerAuth", () => {
     for (const jwt of [await api.issueToken({ iss: "https://evil.test/app" }), await api.issueToken({ iss: api.url }),
       await api.issueToken({ grant: undefined })])
       expect(await auth(`Bearer ${jwt}`)).toBeNull();
+  });
+
+  it("the issuer is fetched without following redirects; an invalid one is refused and not cached", async () => {
+    const issuers = ["http://vault.test/app", "https://vault.test/app?x", "https://vault.test/app#", "javascript:alert(1)", "https://vault.test/app"];
+    const inits: RequestInit[] = [];
+    const stub = (async (_u: string, init: RequestInit) => { inits.push(init); return Response.json({ issuer: issuers[inits.length - 1] }); }) as unknown as typeof fetch;
+    const client = apiClient({ apiUrl: "http://api:3001", apiToken: "t" }, stub);
+    for (let i = 0; i < 4; i++) await expect(client.issuer()).rejects.toThrow(/issuer/);
+    expect(await client.issuer()).toBe("https://vault.test/app");
+    expect(await client.issuer()).toBe("https://vault.test/app");
+    expect(inits).toHaveLength(5);
+    expect(inits.every((i) => i.redirect === "error")).toBe(true);
+    expect(await apiClient({ apiUrl: "http://localhost:3001", apiToken: "t" },
+      (async () => Response.json({ issuer: "http://localhost:3001/app" })) as unknown as typeof fetch).issuer()).toBe("http://localhost:3001/app");
+  });
+
+  it("a well-formed ES256 JWT with an unknown kid is refused (null), not 503", async () => {
+    const { api } = await fake();
+    const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
+    const { privateKey } = await generateKeyPair("ES256");
+    const jwt = await new SignJWT({ scope: "agent", org: api.agent.orgId, grant: "g" }).setProtectedHeader({ alg: "ES256", kid: "unknown-kid" })
+      .setSubject(api.agent.id).setAudience(AUD).setIssuer(api.issuer).setExpirationTime("15m").sign(privateKey);
+    expect(await auth(`Bearer ${jwt}`)).toBeNull();
   });
 
   it("an OAuth grant's JWT (no cvat_ id) is accepted like an exchanged one", async () => {
@@ -352,7 +375,7 @@ describe("agentTools", () => {
   });
 });
 
-async function start(over: Partial<GatewayConfig> = {}, deps: Partial<GatewayDeps> = {}, apiOpts: { metadataDown?: boolean } = {}) {
+async function start(over: Partial<GatewayConfig> = {}, deps: Partial<GatewayDeps> = {}, apiOpts: { metadataDown?: boolean; issuer?: string } = {}) {
   const { kek, api } = await fake(apiOpts);
   const dir = tempDir();
   const identity = await loadOrCreateIdentity(join(dir, "identity.json"), kek);
@@ -375,7 +398,9 @@ describe("MCP route gate", () => {
     for (const t of [undefined, "cvat_wrong", "x.y.z"]) {
       const r = await post(url, call("list_secrets"), t);
       expect(r.status).toBe(401);
-      expect(r.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
+      // RFC 6750 §3.1: error="invalid_token" only when a bearer was sent.
+      expect(r.headers.get("www-authenticate"), t)
+        .toBe(`Bearer ${t ? 'error="invalid_token", ' : ""}resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
       expect(await r.json()).toEqual({ error: "unauthorized" });
     }
   });
@@ -407,6 +432,31 @@ describe("MCP route gate", () => {
     api.metadataDown = false;
     expect((await fetch(meta)).status).toBe(200);
     expect((await post(url, call("list_secrets"), await api.issueToken())).status).not.toBe(503);
+  });
+
+  it("a request-time 503 is logged as {event, reason} only", async () => {
+    const lines: string[] = [];
+    const held = new HeldSecrets();
+    const { url } = await start({}, { log: createLogger(held, (l) => lines.push(l)) }, { metadataDown: true });
+    expect((await fetch(`${new URL(url).origin}/mcp/.well-known/oauth-protected-resource`)).status).toBe(503);
+    expect(lines).toContain(JSON.stringify({ event: "api_unavailable", reason: "issuer" }));
+  });
+
+  it("an issuer that isn't https, or has a query or fragment, is 503 like an unreachable one", async () => {
+    for (const issuer of ["http://vault.test/app", "https://vault.test/app?x=1", "https://vault.test/app#f"]) {
+      const { url } = await start({}, {}, { issuer });
+      expect((await fetch(`${new URL(url).origin}/mcp/.well-known/oauth-protected-resource`)).status, issuer).toBe(503);
+    }
+  });
+
+  it("the metadata routes share the per-address limit", async () => {
+    const { url } = await start();
+    const meta = `${new URL(url).origin}/.well-known/oauth-protected-resource/mcp`;
+    for (let i = 0; i < ADDRESS_PER_MINUTE; i++) await (await fetch(meta)).arrayBuffer();
+    const r = await fetch(meta);
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect((await post(url, call("list_secrets"))).status).toBe(429); // the same window as the MCP route
   });
 
   it("serves only the PUBLIC_URL path", async () => {
@@ -576,7 +626,7 @@ describe("MCP endpoint", () => {
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${jwt}`,
         "mcp-session-id": sid, "mcp-protocol-version": transport.protocolVersion ?? "2025-06-18" } });
     expect(refused.status).toBe(401);
-    expect(refused.headers.get("www-authenticate")).toBe(`Bearer resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
+    expect(refused.headers.get("www-authenticate")).toBe(`Bearer error="invalid_token", resource_metadata="${AUD}/.well-known/oauth-protected-resource"`);
     expect(gw.keys.has(api.agent.id)).toBe(false);
     await expect(other.listTools()).rejects.toMatchObject({ code: 404 }); // dropAgent closed every session of the agent's
   });

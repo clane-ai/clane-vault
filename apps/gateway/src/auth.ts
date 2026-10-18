@@ -17,10 +17,14 @@ const MARGIN_MS = 30_000;
 
 /** RFC 9728 metadata URL for PUBLIC_URL; every 401 names it (MCP authorization). */
 export const resourceMetadataUrl = (cfg: Pick<GatewayConfig, "publicUrl">) => `${cfg.publicUrl.replace(/\/+$/, "")}/.well-known/oauth-protected-resource`;
-export const challenge = (cfg: Pick<GatewayConfig, "publicUrl">) => ({ "www-authenticate": `Bearer resource_metadata="${resourceMetadataUrl(cfg)}"` });
+/** `invalid`: a bearer was sent but is bad, expired or revoked (RFC 6750 �3.1); without a token the challenge names no error. */
+export const challenge = (cfg: Pick<GatewayConfig, "publicUrl">, invalid = false) =>
+  ({ "www-authenticate": `Bearer ${invalid ? 'error="invalid_token", ' : ""}resource_metadata="${resourceMetadataUrl(cfg)}"` });
 
 /** The API (metadata, JWKS or exchange) can't be reached: 503, never a 401 that would send the client to re-authorise. */
-export const unavailable = () => new HttpError(503, "api_unavailable", { "retry-after": "5" });
+export class ApiUnavailable extends HttpError {
+  constructor(public reason: "issuer" | "jwks" | "exchange") { super(503, "api_unavailable", { "retry-after": "5" }); }
+}
 
 /**
  * "cvat_…": exchanged at the API, cached by SHA-256 of the token until exp − 30 s. Otherwise an ES256 JWT (an OAuth AgentGrant's)
@@ -33,7 +37,7 @@ export function bearerAuth(cfg: GatewayConfig, api: ApiClient, now: () => number
   const jwks: JWTVerifyGetKey = async (h, t) => {
     try { return await remote(h, t); } catch (e) {
       if (e instanceof errors.JWKSNoMatchingKey || e instanceof errors.JWKSMultipleMatchingKeys) throw e;
-      throw unavailable();
+      throw new ApiUnavailable("jwks");
     }
   };
   // A pending exchange is shared, so concurrent connects with one token make one exchange.
@@ -42,7 +46,7 @@ export function bearerAuth(cfg: GatewayConfig, api: ApiClient, now: () => number
   /** `grant`: an exchanged token must name the static token it came from (an OAuth grant's JWT has no cvat_ id to match). */
   async function verify(jwt: string, grant?: string): Promise<AgentPrincipal | null> {
     let issuer: string;
-    try { issuer = await api.issuer(); } catch { throw unavailable(); }
+    try { issuer = await api.issuer(); } catch { throw new ApiUnavailable("issuer"); }
     try {
       const { payload: c } = await jwtVerify(jwt, jwks, { audience: cfg.publicUrl, issuer, algorithms: ["ES256"] });
       if (c.scope !== "agent" || typeof c.sub !== "string" || typeof c.org !== "string" || typeof c.exp !== "number" || typeof c.grant !== "string") return null;
@@ -60,7 +64,7 @@ export function bearerAuth(cfg: GatewayConfig, api: ApiClient, now: () => number
     } catch (e) {
       if (e instanceof ApiRefused) return null; // an unknown or revoked token
       if (e instanceof HttpError) throw e;
-      throw unavailable(); // the API is down, slow or answering 5xx
+      throw new ApiUnavailable("exchange"); // the API is down, slow or answering 5xx
     }
   }
 
