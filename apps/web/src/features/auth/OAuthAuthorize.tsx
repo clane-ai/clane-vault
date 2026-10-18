@@ -6,11 +6,12 @@ import { useSession } from "@/lib/session";
 import { AGENTS_OFF, agentsOff } from "@/features/admin/agents";
 import { AuthLayout } from "./AuthLayout";
 import Unlock from "./Unlock";
+import { oauthNav } from "./oauthNav";
 
-interface Info { client: { name: string }; agents: { id: string; name: string; orgId: string; orgName: string }[] }
+const PARAMS = ["client_id", "redirect_uri", "response_type", "code_challenge", "code_challenge_method", "state", "resource"];
 
-/** Navigation seam (tests replace it): the consent answer carries a code, so it never goes through the router or query cache. */
-export const oauthNav = { go: (url: string) => window.location.assign(url) };
+interface Info { issuer?: string; client: { name: string }; agents: { id: string; name: string; orgId: string; orgName: string }[] }
+
 
 const INVALID = "This connection request isn't valid. Start again from your AI app.";
 const MESSAGES: Record<string, string> = {
@@ -30,7 +31,10 @@ export default function OAuthAuthorize() {
   const { state, orgs } = useSession();
   const location = useLocation();
   const q = new URLSearchParams(location.search);
-  const redirect = parse(q.get("redirect_uri"));
+  // A repeated parameter could pass validation on one value and redirect to another: refuse the request.
+  const repeated = PARAMS.some((k) => q.getAll(k).length > 1);
+  const redirect = repeated ? null : parse(q.get("redirect_uri"));
+  const infoQuery = new URLSearchParams(PARAMS.flatMap((k) => (q.get(k) === null ? [] : [[k, q.get(k)!]]))).toString();
   const [info, setInfo] = useState<Info | null>(null);
   const [failure, setFailure] = useState<"invalid" | "off" | null>(null);
   const [agentId, setAgentId] = useState("");
@@ -38,11 +42,12 @@ export default function OAuthAuthorize() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    setInfo(null); setFailure(null); setAgentId(""); setError(null);
     if (state !== "unlocked") return;
     if (!redirect) { setFailure("invalid"); return; }
     let live = true;
     // Plain state, not the query cache: nothing from this flow is kept after the page.
-    api.get<Info>(`/oauth/authorize/info${location.search}`)
+    api.get<Info>(`/oauth/authorize/info?${infoQuery}`)
       .then((r) => { if (live) setInfo(r); })
       .catch((e) => { if (live) setFailure(agentsOff(e) ? "off" : "invalid"); });
     return () => { live = false; };
@@ -80,7 +85,7 @@ export default function OAuthAuthorize() {
       setBusy(false);
     }
   }
-  const deny = () => { const s = q.get("state"); oauthNav.go(back({ error: "access_denied", ...(s ? { state: s } : {}) })); };
+  const deny = () => { const s = q.get("state"); oauthNav.go(back({ error: "access_denied", ...(s ? { state: s } : {}), ...(info.issuer ? { iss: info.issuer } : {}) })); };
 
   const host = redirect.host;
   return (

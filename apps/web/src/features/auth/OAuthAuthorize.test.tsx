@@ -5,7 +5,8 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
-import OAuthAuthorize, { oauthNav } from "./OAuthAuthorize";
+import OAuthAuthorize from "./OAuthAuthorize";
+import { oauthNav } from "./oauthNav";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -15,10 +16,10 @@ const A2 = { id: "a2", name: "Ops bot", orgId: "o2", orgName: "Globex" };
 const INFO = "/api/v1/oauth/authorize/info";
 
 function Where() { const l = useLocation(); return <p data-testid="where">{l.pathname}{l.search}|{JSON.stringify(l.state)}</p>; }
-function renderPage(session: object = { state: "unlocked", orgs: [{ id: "o1", role: "admin" }] }) {
+function renderPage(session: object = { state: "unlocked", orgs: [{ id: "o1", role: "admin" }] }, query = Q) {
   vi.spyOn(sessionModule, "useSession").mockReturnValue(session as never);
   const go = vi.spyOn(oauthNav, "go").mockImplementation(() => undefined);
-  render(<MemoryRouter initialEntries={["/oauth/authorize" + Q]}><Routes>
+  render(<MemoryRouter initialEntries={["/oauth/authorize" + query]}><Routes>
     <Route path="/oauth/authorize" element={<OAuthAuthorize />} /><Route path="*" element={<Where />} />
   </Routes></MemoryRouter>);
   return go;
@@ -54,10 +55,10 @@ describe("OAuth consent page", () => {
   });
 
   it("Deny redirects with access_denied and the state, only after info succeeded", async () => {
-    server.use(http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, agents: [A1] })));
+    server.use(http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, issuer: "https://vault.test", agents: [A1] })));
     const go = renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "Deny" }));
-    expect(go).toHaveBeenCalledWith("https://claude.ai/cb?error=access_denied&state=st1");
+    expect(go).toHaveBeenCalledWith("https://claude.ai/cb?error=access_denied&state=st1&iss=https%3A%2F%2Fvault.test");
   });
 
   it("an invalid request says so and never redirects", async () => {
@@ -86,5 +87,32 @@ describe("OAuth consent page", () => {
     const where = await screen.findByTestId("where");
     expect(where).toHaveTextContent("/sign-in");
     expect(where.textContent).toContain(JSON.stringify({ from: { pathname: "/oauth/authorize", search: Q } }));
+  });
+
+  it("a repeated parameter is invalid: no info call, no redirect, no Deny", async () => {
+    const info = vi.fn();
+    server.use(http.get(INFO, () => { info(); return HttpResponse.json({ client: { name: "C" }, agents: [A1] }); }));
+    const go = renderPage(undefined, Q + "&redirect_uri=https%3A%2F%2Fevil.test%2Fcb");
+    expect(await screen.findByRole("alert")).toHaveTextContent("isn't valid");
+    expect(screen.queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
+    expect(info).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html,x"])("refuses a %s redirect_uri without calling info", async (u) => {
+    const info = vi.fn();
+    server.use(http.get(INFO, () => { info(); return HttpResponse.json({ client: { name: "C" }, agents: [A1] }); }));
+    renderPage(undefined, `?client_id=c1&redirect_uri=${encodeURIComponent(u)}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("isn't valid");
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("an admin with no agents is pointed to the Agents page, and Cancel denies", async () => {
+    server.use(http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, agents: [] })));
+    const go = renderPage();
+    expect(await screen.findByText(/no verified agents yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Allow" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(go).toHaveBeenCalledWith("https://claude.ai/cb?error=access_denied&state=st1");
   });
 });
