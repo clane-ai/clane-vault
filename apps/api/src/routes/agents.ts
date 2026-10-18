@@ -3,14 +3,23 @@ import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { z } from "zod";
 import { displayName } from "../lib/names.js";
 import { logEvent } from "../lib/events.js";
-import { offboard } from "../lib/orgs.js";
+import { lockUser, offboard } from "../lib/orgs.js";
 import { agentEmail, assertAgentSlot, fingerprintOf } from "../lib/agents.js";
 import { GatewayUnavailable, pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
 import { isPublicKeyB64 } from "../lib/membershipKeys.js";
 import { newAgentToken } from "../lib/tokens.js";
+import { revokeGrant } from "./oauth.js";
+import type { Prisma } from "@prisma/client";
 
 const idParam = z.object({ id: z.string().uuid() });
 const tokenParam = z.object({ tokenId: z.string().uuid() }).passthrough();
+const grantParam = z.object({ grantId: z.string().uuid() }).passthrough();
+
+/** Serialised with revoke (which locks the user first): true when the agent is still live inside this transaction. */
+async function stillLive(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
+  await lockUser(tx, userId);
+  return !!(await tx.agent.findFirst({ where: { userId, revokedAt: null }, select: { userId: true } }));
+}
 const expiry = z.string().datetime({ offset: true }).transform((s) => new Date(s)).refine((d) => d.getTime() > Date.now(), { message: "past" }).nullable();
 
 /** "g1.<keyId>.<sig>": Ed25519 over "agent-key:<orgId>:<agentId>:<publicKey>" by the pinned identity (packages/crypto agents.ts). */
@@ -72,11 +81,14 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (req) => {
     const org = orgId(req);
     const rows = await app.prisma.agent.findMany({ where: { orgId: org }, orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } },
-      tokens: { orderBy: { createdAt: "asc" }, select: { id: true, label: true, createdAt: true, expiresAt: true, lastUsedAt: true, revokedAt: true } } } });
-    const ids = rows.map((r) => r.userId);
-    const [folders, groups] = await Promise.all([
+      tokens: { orderBy: { createdAt: "asc" }, select: { id: true, label: true, createdAt: true, expiresAt: true, lastUsedAt: true, revokedAt: true } },
+      grants: { where: { revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "asc" }, select: { id: true, clientId: true, grantedById: true, createdAt: true } } } });
+    const ids = rows.map((r) => r.userId), grantRows = rows.flatMap((r) => r.grants);
+    const [folders, groups, clients, granters] = await Promise.all([
       app.prisma.folderMember.findMany({ where: { userId: { in: ids }, folder: { kind: "team", orgId: org, deletedAt: null } }, select: { userId: true, folderId: true } }),
       app.prisma.groupMember.findMany({ where: { userId: { in: ids }, group: { orgId: org } }, select: { userId: true, group: { select: { id: true, name: true } } } }),
+      app.prisma.agentOAuthClient.findMany({ where: { id: { in: grantRows.map((g) => g.clientId) } }, select: { id: true, name: true } }),
+      app.prisma.user.findMany({ where: { id: { in: grantRows.map((g) => g.grantedById) } }, select: { id: true, name: true } }),
     ]);
     const now = Date.now();
     return { agents: rows.map((a) => ({
@@ -89,7 +101,8 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
       // Never the token or its hash.
       tokens: a.tokens.map((k) => ({ id: k.id, label: k.label, createdAt: k.createdAt.toISOString(), expiresAt: k.expiresAt?.toISOString() ?? null,
         lastUsedAt: k.lastUsedAt?.toISOString() ?? null, revokedAt: k.revokedAt?.toISOString() ?? null })),
-      grants: [], // Task 12
+      grants: a.grants.map((g) => ({ id: g.id, clientName: clients.find((c) => c.id === g.clientId)?.name ?? "",
+        grantedBy: granters.find((u) => u.id === g.grantedById) ?? null, createdAt: g.createdAt.toISOString() })),
     })) };
   });
 
@@ -102,12 +115,14 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     const key = await app.prisma.membershipKey.findFirst({ where: { orgId: a.orgId, userId: a.userId, state: "current" }, select: { publicKey: true } });
     if (key?.publicKey !== b.publicKey) return reply.code(409).send({ error: "stale_key" });
     const now = new Date();
-    await app.prisma.$transaction([
-      app.prisma.agent.update({ where: { userId: a.userId }, data: { verifiedById: req.auth.userId, verifiedAt: now } }),
-      app.prisma.membership.update({ where: { orgId_userId: { orgId: a.orgId, userId: a.userId } }, data: { status: "active", joinedAt: now } }),
-      app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.verify", targetUserId: a.userId, ...meta(req) } }),
-    ]);
-    return { ok: true };
+    const ok = await app.prisma.$transaction(async (tx) => {
+      if (!(await stillLive(tx, a.userId))) return false;
+      await tx.agent.update({ where: { userId: a.userId }, data: { verifiedById: req.auth.userId, verifiedAt: now } });
+      await tx.membership.update({ where: { orgId_userId: { orgId: a.orgId, userId: a.userId } }, data: { status: "active", joinedAt: now } });
+      await logEvent(tx, { orgId: a.orgId, actorId: req.auth.userId, action: "agent.verify", targetUserId: a.userId, ...meta(req) });
+      return true;
+    });
+    return ok ? { ok: true } : reply.code(409).send({ error: "agent_revoked" });
   });
 
   /** A static token for an API/SDK client: returned once, only its hash is kept. */
@@ -118,11 +133,23 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     if (a.revokedAt) return reply.code(409).send({ error: "agent_revoked" });
     const id = randomUUID();
     const { token, hash } = newAgentToken(id);
-    await app.prisma.$transaction([
-      app.prisma.agentToken.create({ data: { id, agentId: a.userId, label: b.label, tokenHash: hash, createdById: req.auth.userId, expiresAt: b.expiresAt ?? null } }),
-      app.prisma.event.create({ data: { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_create", targetUserId: a.userId, meta: { tokenId: id }, ...meta(req) } }),
-    ]);
-    return reply.code(201).send({ id, token });
+    const ok = await app.prisma.$transaction(async (tx) => {
+      if (!(await stillLive(tx, a.userId))) return false;
+      await tx.agentToken.create({ data: { id, agentId: a.userId, label: b.label, tokenHash: hash, createdById: req.auth.userId, expiresAt: b.expiresAt ?? null } });
+      await logEvent(tx, { orgId: a.orgId, actorId: req.auth.userId, action: "agent.token_create", targetUserId: a.userId, meta: { tokenId: id }, ...meta(req) });
+      return true;
+    });
+    return ok ? reply.code(201).send({ id, token }) : reply.code(409).send({ error: "agent_revoked" });
+  });
+
+  /** Ends one OAuth grant (a client an admin allowed on the consent page). */
+  app.delete("/:id/grants/:grantId", async (req, reply) => {
+    const { grantId } = grantParam.parse(req.params);
+    const a = await agentIn(req, reply);
+    if (!a) return reply;
+    if (!(await app.prisma.agentGrant.findFirst({ where: { id: grantId, agentId: a.userId }, select: { id: true } }))) return reply.code(404).send({ error: "not_found" });
+    await revokeGrant(app, { id: grantId, agentId: a.userId }, { actorId: req.auth.userId, ip: req.ip });
+    return reply.code(204).send();
   });
 
   app.delete("/:id/tokens/:tokenId", async (req, reply) => {
@@ -150,9 +177,12 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     const userId = a.userId, org = a.orgId;
     const out = await app.prisma.$transaction(async (tx) => {
       const now = new Date();
+      // Lock first: serialised with verify, token create (stillLive) and other account-wide changes to the agent.
+      await lockUser(tx, userId);
       // Claim first: a double revoke finds count 0 and logs nothing.
       if ((await tx.agent.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now, revokedById: req.auth.userId, wrappedPrivateKey: null } })).count !== 1) return null;
-      const folders = await tx.folder.findMany({ where: { orgId: org, kind: "team", deletedAt: null, members: { some: { userId } } }, select: { id: true } });
+      // Trashed folders too: they can be restored, with the keys the agent's gateway held.
+      const folders = await tx.folder.findMany({ where: { orgId: org, kind: "team", members: { some: { userId } } }, select: { id: true } });
       const open = await tx.recordAccess.findMany({ where: { state: "active", OR: [
         { holderType: "folder", holderId: { in: folders.map((f) => f.id) } },
         { holderType: "user", holderId: userId, orgId: org }] }, select: { recordId: true }, distinct: ["recordId"] });

@@ -47,7 +47,7 @@ import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
-import { oauthRoutes } from "./routes/oauth.js";
+import { authServerMetadata, oauthRoutes } from "./routes/oauth.js";
 
 declare module "fastify" {
   interface FastifyInstance { prisma: PrismaClient; config: Config; backups: BackupService;
@@ -165,6 +165,12 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       await api.register(oauthRoutes);
     }
   }, { prefix: apiPrefix(opts.config) });
+  if (opts.config.agents) {
+    // RFC 8414 path insertion for an issuer with a path, and under the base path (where the gateway, given API_URL, looks).
+    const base = opts.config.basePath ?? "";
+    for (const url of new Set([`/.well-known/oauth-authorization-server${base}`, `${base}/.well-known/oauth-authorization-server`]))
+      app.get(url, async () => authServerMetadata(opts.config));
+  }
   if (opts.webDist) await registerWeb(app, opts.webDist, opts.config.basePath ?? "");
   // Expired one-time links lose their ciphertext and password material even if nobody looks at them again.
   // Lapsed recovery requests lose their wrapped key and proof hash the same way.
@@ -176,6 +182,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     opts.prisma.ssoLogin.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.ssoProof.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.m365Connect.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
+    opts.prisma.agentOAuthCode.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     // Attachments: abandoned uploads (24 h), removed files and purged S3 objects (docs/attachments.md).
     sweeper.run().catch((e: unknown) => app.log.error(e));
   }, SWEEP_INTERVAL_MS);

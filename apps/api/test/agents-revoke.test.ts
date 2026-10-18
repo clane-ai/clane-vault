@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
-import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, exportPKCS8, generateKeyPair as joseKeyPair, jwtVerify } from "jose";
-import { b64url, createTeamFolder, encryptNewRecord, openOrgFolderKey, sealOrgFolderKey, wrapKey } from "@clane-vault/crypto";
+import { exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
+import { b64url, createTeamFolder, encryptNewRecord, sealOrgFolderKey, wrapKey } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
 import { createTestAgent } from "./agentHelpers.js";
 import { startFakeGateway } from "./fakeGateway.js";
@@ -11,9 +11,8 @@ const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
 const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
 const t = await makeTestApp({ agents });
-const limited = await makeTestApp({ agents, rateLimitPerMinute: 3 });
 const hosted = await makeTestApp({ agents, billingMode: "hosted" });
-afterAll(async () => { await Promise.all([t.app.close(), limited.app.close(), hosted.app.close()]); await fake.close(); });
+afterAll(async () => { await Promise.all([t.app.close(), hosted.app.close()]); await fake.close(); });
 beforeEach(async () => { await resetDb(t.prisma); fake.dropped.length = 0; fake.setDown(false); });
 
 type U = Awaited<ReturnType<typeof createActiveUser>>;
@@ -60,17 +59,20 @@ describe("DELETE /admin/agents/:id", () => {
   it("removes access, lists what to rotate, kills tokens and grants, drops at the gateway", async () => {
     const { owner, agent, tokenId, access } = await setup();
     const f1 = await sharedFolder(owner, agent), f2 = await sharedFolder(owner, agent);
-    const r1 = await record(owner, f1), r2 = await record(owner, f2), r3 = await record(owner);
+    await record(owner, f1); await record(owner, f2);
+    const r3 = await record(owner);
     await t.prisma.recordAccess.create({ data: { recordId: r3, holderType: "user", holderId: agent.id, permission: "use", wrappedRecordKey: "x", sealedTo: agent.publicKey, orgId: owner.orgId } });
     const grant = await t.prisma.agentGrant.create({ data: { agentId: agent.id, clientId: crypto.randomUUID(), grantedById: owner.id, refreshHash: "h", expiresAt: new Date(Date.now() + 864e5) } });
-    expect([r1, r2].length).toBe(2);
     expect((await agentCall(access, "GET", "/agent/sync")).statusCode).toBe(200);
+    // A trashed folder still needs rotating: it can be restored with the key the gateway held.
+    await t.prisma.folder.update({ where: { id: f2.id }, data: { deletedAt: new Date() } });
 
     const r = await call(owner, "DELETE", `/admin/agents/${agent.id}`, { reason: "leaked" });
     expect(r.statusCode).toBe(200);
     expect(r.json().rotate.records).toBe(3);
     expect(r.json().rotate.folders.map((f: { id: string }) => f.id).sort()).toEqual([f1.id, f2.id].sort());
-    expect(await t.prisma.folderMember.count({ where: { userId: agent.id } })).toBe(0);
+    // offboard leaves trashed folders alone (as for people); the trashed one is in `rotate` above instead.
+    expect(await t.prisma.folderMember.count({ where: { userId: agent.id, folder: { deletedAt: null } } })).toBe(0);
     expect(await t.prisma.recordAccess.count({ where: { holderType: "user", holderId: agent.id } })).toBe(0);
     expect(await t.prisma.membership.count({ where: { userId: agent.id } })).toBe(0);
     expect(await t.prisma.membershipKey.count({ where: { userId: agent.id } })).toBe(0);
