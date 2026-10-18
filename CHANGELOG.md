@@ -1,8 +1,8 @@
 # Changelog
 
-Images: `ghcr.io/clane-ai/clane-vault:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
+Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
-## Unreleased
+## 1.8.0 — 2026-10-18
 
 Upgrading: migrations `20261025000000_org_plans` (two enums, seven columns on `Organization`, nullable or with defaults) and `20261026000000_agent_access` (a `UserKind` enum, a `kind` column on `User` with the default `person`, and six new tables: `Agent`, `AgentToken`, `AgentOAuthClient`, `AgentOAuthCode`, `AgentGrant`, `GatewayIdentity`) run on start. No `.env` change unless you want hosted plans (`BILLING_MODE=hosted`, docs/plans.md) or agent access (below).
 
