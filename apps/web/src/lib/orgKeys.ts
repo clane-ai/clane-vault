@@ -1,7 +1,7 @@
 import {
   b64url, createMembershipKeys, keyFingerprint, ownerRecordKeyFromFolder, resealFolderKeyToMembership, resealRecordShareToMembership, rotateFolderKeySeal,
   rotateRecordShareSeal, sealFolderKeyFor, sealMembershipEscrow, sealOrgFolderKey, sealOrgRecordShare, shareRecordKey, unlockMembershipKeys, unwrapKey,
-  verifyAgentAttestation,
+  gatewayKeyId, verifyAgentAttestation,
   type MembershipKeys, type SealKeys, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import type { OrgApi } from "./api";
@@ -26,14 +26,15 @@ export interface Recipient {
   kind?: "person" | "agent"; email?: string; attestation?: string | null; gatewayKeyId?: string | null;
 }
 
-export async function sealFolderKeyTo(folderKey: Uint8Array, ids: { orgId: string; folderId: string }, to: Recipient) {
-  if (isAgent(to)) await verifyAgentKey(ids.orgId, to);
+/** `me`: the signed-in user, whose gateway pin an agent recipient is checked against. */
+export async function sealFolderKeyTo(folderKey: Uint8Array, ids: { orgId: string; folderId: string }, to: Recipient, me: string) {
+  if (isAgent(to)) await verifyAgentKey(me, ids.orgId, to);
   if (to.membershipKey) return { wrappedFolderKey: await sealOrgFolderKey(folderKey, ids, b64url.decode(to.membershipKey)), sealedTo: to.membershipKey };
   return { wrappedFolderKey: await sealFolderKeyFor(folderKey, ids.folderId, b64url.decode(to.publicKey)), sealedTo: null };
 }
 
-export async function sealShareTo(recordKey: Uint8Array, ids: { orgId: string; recordId: string }, to: Recipient) {
-  if (isAgent(to)) await verifyAgentKey(ids.orgId, to);
+export async function sealShareTo(recordKey: Uint8Array, ids: { orgId: string; recordId: string }, to: Recipient, me: string) {
+  if (isAgent(to)) await verifyAgentKey(me, ids.orgId, to);
   if (to.membershipKey) return { sealedRecordKey: await sealOrgRecordShare(recordKey, ids, b64url.decode(to.membershipKey)), sealedTo: to.membershipKey };
   return { sealedRecordKey: await shareRecordKey(recordKey, ids.recordId, b64url.decode(to.publicKey)), sealedTo: null };
 }
@@ -106,41 +107,70 @@ export const isAgent = (r: { kind?: string; attestation?: string | null; email?:
   r.kind === "agent" || !!r.attestation || !!r.email?.toLowerCase().endsWith("@agents.invalid");
 
 export interface GatewayIdentity { keyId: string; publicKey: string }
-/** One fixed slot per org: the gateway identity this device accepted (pinned from the admin Agents page). */
-const GATEWAY = (orgId: string) => storageKey(`cv.gateway.${orgId}`);
-export function pinnedGateway(orgId: string): GatewayIdentity | null {
+/** One fixed slot per signed-in user and org (like the person-key pins): the gateway identity this user accepted on this device. */
+const GATEWAY = (me: string, orgId: string) => storageKey(`cv.gateway.${me}.${orgId}`);
+export function pinnedGateway(me: string, orgId: string): GatewayIdentity | null {
   try {
-    const v = JSON.parse(localStorage.getItem(GATEWAY(orgId)) ?? "null") as GatewayIdentity | null;
+    const v = JSON.parse(localStorage.getItem(GATEWAY(me, orgId)) ?? "null") as GatewayIdentity | null;
     return v && typeof v.keyId === "string" && typeof v.publicKey === "string" ? { keyId: v.keyId, publicKey: v.publicKey } : null;
   } catch { return null; }
 }
-export function pinGateway(orgId: string, identity: GatewayIdentity) {
-  try { localStorage.setItem(GATEWAY(orgId), JSON.stringify({ keyId: identity.keyId, publicKey: identity.publicKey })); } catch { /* private mode */ }
+/** A keyId that isn't derived from the public key (`gatewayKeyId`) is refused: the pair would let attestations of another key pass. */
+const consistent = async (g: GatewayIdentity) => { try { return g.keyId === await gatewayKeyId(b64url.decode(g.publicKey)); } catch { return false; } };
+export async function pinGateway(me: string, orgId: string, identity: GatewayIdentity) {
+  if (!await consistent(identity)) throw new Error("Gateway identity refused: its key id doesn't match its public key");
+  try { localStorage.setItem(GATEWAY(me, orgId), JSON.stringify({ keyId: identity.keyId, publicKey: identity.publicKey })); } catch { /* private mode */ }
 }
 
 export type AgentAttestationReason = "missing" | "unpinned" | "gateway_changed" | "invalid";
 const ATTESTATION_MESSAGE: Record<AgentAttestationReason, string> = {
   missing: "The gateway's signature on this agent's key is missing, so nothing was shared. Ask an admin to check the agent.",
-  unpinned: "This device hasn't confirmed the agent gateway's identity yet, so it can't check this agent's key. An admin confirms it on the Agents page.",
+  unpinned: "Couldn't confirm the agent gateway's identity, so nothing was shared. Try again, or ask an admin.",
   gateway_changed: "This agent's key was signed by a different gateway than the one this device trusts, so nothing was shared. Ask an admin to check the gateway.",
   invalid: "The gateway did not sign this agent's key, so nothing was shared. Ask an admin to check the agent.",
 };
-/** Sealing to an agent refused: its key isn't attested by the gateway identity pinned on this device. */
+/** Sealing to an agent refused: its key isn't attested by the gateway identity pinned on this device. `agentId`: absent when no agent is involved yet. */
 export class AgentAttestationError extends Error {
-  constructor(readonly agentId: string, readonly reason: AgentAttestationReason) { super(ATTESTATION_MESSAGE[reason]); this.name = "AgentAttestationError"; }
+  constructor(readonly reason: AgentAttestationReason, readonly agentId?: string) { super(ATTESTATION_MESSAGE[reason]); this.name = "AgentAttestationError"; }
 }
+
+/**
+ * Trust on first use for the gateway identity: with nothing pinned yet, fetch `GET /org/agents/gateway` and pin it (a
+ * consistent keyId/publicKey pair only). Never repins: an identity pinned meanwhile that differs is `gateway_changed`, and a
+ * gateway that changes later shows up in `verifyAgentKey` (attestations by another keyId). Changing the pin is an admin
+ * action (Agents page). Called only before sealing to an agent, so people-only shares make no request.
+ * `pinnedNow`: this call pinned it (show the fingerprint).
+ */
+export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string, orgId: string): Promise<{ identity: GatewayIdentity; pinnedNow: boolean }> {
+  const pinned = pinnedGateway(me, orgId);
+  if (pinned) return { identity: pinned, pinnedNow: false };
+  let identity: GatewayIdentity;
+  try {
+    const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string; keyId?: string; publicKey?: string }>("/org/agents/gateway");
+    identity = { keyId: r.identityKeyId ?? r.keyId ?? "", publicKey: r.identityPublicKey ?? r.publicKey ?? "" };
+  } catch { throw new AgentAttestationError("unpinned"); }
+  if (!await consistent(identity)) throw new AgentAttestationError("unpinned");
+  const meanwhile = pinnedGateway(me, orgId);
+  if (meanwhile) {
+    if (meanwhile.keyId !== identity.keyId || meanwhile.publicKey !== identity.publicKey) throw new AgentAttestationError("gateway_changed");
+    return { identity: meanwhile, pinnedNow: false };
+  }
+  await pinGateway(me, orgId, identity);
+  return { identity, pinnedNow: true };
+}
+
 /**
  * Called before sealing to an agent: the key sealing would use must carry the pinned gateway's signature over
  * `agent-key:<orgId>:<agentId>:<key>`. Otherwise the server could list a key of its own and read what's shared.
  */
-export async function verifyAgentKey(orgId: string, agent: Recipient): Promise<void> {
-  const gw = pinnedGateway(orgId);
-  if (!gw) throw new AgentAttestationError(agent.id, "unpinned");
+export async function verifyAgentKey(me: string, orgId: string, agent: Recipient): Promise<void> {
+  const gw = pinnedGateway(me, orgId);
+  if (!gw) throw new AgentAttestationError("unpinned", agent.id);
   const att = agent.attestation;
-  if (!att) throw new AgentAttestationError(agent.id, "missing");
-  if ((agent.gatewayKeyId && agent.gatewayKeyId !== gw.keyId) || att.split(".")[1] !== gw.keyId) throw new AgentAttestationError(agent.id, "gateway_changed");
+  if (!att) throw new AgentAttestationError("missing", agent.id);
+  if ((agent.gatewayKeyId && agent.gatewayKeyId !== gw.keyId) || att.split(".")[1] !== gw.keyId) throw new AgentAttestationError("gateway_changed", agent.id);
   const publicKey = agent.membershipKey ?? agent.publicKey;
-  if (!await verifyAgentAttestation(att, { orgId, agentId: agent.id, publicKey }, gw)) throw new AgentAttestationError(agent.id, "invalid");
+  if (!await verifyAgentAttestation(att, { orgId, agentId: agent.id, publicKey }, gw)) throw new AgentAttestationError("invalid", agent.id);
 }
 
 // ---- The membership job ----

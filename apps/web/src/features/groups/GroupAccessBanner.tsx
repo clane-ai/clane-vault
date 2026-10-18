@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSession } from "@/lib/session";
-import { AgentAttestationError, fingerprintOf, isAgent, pinStatus } from "@/lib/orgKeys";
+import { fingerprintOf, isAgent, pinStatus } from "@/lib/orgKeys";
 import { AgentWarning } from "@/features/vault/AgentWarning";
 import { AgentChip } from "@/features/vault/people";
 import { PERMISSION_LABEL, type VaultFolder } from "@/features/vault/types";
@@ -39,8 +39,12 @@ export function GroupAccessBanner({ folders }: { folders: VaultFolder[] }) {
             {[...new Set(waiting.map((p) => p.folderId))].map((fid) => (
               <FolderRequests key={fid} folder={folders.find((f) => f.id === fid)} people={waiting.filter((p) => p.folderId === fid)}
                 onApprove={async (people) => {
-                  try { const r = await approve(fid, people); toast.success(r.skipped ? `Access given to ${r.added.length}; ${r.skipped} changed meanwhile, review again.` : `Access given to ${r.added.length}`); }
-                  catch (e) { if (e instanceof AgentAttestationError) return e.message; toast.error("Couldn't give access. Try again."); }
+                  try {
+                    const r = await approve(fid, people);
+                    if (r.added.length || !r.refused.length) toast.success(r.skipped ? `Access given to ${r.added.length}; ${r.skipped} changed meanwhile, review again.` : `Access given to ${r.added.length}`);
+                    // Agents whose key the gateway didn't attest: left waiting, named with the reason.
+                    if (r.refused.length) return r.refused.map((e) => `Not given to ${people.find((p) => p.userId === e.agentId)?.name ?? "an agent"}: ${e.message}`).join(" ");
+                  } catch { toast.error("Couldn't give access. Try again."); }
                 }}
                 onDecline={async (ids) => { try { await decline(fid, ids); toast.success("Declined"); } catch { toast.error("Couldn't decline. Try again."); } }} />
             ))}

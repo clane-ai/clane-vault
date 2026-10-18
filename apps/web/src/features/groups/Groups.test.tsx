@@ -168,21 +168,51 @@ describe("agents in groups (attested by the pinned gateway; Use only; the restri
     expect(warning).toHaveTextContent(AGENT_WARNING);
     const approve = within(req).getByRole("button", { name: "Approve" });
     expect(warning.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // No gateway identity pinned on this device: refused, nothing sealed.
+    // The gateway identity can't be confirmed (unreachable, nothing pinned): refused, nothing sealed.
+    server.use(http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: "gateway_unavailable" }, { status: 503 })));
     await userEvent.click(approve);
-    expect(await screen.findByText(/hasn't confirmed the agent gateway's identity/)).toBeInTheDocument();
+    expect(await within(req).findByRole("alert")).toHaveTextContent(/Not given to Billing bot: Couldn't confirm the agent gateway's identity/);
     expect(approved).toBeNull();
-    pinGateway(ORG.id, bot.gateway);
+    await pinGateway("a1", ORG.id, bot.gateway);
     await userEvent.click(within(req).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(approved).not.toBeNull());
     expect(await openFolderKey(approved!.wraps[0]!.wrappedFolderKey, folder.id, bot.keys)).toEqual(folderKey);
+  });
+
+  it("approving people and an agent the gateway didn't attest: the people get access, the agent is named as refused", async () => {
+    const { GroupAccessBanner } = await import("./GroupAccessBanner");
+    const { createMembershipKeys } = await import("@clane-vault/crypto");
+    const bot = await enrolledAgent("ag1");
+    // First use: pinned from the server.
+    server.use(http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ url: "https://gw/mcp", identityKeyId: bot.gateway.keyId, identityPublicKey: bot.gateway.publicKey })));
+    const folder: VaultFolder = { id: crypto.randomUUID(), name: "Infra", kind: "team", deleted: false, ownerId: "a1", myPermission: "owner", folderKey: randomBytes(32), members: [],
+      groups: [{ id: "g1", name: "Ops", permission: "view", memberIds: ["m1", "ag1"] }] };
+    const mia = await createMembershipKeys(randomBytes(32), { orgId: ORG.id, userId: "m1" });
+    const via = [{ groupId: "g1", groupName: "Ops", addedBy: null }];
+    const pending = [
+      { folderId: folder.id, userId: "m1", name: "Mia", email: "mia@clane.ai", publicKey: "", membershipKey: mia.material.publicKey, permission: "view", groups: ["Ops"], declined: false, via },
+      { folderId: folder.id, userId: "ag1", name: "Billing bot", email: "agent+ag1@agents.invalid", kind: "agent", publicKey: b64url.encode((await generateKeyPair()).publicKey), membershipKey: null,
+        attestation: bot.attestation, gatewayKeyId: bot.gatewayKeyId, permission: "use", groups: ["Ops"], declined: false, via },
+    ];
+    let approved = null as null | { wraps: { userId: string }[] };
+    server.use(
+      http.get("/api/v1/group-access/pending", () => HttpResponse.json({ pending })),
+      http.post("/api/v1/folders/:id/group-access", async ({ request }) => { approved = (await request.json()) as never; return HttpResponse.json({ added: ["m1"], skipped: 0 }); }),
+    );
+    wrap(<GroupAccessBanner folders={[folder]} />);
+    await userEvent.click(within(await screen.findByRole("status", { name: "Group access requests" })).getByRole("button", { name: "Review" }));
+    const req = await screen.findByRole("region", { name: "Requests for Infra" });
+    await userEvent.click(within(req).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approved).not.toBeNull());
+    expect(approved!.wraps.map((w) => w.userId)).toEqual(["m1"]);
+    expect(await within(req).findByRole("alert")).toHaveTextContent(/Not given to Billing bot: The gateway did not sign this agent's key/);
   });
 
   it("sharing a folder with a group that has an agent shows the warning above Share; an agent whose key the gateway didn't sign is left out (it waits for approval)", async () => {
     const { AGENT_WARNING } = await import("@/features/vault/AgentWarning");
     const { pinGateway } = await import("@/lib/orgKeys");
     const bot = await enrolledAgent("ag1");
-    pinGateway(ORG.id, bot.gateway);
+    await pinGateway("a1", ORG.id, bot.gateway);
     const ben = await generateKeyPair();
     const folder: VaultFolder = { id: crypto.randomUUID(), name: "Infra", kind: "team", deleted: false, ownerId: "a1", myPermission: "owner", folderKey: randomBytes(32), groups: [],
       members: [{ userId: "a1", name: "Ada", email: "ada@clane.ai", publicKey: "", permission: "owner", directPermission: "owner" }] };

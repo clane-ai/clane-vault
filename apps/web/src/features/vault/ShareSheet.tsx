@@ -12,6 +12,7 @@ import { InOrg } from "@/lib/scope";
 import { isAgent } from "@/lib/orgKeys";
 import { recordPath, spacePrefix } from "@/lib/paths";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { RecordAvatar } from "./RecordAvatar";
 import { AgentChip, Chip, Fingerprint, PermissionSelect, PersonAvatar } from "./people";
@@ -153,6 +154,8 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
                     <h3 className={eyebrow}>People with access</h3>
                     {total > 0 && <span className="font-mono text-[11px] text-text-tertiary">{total}</span>}
                   </div>
+                  {/* "Share again" to an agent reseals to it: the warning stands above that button too. */}
+                  {shares.some((s) => { const p = personOf(s.userId); return s.needsAccess && !!p?.membershipKey && isAgent(p); }) && <AgentWarning />}
                   {total > 0 && <ul aria-label="Shared with" className="overflow-hidden rounded-[12px] border border-border-default bg-card">
                     {ownerId && ownerName && (
                       <AccessRow id={ownerId} name={ownerName} email={personOf(ownerId)?.email} publicKey={personOf(ownerId)?.membershipKey ?? personOf(ownerId)?.publicKey} via="Owner"

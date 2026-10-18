@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isAgent } from "@/lib/orgKeys";
+import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { PermissionSelect, PersonRow } from "./people";
 import type { Grant, Person } from "./types";
@@ -48,6 +49,7 @@ export function TeamFolderDialog({ open, onSave, onCancel }: { open: boolean; on
             )}
           </div>
           {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
+          {people.some((p) => isAgent(p.person)) && <AgentWarning />}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => { reset(); onCancel(); }}>Cancel</Button>
             <Button type="submit" disabled={busy}>{busy ? "Creating…" : "Create"}</Button>

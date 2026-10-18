@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Mail, Search, ShieldCheck, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AgentAttestationError, isAgent, KeyChangedError, pinKey, pinStatus, verifyAgentKey } from "@/lib/orgKeys";
+import { AgentAttestationError, ensureGatewayPinned, isAgent, KeyChangedError, pinKey, pinStatus, verifyAgentKey } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
 import { AgentWarning } from "./AgentWarning";
@@ -33,6 +33,14 @@ export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: st
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [, setAccepted] = useState(0);
+  // The gateway identity, when choosing an agent just pinned it on this device (trust on first use): its fingerprint is shown.
+  const [newGateway, setNewGateway] = useState<string | null>(null);
+  const oapi = useOrgApi();
+  const pinGatewayFor = async () => {
+    if (!user || !org) throw new Error("No organisation");
+    const g = await ensureGatewayPinned(oapi, user.id, org.id);
+    if (g.pinnedNow) setNewGateway(g.identity.publicKey);
+  };
   const options = (people.data ?? []).filter((p) => p.id !== user?.id && !exclude.includes(p.id));
   const pending = (invited.data?.invites ?? []).filter((i) => !(people.data ?? []).some((p) => p.email === i.email));
 
@@ -42,7 +50,7 @@ export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: st
     setBusy(true); setError(null);
     try {
       // Checked here too (sealing checks again), so a team folder being set up never lists an agent whose key isn't attested.
-      if (isAgent(p)) { if (!org) throw new Error("No organisation"); await verifyAgentKey(org.id, p); }
+      if (isAgent(p)) { await pinGatewayFor(); await verifyAgentKey(user!.id, org!.id, p); }
       await onAdd(p, isAgent(p) ? "use" : permission); setPersonId("");
     }
     catch (e) {
@@ -59,9 +67,13 @@ export function PeoplePicker({ exclude, onAdd, addLabel = "Add" }: { exclude: st
   const previous = pin?.previous?.replace(/^acct:/, "");
   return (
     <div className="flex flex-col gap-2.5">
-      {agent && <AgentWarning />}
+      {agent && <AgentWarning newGateway={newGateway} />}
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={personId} onValueChange={(v) => { setPersonId(v); setError(null); }}>
+        <Select value={personId} onValueChange={(v) => {
+          setPersonId(v); setError(null);
+          const p = options.find((x) => x.id === v);
+          if (p && isAgent(p)) void pinGatewayFor().catch(() => undefined); // a failure is reported on Add
+        }}>
           <SelectTrigger aria-label="Person" className="h-10 min-w-0 flex-[1_1_160px] pl-2.5">
             <SelectValue placeholder={<span className="flex items-center gap-2 pl-0.5"><Search className="size-4 text-text-tertiary" />{people.isLoading ? "Loading people…" : options.length ? "Choose a person" : "No one else to add"}</span>}>
               {selected && <span className="flex min-w-0 items-center gap-2"><PersonAvatar id={selected.id} name={selected.name} size={24} agent={agent} /><span className="truncate">{selected.name}</span></span>}
