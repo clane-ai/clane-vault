@@ -19,6 +19,8 @@ a server with three attached files, a software licence and Wi-Fi networks](docs/
 - Several organisations per account, each with its own keys.
 - Bulk invites, groups, policies, single sign-on with Entra ID or Google (OpenID Connect), a risk dashboard, an event
   log and built-in encrypted backups.
+- Optional agent access: Claude, ChatGPT and other AI agents connect over MCP and use the credentials shared with them,
+  on the sites each credential allows, without seeing them. See [docs/agents.md](docs/agents.md).
 - A web app, an installable app, and a browser extension for Chrome, Edge and Firefox.
 - Import from Keeper, LastPass, 1Password, Bitwarden, Zoho Vault, Dashlane and CSV. Imports from Keeper, Bitwarden,
   1Password, LastPass and Dashlane keep record types.
@@ -33,7 +35,8 @@ Users  →  HTTPS reverse proxy  →  Clane Vault (one container)  →  Postgres
 
 One image, `ghcr.io/clane-ai/clane-vault`. It runs at its own address or under a path such as
 `https://intranet.example.com/vault`, and runs its database migrations on start. There is no telemetry and no
-licence server. The only outbound call the app makes is the optional breached-password check: members who turn it on
+licence server. Apart from the agent gateway's calls when you turn agent access on (below), the only outbound call
+the app makes is the optional breached-password check: members who turn it on
 send the first 5 characters of a password's SHA-1 hash to Have I Been Pwned, and an organisation policy can switch it
 off.
 
@@ -46,6 +49,11 @@ docker compose exec clane-vault node dist/src/scripts/bootstrap.js --email you@e
 The installer writes `.env` with random secrets, optionally starts a bundled Postgres, and waits for the health
 check. The second command prints a one-time link for the first admin. The full guide, including reverse proxies,
 backups, updates and attachment storage, is in [deploy/client/README.md](deploy/client/README.md).
+
+Agent access is off unless you set it up. It adds a second container, the agent gateway
+(`ghcr.io/clane-ai/clane-vault-agent-gateway`), which holds the agents' keys and makes their outbound calls. It
+starts with the `agents` profile of the same compose file. Setup:
+[deploy/client/README.md, Agent access (optional)](deploy/client/README.md#agent-access-optional).
 
 ## Security model
 
@@ -61,6 +69,8 @@ backups, updates and attachment storage, is in [deploy/client/README.md](deploy/
   never the personal vault.
 - Stored in plain text: member names and emails, organisation and group names, record categories (login or item)
   and the event log.
+- Agent access is the one exception: whoever runs the agent gateway can read the items shared with an agent. See
+  [SECURITY.md](SECURITY.md#agent-access-the-disclosed-exception).
 
 **Pre-audit: use for evaluation.** No external security audit has been done yet. The designs are in [docs/design/](docs/design/), and
 [docs/sharing.md](docs/sharing.md) describes what a compromised server could and couldn't do. To report a
