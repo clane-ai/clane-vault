@@ -1,6 +1,8 @@
 import { b64url, utf8 } from "./encoding.js";
 import { coreKeysOf, dataKeysOf, type RecordType } from "./recordTypes.js";
 import type { RecordBody } from "./records.js";
+import { openSealed, sealTo } from "./seal.js";
+import type { SealKeys } from "./sharing.js";
 
 export const AGENT_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type AgentMethod = (typeof AGENT_METHODS)[number];
@@ -120,20 +122,41 @@ export async function gatewayKeyId(publicKeyRaw: Uint8Array): Promise<string> {
 
 type Ids = { orgId: string; agentId: string; publicKey: string };
 
-/** "g1.<keyId>.<sig>" */
-export async function signAgentKey(identityPrivatePkcs8: Uint8Array, keyId: string, ids: Ids): Promise<string> {
+export interface PersonalIds { ownerUserId: string; ownerPublicKey: string; agentId: string; publicKey: string }
+export const personalAgentKeyMessage = (i: PersonalIds) => `personal-agent-key:${i.ownerUserId}:${i.ownerPublicKey}:${i.agentId}:${i.publicKey}`;
+export const personalAgentPrivateKeyAad = (i: PersonalIds) => `agent-private-key:personal:${i.ownerUserId}:${i.ownerPublicKey}:${i.agentId}:${i.publicKey}`;
+export const personalAgentRecordAad = (ownerUserId: string, agentId: string, recordId: string) => `personal-agent-record:${ownerUserId}:${agentId}:${recordId}`;
+
+export type GatewaySigTag = "g1" | "d1" | "u1" | "q1";
+
+/** "<tag>.<keyId>.<sig>": Ed25519 over the UTF-8 of `message`. */
+export async function signGatewayMessage(identityPrivatePkcs8: Uint8Array, keyId: string, tag: GatewaySigTag, message: string): Promise<string> {
   const key = await crypto.subtle.importKey("pkcs8", identityPrivatePkcs8 as BufferSource, "Ed25519", false, ["sign"]);
-  const sig = new Uint8Array(await crypto.subtle.sign("Ed25519", key, utf8.encode(agentKeyMessage(ids.orgId, ids.agentId, ids.publicKey)) as BufferSource));
-  return `g1.${keyId}.${b64url.encode(sig)}`;
+  const sig = new Uint8Array(await crypto.subtle.sign("Ed25519", key, utf8.encode(message) as BufferSource));
+  return `${tag}.${keyId}.${b64url.encode(sig)}`;
 }
 
-export async function verifyAgentAttestation(att: string, ids: Ids, identity: { keyId: string; publicKey: string }): Promise<boolean> {
+/** False on a wrong tag, key id, signature or any malformed input; never throws. */
+export async function verifyGatewayMessage(sig: string, tag: GatewaySigTag, message: string, identity: { keyId: string; publicKey: string }): Promise<boolean> {
   try {
-    const [tag, keyId, sig, ...rest] = att.split(".");
-    if (tag !== "g1" || rest.length || !sig || keyId !== identity.keyId) return false;
+    const [t, keyId, s, ...rest] = sig.split(".");
+    if (t !== tag || rest.length || !s || keyId !== identity.keyId) return false;
     const key = await crypto.subtle.importKey("raw", b64url.decode(identity.publicKey) as BufferSource, "Ed25519", false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, b64url.decode(sig) as BufferSource, utf8.encode(agentKeyMessage(ids.orgId, ids.agentId, ids.publicKey)) as BufferSource);
+    return await crypto.subtle.verify("Ed25519", key, b64url.decode(s) as BufferSource, utf8.encode(message) as BufferSource);
   } catch {
     return false;
   }
 }
+
+export const signAgentKey = (pkcs8: Uint8Array, keyId: string, ids: Ids) => signGatewayMessage(pkcs8, keyId, "g1", agentKeyMessage(ids.orgId, ids.agentId, ids.publicKey));
+export const verifyAgentAttestation = (att: string, ids: Ids, identity: { keyId: string; publicKey: string }) =>
+  verifyGatewayMessage(att, "g1", agentKeyMessage(ids.orgId, ids.agentId, ids.publicKey), identity);
+export const signPersonalAgentKey = (pkcs8: Uint8Array, keyId: string, i: PersonalIds) => signGatewayMessage(pkcs8, keyId, "g1", personalAgentKeyMessage(i));
+export const verifyPersonalAgentAttestation = (att: string, i: PersonalIds, identity: { keyId: string; publicKey: string }) =>
+  verifyGatewayMessage(att, "g1", personalAgentKeyMessage(i), identity);
+
+type RecordIds = { ownerUserId: string; agentId: string; recordId: string };
+export const sealPersonalAgentRecordKey = (recordKey: Uint8Array, ids: RecordIds, agentPublicKey: Uint8Array) =>
+  sealTo(agentPublicKey, recordKey, personalAgentRecordAad(ids.ownerUserId, ids.agentId, ids.recordId));
+export const openPersonalAgentRecordKey = (sealed: string, ids: RecordIds, keys: SealKeys) =>
+  openSealed(keys.privateKey, keys.publicKey, sealed, personalAgentRecordAad(ids.ownerUserId, ids.agentId, ids.recordId));
