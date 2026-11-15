@@ -112,7 +112,9 @@ model User {
   /// agent: a machine member (docs/agents.md). No password, 2FA or email delivery: authHash, kdfSalt, wrappedUserKey and
   /// wrappedPrivateKey are "" and kdfParams {}. publicKey is the agent's one key (also its MembershipKey).
   kind              UserKind   @default(person)
-  agent             Agent?
+  agent             Agent?     @relation("agentUser")
+  /// Personal agents this person owns (docs/design/2026-11-15-personal-agents.md).
+  personalAgents    Agent[]    @relation("personalAgents")
 
   @@index([demoExpiresAt])
   @@index([kind])
@@ -953,9 +955,12 @@ model ServerSecretCheck {
 /// One row per agent member (1:1 with its User). The private key exists only inside the gateway's KMS envelope.
 model Agent {
   userId            String       @id @db.Uuid
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orgId             String       @db.Uuid
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user              User         @relation("agentUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// Exactly one of orgId (an organisation agent) and ownerUserId (a personal agent) is set (CHECK in the migration).
+  orgId             String?      @db.Uuid
+  org               Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  ownerUserId       String?      @db.Uuid
+  owner             User?        @relation("personalAgents", fields: [ownerUserId], references: [id], onDelete: Cascade)
   createdById       String       @db.Uuid
   publicKey         String       @unique
   /// "k1.<kekId>.<wrappedDek>.<v1. envelope>": the X25519 private key under a per-agent DEK, the DEK under the gateway's
@@ -979,6 +984,7 @@ model Agent {
   grants            AgentGrant[]
 
   @@index([orgId])
+  @@index([ownerUserId])
 }
 
 /// Static bearer token for API/SDK clients: the token itself is shown once; only its hash is kept.

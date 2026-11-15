@@ -64,7 +64,7 @@ export function agentSigningKey(a: AgentConfig) {
   return k;
 }
 
-export async function signAgentAccess(cfg: Config, p: { agentId: string; orgId: string; grant: string }): Promise<{ token: string; expiresIn: 900 }> {
+export async function signAgentAccess(cfg: Config, p: { agentId: string; orgId?: string; grant: string }): Promise<{ token: string; expiresIn: 900 }> {
   const { priv, jwk } = await agentSigningKey(cfg.agents!);
   const token = await new SignJWT({ scope: "agent", org: p.orgId, grant: p.grant }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
     .setSubject(p.agentId).setAudience(cfg.agents!.gatewayPublicUrl).setIssuer(cfg.publicUrl).setJti(randomUUID())

@@ -87,7 +87,7 @@ export async function revokeGrant(app: FastifyInstance, where: Prisma.AgentGrant
   if (!g) return false;
   const done = await app.prisma.$transaction(async (tx) => {
     if ((await tx.agentGrant.updateMany({ where: { id: g.id, revokedAt: null }, data: { revokedAt: new Date() } })).count !== 1) return false;
-    await logEvent(tx, { orgId: g.agent.orgId, actorId: ev.actorId, action: "agent.grant_revoke", targetUserId: g.agentId,
+    await logEvent(tx, { orgId: g.agent.orgId ?? undefined, actorId: ev.actorId, action: "agent.grant_revoke", targetUserId: g.agentId,
       meta: { grantId: g.id, ...(ev.reason ? { reason: ev.reason } : {}) }, ...reqMeta(ev.req) });
     return true;
   });
@@ -138,7 +138,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const rows = await app.prisma.agent.findMany({ where: { ...grantableAgent(new Date()),
       org: { memberships: { some: { userId: req.auth.userId, status: "active", role: { in: ["owner", "admin"] } } } } },
       orderBy: { createdAt: "asc" }, select: { userId: true, orgId: true, user: { select: { name: true } }, org: { select: { name: true } } } });
-    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org.name })) };
+    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org?.name ?? null })) };
   });
 
   /** Consent by an owner or admin of the agent's org (X-Org-Id, so that org's SSO and IP policies apply). */
@@ -191,7 +191,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const presented = Buffer.from(hashToken(form.token), "hex"), stored = Buffer.from(row?.tokenHash ?? "", "hex");
     if (!row || stored.length !== presented.length || !timingSafeEqual(stored, presented)) return reply.code(400).send({ error: "invalid_grant" });
     await app.prisma.agentToken.update({ where: { id: row.id }, data: { lastUsedAt: now } });
-    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: row.agent.orgId, grant: row.id });
+    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: row.agent.orgId ?? undefined, grant: row.id });
     return { access_token: token, token_type: "Bearer", expires_in: expiresIn };
   };
   const invalidGrant = (reply: FastifyReply) => reply.code(400).send({ error: "invalid_grant" });
@@ -210,17 +210,17 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     if (!pkceOk || row.expiresAt <= now || row.clientId !== clientId || row.redirectUri !== redirectUri) return invalidGrant(reply);
     const client = await app.prisma.agentOAuthClient.findUnique({ where: { id: row.clientId }, select: { name: true } });
     const refresh = refreshFor(app.config, id, 0);
-    const orgId = await app.prisma.$transaction(async (tx) => {
+    const agent = await app.prisma.$transaction(async (tx) => {
       // Single use: of two concurrent exchanges only one claims the code.
       if ((await tx.agentOAuthCode.updateMany({ where: { codeHash, usedAt: null }, data: { usedAt: now } })).count !== 1) return null;
       const a = await tx.agent.findFirst({ where: { userId: row.agentId, ...grantableAgent(now) }, select: { orgId: true } });
       if (!a || !client) return null;
       await tx.agentGrant.create({ data: { id, agentId: row.agentId, clientId: row.clientId, grantedById: row.grantedById, refreshHash: refresh.hash, expiresAt: new Date(now.getTime() + GRANT_TTL_MS) } });
-      await logEvent(tx, { orgId: a.orgId, actorId: row.grantedById, action: "agent.grant", targetUserId: row.agentId, meta: { clientName: client.name, grantId: id }, ...reqMeta(req) });
-      return a.orgId;
+      await logEvent(tx, { orgId: a.orgId ?? undefined, actorId: row.grantedById, action: "agent.grant", targetUserId: row.agentId, meta: { clientName: client.name, grantId: id }, ...reqMeta(req) });
+      return a;
     });
-    if (!orgId) return invalidGrant(reply);
-    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId, grant: id });
+    if (!agent) return invalidGrant(reply);
+    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: agent.orgId ?? undefined, grant: id });
     return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refresh.token };
   };
 
@@ -245,7 +245,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const gen = refreshGenOf(app.config, g.id, g.refreshGen, p.secret);
     if (gen === null) return invalidGrant(reply); // a stranger's guess never ends someone's grant
     const sign = async (r: Row, refreshToken: string) => {
-      const { token, expiresIn } = await signAgentAccess(app.config, { agentId: r.agentId, orgId: r.agent.orgId, grant: r.id });
+      const { token, expiresIn } = await signAgentAccess(app.config, { agentId: r.agentId, orgId: r.agent.orgId ?? undefined, grant: r.id });
       return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refreshToken };
     };
     if (gen === g.refreshGen) {

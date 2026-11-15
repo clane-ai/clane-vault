@@ -50,8 +50,8 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
   async function agentIn(req: FastifyRequest, reply: FastifyReply) {
     const { id } = idParam.parse(req.params);
     const a = await app.prisma.agent.findFirst({ where: { userId: id, orgId: orgId(req) } });
-    if (!a) await reply.code(404).send({ error: "not_found" });
-    return a;
+    if (!a) { await reply.code(404).send({ error: "not_found" }); return null; }
+    return { ...a, orgId: orgId(req) }; // the filter above makes it non-null
   }
 
   app.post("/", async (req, reply) => {

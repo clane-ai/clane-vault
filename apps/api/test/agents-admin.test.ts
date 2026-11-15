@@ -8,7 +8,7 @@ import { checkGatewayAtStart, GatewayIdentityChanged, gatewayClient, GatewayUnav
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
+const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false, personalAgents: true };
 const t = await makeTestApp({ agents });
 const hosted = await makeTestApp({ agents, billingMode: "hosted" });
 const off = await makeTestApp({});

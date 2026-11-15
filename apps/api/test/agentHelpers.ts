@@ -19,3 +19,16 @@ export async function createTestAgent(t: { prisma: PrismaClient }, o: { orgId: s
   ]);
   return { id, publicKey, privateKey: pair.privateKey };
 }
+
+/** A personal agent's rows (no Membership, no MembershipKey): the User, and an Agent with ownerUserId set and orgId null. */
+export async function createTestPersonalAgent(t: { prisma: PrismaClient }, o: { ownerUserId: string; revoked?: boolean }): Promise<{ id: string; publicKey: string }> {
+  const pair = await generateKeyPair();
+  const id = randomUUID(), publicKey = b64url.encode(pair.publicKey);
+  await t.prisma.$transaction([
+    t.prisma.user.create({ data: { id, kind: "agent", email: agentEmail(id), name: "Personal agent", status: "active",
+      authHash: "", kdfSalt: "", kdfParams: {}, wrappedUserKey: "", publicKey, wrappedPrivateKey: "" } }),
+    t.prisma.agent.create({ data: { userId: id, ownerUserId: o.ownerUserId, createdById: o.ownerUserId, publicKey, wrappedPrivateKey: "k2.test-kek.dek.v1.test", kekId: "test-kek",
+      attestation: "g1.test.sig", ...(o.revoked ? { revokedAt: new Date() } : {}) } }),
+  ]);
+  return { id, publicKey };
+}

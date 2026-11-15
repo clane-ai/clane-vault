@@ -69,12 +69,12 @@ export async function canManageAccount(prisma: Db, config: Config, actorId: stri
 }
 
 /** The caller's active organisations (for sign-in responses and the org switcher). */
-export async function orgsOf(prisma: Db, cfg: Pick<Config, "billingMode">, userId: string) {
+export async function orgsOf(prisma: Db, cfg: Pick<Config, "billingMode" | "agents">, userId: string) {
   const d = await defaultOrg(prisma);
   const ms = await prisma.membership.findMany({ where: { userId, status: "active" }, orderBy: { createdAt: "asc" },
     select: { role: true, org: { select: { ...PLAN_SELECT, id: true, name: true, slug: true, policies: true, logo: { select: { sha256: true } } } } } });
   // Each org's policies travel with the membership (docs/policies.md): clients enforce the ones that are theirs to.
-  return ms.map((m) => ({ id: m.org.id, name: m.org.name, slug: m.org.slug, role: m.role, isDefault: m.org.id === d?.id, policies: clientPolicies(readPolicies(m.org.policies, getEntitlements(cfg, m.org))),
+  return ms.map((m) => ({ id: m.org.id, name: m.org.name, slug: m.org.slug, role: m.role, isDefault: m.org.id === d?.id, policies: clientPolicies(readPolicies(m.org.policies, getEntitlements(cfg, m.org)), cfg),
     // The logo's version (docs/branding.md): clients fetch /orgs/:id/logo?v=<it>; null when there's none.
     logoVersion: logoVersion(m.org.logo?.sha256) }));
 }

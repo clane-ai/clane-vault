@@ -9,7 +9,7 @@ import { sweepOAuthClients } from "../src/routes/oauth.js";
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
 const GW = "https://gw.test/mcp";
-const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: GW, gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
+const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: GW, gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false, personalAgents: true };
 const t = await makeTestApp({ agents });
 const based = await makeTestApp({ agents, publicUrl: "https://vault.test/app", basePath: "/app" });
 const off = await makeTestApp({});
