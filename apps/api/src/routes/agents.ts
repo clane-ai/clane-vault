@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { createPublicKey, randomUUID, verify } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { displayName } from "../lib/names.js";
 import { logEvent } from "../lib/events.js";
 import { lockUser, offboard } from "../lib/orgs.js";
-import { agentEmail, assertAgentSlot, fingerprintOf } from "../lib/agents.js";
+import { agentEmail, assertAgentSlot, attestationOk, fingerprintOf } from "../lib/agents.js";
 import { GatewayUnavailable, pinGatewayIdentity, type GatewayIdentityInfo } from "../lib/gateway.js";
 import { isPublicKeyB64 } from "../lib/membershipKeys.js";
 import { newAgentToken } from "../lib/tokens.js";
@@ -16,24 +16,14 @@ const tokenParam = z.object({ tokenId: z.string().uuid() }).passthrough();
 const grantParam = z.object({ grantId: z.string().uuid() }).passthrough();
 
 /** Serialised with revoke (which locks the user first): true when the agent is still live inside this transaction. */
-async function stillLive(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
+export async function stillLive(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
   await lockUser(tx, userId);
   return !!(await tx.agent.findFirst({ where: { userId, revokedAt: null }, select: { userId: true } }));
 }
-const expiry = z.string().datetime({ offset: true }).transform((s) => new Date(s)).refine((d) => d.getTime() > Date.now(), { message: "past" }).nullable();
-
-/** "g1.<keyId>.<sig>": Ed25519 over "agent-key:<orgId>:<agentId>:<publicKey>" by the pinned identity (packages/crypto agents.ts). */
-function attestationOk(att: string, ids: { orgId: string; agentId: string; publicKey: string }, identity: GatewayIdentityInfo): boolean {
-  const [tag, keyId, sig, ...rest] = att.split(".");
-  if (tag !== "g1" || rest.length || !sig || keyId !== identity.keyId) return false;
-  try {
-    return verify(null, Buffer.from(`agent-key:${ids.orgId}:${ids.agentId}:${ids.publicKey}`, "utf8"),
-      createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: identity.publicKey }, format: "jwk" }), Buffer.from(sig, "base64url"));
-  } catch { return false; }
-}
+export const expiry = z.string().datetime({ offset: true }).transform((s) => new Date(s)).refine((d) => d.getTime() > Date.now(), { message: "past" }).nullable();
 
 /** health → pin: what every caller that needs the gateway identity goes through. Throws GatewayUnavailable / GatewayIdentityChanged. */
-async function ensureIdentity(app: FastifyInstance): Promise<GatewayIdentityInfo> {
+export async function ensureIdentity(app: FastifyInstance): Promise<GatewayIdentityInfo> {
   const seen = await app.gateway.health();
   await pinGatewayIdentity(app.prisma, seen, { accept: app.config.agents!.acceptNewGatewayIdentity, log: app.log });
   return seen;
@@ -76,6 +66,17 @@ export const agentAdminRoutes: FastifyPluginAsync = async (app) => {
     // The fingerprints are a convenience: the browser recomputes both and never trusts these.
     return reply.code(201).send({ id, name: b.name, publicKey: key.publicKey, fingerprint: fingerprintOf(key.publicKey), attestation: key.attestation,
       gateway: { keyId: gateway.keyId, publicKey: gateway.publicKey, fingerprint: fingerprintOf(gateway.publicKey) } });
+  });
+
+  /** Counts only: who owns how many live personal agents among this organisation's active members. No agent id, name or item count. */
+  app.get("/personal-count", async (req, reply) => {
+    if (!app.config.agents!.personalAgents) return reply.code(404).send({ error: "not_found" });
+    const org = orgId(req);
+    const [rows, members] = await Promise.all([
+      app.prisma.agent.groupBy({ by: ["ownerUserId"], where: { revokedAt: null, ownerUserId: { not: null }, owner: { memberships: { some: { orgId: org, status: "active" } } } }, _count: true }),
+      app.prisma.membership.count({ where: { orgId: org, status: "active", user: { kind: "person" } } }),
+    ]);
+    return { agents: rows.reduce((n, r) => n + r._count, 0), members, perMember: rows.map((r) => ({ userId: r.ownerUserId!, count: r._count })) };
   });
 
   app.get("/", async (req) => {

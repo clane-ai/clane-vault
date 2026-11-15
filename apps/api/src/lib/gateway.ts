@@ -22,14 +22,16 @@ export class GatewayIdentityChanged extends Error {
 export interface GatewayClient {
   health(): Promise<GatewayIdentityInfo>;
   createAgentKey(ids: { agentId: string; orgId: string }): Promise<AgentKeyResult>;
+  /** A personal agent's key: the wrapper (k2.) and the attestation are bound to the owner's current public key. */
+  createPersonalAgentKey(ids: { agentId: string; ownerUserId: string; ownerPublicKey: string }): Promise<AgentKeyResult>;
   dropAgent(agentId: string): Promise<void>;
 }
 
 const noDot = z.string().regex(/^[^.]+$/);
 const healthBody = z.object({ identity: z.object({ keyId: noDot, publicKey: z.string().min(1) }) });
-const keyBody = z.object({
+const keyBody = (v: "k1" | "k2") => z.object({
   publicKey: z.string().refine(isPublicKeyB64), kekId: noDot,
-  wrappedPrivateKey: z.string().regex(/^k1\.[^.]+\.[^.]+\.v1\./), attestation: z.string().regex(/^g1\.[^.]+\.[^.]+$/),
+  wrappedPrivateKey: z.string().regex(v === "k1" ? /^k1\.[^.]+\.[^.]+\.v1\./ : /^k2\.[^.]+\.[^.]+\.v1\./), attestation: z.string().regex(/^g1\.[^.]+\.[^.]+$/),
 });
 
 /** The gateway's internal port, over HTTP only (apps/api never imports apps/gateway). 5 s per call. */
@@ -51,7 +53,8 @@ export function gatewayClient(cfg: AgentConfig, fetchImpl: typeof fetch = fetch)
   };
   return {
     health: async () => { const { identity } = parse(healthBody, await call("GET", "/internal/health")); return { keyId: identity.keyId, publicKey: identity.publicKey }; },
-    createAgentKey: async (ids) => parse(keyBody, await call("POST", "/internal/agents", ids)),
+    createAgentKey: async (ids) => parse(keyBody("k1"), await call("POST", "/internal/agents", ids)),
+    createPersonalAgentKey: async (ids) => parse(keyBody("k2"), await call("POST", "/internal/agents", ids)),
     dropAgent: async (agentId) => { await call("DELETE", `/internal/agents/${encodeURIComponent(agentId)}`); },
   };
 }

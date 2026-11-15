@@ -240,7 +240,7 @@ describe("agents off", () => {
 describe("gateway client and the start-up check", () => {
   const warns: string[] = [];
   const log = { warn: (m: string) => { warns.push(m); } };
-  const stub = (h: () => Promise<{ keyId: string; publicKey: string }>): GatewayClient => ({ health: h, createAgentKey: () => Promise.reject(new Error("unused")), dropAgent: () => Promise.resolve() });
+  const stub = (h: () => Promise<{ keyId: string; publicKey: string }>): GatewayClient => ({ health: h, createAgentKey: () => Promise.reject(new Error("unused")), createPersonalAgentKey: () => Promise.reject(new Error("unused")), dropAgent: () => Promise.resolve() });
 
   it("created on first sight, ok after, unreachable warns and starts, changed throws unless accepted", async () => {
     const id = { keyId: "kid-1", publicKey: "pub-1" };
