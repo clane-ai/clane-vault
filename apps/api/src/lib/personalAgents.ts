@@ -36,7 +36,7 @@ export async function personalAgentRules(db: Db, cfg: Config, userId: string): P
   return strictest(allowance, ms.map((m) => ({ orgId: m.org.id, p: readPolicies(m.org.policies, getEntitlements(cfg, m.org)).personalAgents })));
 }
 
-/** lockUser, count live (revokedAt null) agents with this owner, throw AgentLimitError(used, rules.max). */
+/** Callers check `personalAgentRules(...).allowed` first: with PERSONAL_AGENTS off max is 0 and this would throw agent_limit instead. lockUser, count live (revokedAt null) agents with this owner, throw AgentLimitError(used, rules.max). */
 export async function assertPersonalAgentSlot(tx: Db, cfg: Config, ownerUserId: string): Promise<void> {
   await lockUser(tx, ownerUserId);
   const rules = await personalAgentRules(tx, cfg, ownerUserId);

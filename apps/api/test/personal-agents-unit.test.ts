@@ -5,6 +5,12 @@ import { createTestPersonalAgent } from "./agentHelpers.js";
 import { AgentLimitError } from "../src/lib/agents.js";
 import { assertPersonalAgentSlot, logLifecycle, personalAgentRules, strictest } from "../src/lib/personalAgents.js";
 import { loadConfig } from "../src/config.js";
+import { readPolicies } from "../src/lib/policies.js";
+import { execSync } from "node:child_process";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PrismaClient } from "@prisma/client";
 
 const hosted = await makeTestApp({ billingMode: "hosted" });
 const plain = await makeTestApp({});
@@ -99,8 +105,8 @@ describe("migration", () => {
     const u = await mk("a"), orgId = (await hosted.prisma.organization.findFirstOrThrow()).id;
     const mkUser = async (n: string) => (await hosted.prisma.user.create({ data: { kind: "agent", email: `agent+${n}@agents.invalid`, name: n, authHash: "", kdfSalt: "", kdfParams: {}, wrappedUserKey: "", publicKey: n, wrappedPrivateKey: "" } })).id;
     const row = async (n: string, extra: object) => hosted.prisma.agent.create({ data: { userId: await mkUser(n), createdById: u, publicKey: n, kekId: "k", attestation: "g1.x", ...extra } });
-    await expect(row("both", { orgId, ownerUserId: u })).rejects.toThrow();
-    await expect(row("neither", {})).rejects.toThrow();
+    await expect(row("both", { orgId, ownerUserId: u })).rejects.toThrow(/Agent_one_owner_check/);
+    await expect(row("neither", {})).rejects.toThrow(/Agent_one_owner_check/);
     await expect(row("org", { orgId })).resolves.toBeTruthy();
     await expect(row("own", { ownerUserId: u })).resolves.toBeTruthy();
   });
@@ -109,5 +115,52 @@ describe("migration", () => {
     const a = await createTestPersonalAgent(hosted, { ownerUserId: u });
     await hosted.prisma.user.delete({ where: { id: u } });
     expect(await hosted.prisma.agent.findUnique({ where: { userId: a.id } })).toBeNull();
+  });
+});
+
+describe("a corrupt stored block fails closed", () => {
+  it("keeps the valid fields and defaults only the invalid ones", () => {
+    const stored = { personalAgents: { allowed: false, maxPerMember: 99, reveal: "always" } };
+    const want = { allowed: false, maxPerMember: null, write: true, reveal: "approval" };
+    expect(readPolicies(stored).personalAgents).toEqual(want);
+    expect(readPolicies(stored, { features: { policyEdit: false } as never }).personalAgents).toEqual(want);
+    expect(readPolicies({ personalAgents: "x", autoLockMinutes: 0 }).personalAgents.allowed).toBe(true);
+  });
+});
+
+describe("migration on existing rows", () => {
+  it("leaves organisation agents untouched, then the CHECK refuses both and neither", async () => {
+    const base = new URL(process.env.TEST_DATABASE_URL!), dbName = `pamig_${Date.now()}`;
+    const url = new URL(base.toString()); url.pathname = `/${dbName}`;
+    const dir = mkdtempSync(join(tmpdir(), "cv-pamig-"));
+    const admin = new PrismaClient({ datasourceUrl: base.toString() });
+    await admin.$executeRawUnsafe(`CREATE DATABASE "${dbName}"`);
+    const deploy = () => execSync(`npx prisma migrate deploy --schema "${join(dir, "schema.prisma")}"`, { env: { ...process.env, DATABASE_URL: url.toString() }, stdio: "pipe" });
+    const db = new PrismaClient({ datasourceUrl: url.toString() });
+    try {
+      const NEW = "20261115000000_personal_agents";
+      cpSync("prisma/schema.prisma", join(dir, "schema.prisma"));
+      for (const m of readdirSync("prisma/migrations")) if (m < NEW) cpSync(join("prisma/migrations", m), join(dir, "migrations", m), { recursive: true });
+      cpSync("prisma/migrations/migration_lock.toml", join(dir, "migrations", "migration_lock.toml"));
+      deploy();
+      const org = "00000000-0000-4000-8000-0000000000a1", person = "00000000-0000-4000-8000-0000000000b1", agentUser = "00000000-0000-4000-8000-0000000000c1";
+      const user = (id: string, kind: string) => db.$executeRawUnsafe(`INSERT INTO "User" (id,email,name,kind,"kdfSalt","kdfParams","authHash","wrappedUserKey","publicKey","wrappedPrivateKey") VALUES ('${id}','${id}@x.test','n','${kind}','','{}','','','pk-${id}','')`);
+      await db.$executeRawUnsafe(`INSERT INTO "Organization" (id,name,slug) VALUES ('${org}','O','o')`);
+      await user(person, "person"); await user(agentUser, "agent");
+      await db.$executeRawUnsafe(`INSERT INTO "Agent" ("userId","orgId","createdById","publicKey","kekId","attestation") VALUES ('${agentUser}','${org}','${person}','pk-a','k','g1.x')`);
+      cpSync(join("prisma/migrations", NEW), join(dir, "migrations", NEW), { recursive: true });
+      deploy();
+      const rows = await db.$queryRawUnsafe<{ orgId: string | null; ownerUserId: string | null; publicKey: string }[]>(`SELECT "orgId","ownerUserId","publicKey" FROM "Agent"`);
+      expect(rows).toEqual([{ orgId: org, ownerUserId: null, publicKey: "pk-a" }]);
+      const ins = (id: string, o: string, w: string) => db.$executeRawUnsafe(`INSERT INTO "Agent" ("userId","orgId","ownerUserId","createdById","publicKey","kekId","attestation") VALUES ('${id}',${o},${w},'${person}','pk-${id}','k','g1.x')`);
+      await user("00000000-0000-4000-8000-0000000000c2", "agent"); await user("00000000-0000-4000-8000-0000000000c3", "agent");
+      await expect(ins("00000000-0000-4000-8000-0000000000c2", `'${org}'`, `'${person}'`)).rejects.toThrow(/Agent_one_owner_check/);
+      await expect(ins("00000000-0000-4000-8000-0000000000c3", "NULL", "NULL")).rejects.toThrow(/Agent_one_owner_check/);
+    } finally {
+      await db.$disconnect();
+      await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+      await admin.$disconnect();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

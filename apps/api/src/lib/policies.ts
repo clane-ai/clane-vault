@@ -81,6 +81,18 @@ function policyPart(stored: unknown): unknown {
   return rest;
 }
 
+/** The stored personal-agents block, field by field: a corrupt field takes its default and never discards the others (an off switch stays off). */
+function readPersonalAgents(v: unknown): Policies["personalAgents"] {
+  const shape = policySchema.shape.personalAgents.unwrap().shape;
+  const o = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(shape) as (keyof typeof shape)[]) {
+    const f = shape[k].safeParse(o[k]);
+    out[k] = f.success ? f.data : shape[k].parse(undefined);
+  }
+  return out as Policies["personalAgents"];
+}
+
 /**
  * Stored policies (validated on write); a row that somehow fails validation falls back field by field, never open.
  * Given the org's entitlements, a plan without policy editing reads the defaults (the stored JSON stays untouched).
@@ -90,8 +102,7 @@ export function readPolicies(stored: unknown, ent?: Pick<Entitlements, "features
   // A plan without policy editing reads the defaults, except the personal-agents block: it has no plan gate (it is
   // what lets any organisation protect its members' accounts from a gateway).
   if (ent && !ent.features.policyEdit) {
-    const b = policySchema.shape.personalAgents.safeParse(raw && typeof raw === "object" ? (raw as Record<string, unknown>).personalAgents : undefined);
-    return { ...DEFAULT_POLICIES, personalAgents: b.success ? b.data : DEFAULT_POLICIES.personalAgents };
+    return { ...DEFAULT_POLICIES, personalAgents: readPersonalAgents(raw && typeof raw === "object" ? (raw as Record<string, unknown>).personalAgents : undefined) };
   }
   const r = policySchema.safeParse(raw ?? {});
   if (r.success) return r.data;
@@ -99,7 +110,7 @@ export function readPolicies(stored: unknown, ent?: Pick<Entitlements, "features
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(policySchema.shape) as (keyof Policies)[]) {
-    const f = policySchema.shape[k].safeParse(o[k]);
+    const f = k === "personalAgents" ? { success: true, data: readPersonalAgents(o[k]) } : policySchema.shape[k].safeParse(o[k]);
     if (f.success) out[k] = f.data;
   }
   const p = { ...DEFAULT_POLICIES, ...out } as Policies;
