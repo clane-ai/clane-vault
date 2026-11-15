@@ -260,7 +260,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
         {loc.area === "redirect" ? <Navigate to={loc.to} replace />
           : offline && (pageless || listView === "links") ? <OfflineOnlyPanel what={area === "settings" ? "Settings" : area === "admin" ? "Admin" : "Share links"} />
           : stepUpRequired && !pageless ? <TotpStepUpPanel /> : blocked && !pageless ? <SsoRequiredPanel org={org} />
-          : loc.area === "settings" ? <SettingsArea section={loc.section} mobile={mobile} health={healthPage} records={v.records} />
+          : loc.area === "settings" ? <SettingsArea section={loc.section} mobile={mobile} health={healthPage} records={v.records} privateLocked={v.privateLocked} />
           : loc.area === "admin" ? <AdminArea section={loc.section} detailId={loc.detailId} mobile={mobile} isAdmin={isAdmin} isInstanceAdmin={isInstanceAdmin} loading={orgsInfo.isPending && !offline}
               folders={v.folders} records={v.records} vaultLoading={v.isLoading} pendingReady={pendingReady} recoveryPending={recoveryPending} />
           : <div className={cn("grid min-h-0 flex-1", selected ? "min-[1100px]:grid-cols-[minmax(0,1fr)_440px]" : "grid-cols-1")}>

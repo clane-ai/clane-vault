@@ -6,7 +6,9 @@ import { verifyPersonalAgentAttestation } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { SectionPage } from "@/components/SectionLayout";
-import { fingerprintOf, PERSONAL_SLOT, pinnedGateway } from "@/lib/orgKeys";
+import { ApiError } from "@/lib/api";
+import { accountPublicKeyOf, fingerprintOf, PERSONAL_SLOT, pinnedGateway } from "@/lib/orgKeys";
+import { TotpStepUpPanel } from "@/features/auth/TotpStepUp";
 import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { Chip } from "@/features/vault/people";
@@ -26,7 +28,7 @@ function RevokeDialog({ agent, titleOf, onClose }: { agent: MyAgent; titleOf: Ti
   const revoke = useRevokeMyAgent();
   const [rotate, setRotate] = useState<Rotation | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const go = async () => { setError(null); try { setRotate((await revoke.mutateAsync({ id: agent.id })).rotate); } catch (e) { setError(agentErrorText(e)); } };
+  const go = async () => { setError(null); try { setRotate((await revoke.mutateAsync({ id: agent.id })).rotate); } catch (e) { setError(agentErrorText(e, { personal: true })); } };
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !revoke.isPending) onClose(); }}>
       <DialogContent className="sm:max-w-[460px]">
@@ -61,7 +63,7 @@ function ActivityDialog({ agent, titleOf, onClose }: { agent: MyAgent; titleOf: 
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader><DialogTitle>{agent.name}: activity</DialogTitle><DialogDescription>What this agent did with your items, newest first.</DialogDescription></DialogHeader>
-        {q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error)}</p>
+        {q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error, { personal: true })}</p>
           : !q.data ? <p className="text-[13px] text-text-secondary">Loading…</p>
           : q.data.events.length === 0 ? <p className="text-[13px] text-text-secondary">Nothing yet.</p>
           : (
@@ -81,13 +83,15 @@ function ActivityDialog({ agent, titleOf, onClose }: { agent: MyAgent; titleOf: 
 }
 
 function MyAgentRow({ agent, canConnect, on }: { agent: MyAgent; canConnect: boolean; on: Record<"verify" | "connect" | "activity" | "edit" | "revoke", () => void> }) {
-  const { user } = useSession();
+  const { user, keys } = useSession();
   const pinned = user ? pinnedGateway(user.id, PERSONAL_SLOT) : null;
   // As on Admin → Agents: an attestation the personal pin didn't make, or over the owner's earlier account key, needs enrolling again.
+  // The owner key is derived from the unlocked private key, so a server listing a stale one can't hide that (locked: no check).
   const attest = useQuery({
-    queryKey: ["my-agent-attestation", user?.id, agent.id, agent.publicKey, agent.attestation, agent.owner.publicKey, pinned?.keyId, pinned?.publicKey],
-    enabled: !!pinned && (agent.status === "active" || agent.status === "suspended"),
-    queryFn: () => verifyPersonalAgentAttestation(agent.attestation, { ownerUserId: agent.owner.userId, ownerPublicKey: agent.owner.publicKey, agentId: agent.id, publicKey: agent.publicKey }, pinned!),
+    queryKey: ["my-agent-attestation", user?.id, agent.id, agent.publicKey, agent.attestation, pinned?.keyId, pinned?.publicKey, !!keys],
+    enabled: !!pinned && !!keys && (agent.status === "active" || agent.status === "suspended"),
+    queryFn: async () => verifyPersonalAgentAttestation(agent.attestation,
+      { ownerUserId: user!.id, ownerPublicKey: await accountPublicKeyOf(keys!.privateKey), agentId: agent.id, publicKey: agent.publicKey }, pinned!).catch(() => false),
   });
   const reEnrol = attest.data === false && (agent.status === "active" || agent.status === "suspended");
   const agentFp = useQuery({ queryKey: ["fingerprint", agent.publicKey], enabled: !!agent.publicKey, staleTime: Infinity, queryFn: () => fingerprintOf(agent.publicKey).catch(() => "—") }).data;
@@ -125,9 +129,9 @@ function MyAgentRow({ agent, canConnect, on }: { agent: MyAgent; canConnect: boo
  * Settings → My agents (docs/design/2026-11-15-personal-agents.md): the user's own agents, which use items they give them
  * through the gateway. Create, verify both fingerprints, connect, see activity, revoke with the items to rotate.
  */
-export function MyAgentsSection({ records }: { records: VaultRecord[] }) {
+export function MyAgentsSection({ records, privateLocked = false }: { records: VaultRecord[]; privateLocked?: boolean }) {
   const { orgs } = useSession();
-  const q = useMyAgents();
+  const q = useMyAgents(!privateLocked);
   const [form, setForm] = useState<{ agent?: MyAgent } | null>(null);
   const [verifying, setVerifying] = useState<ToVerify | null>(null);
   const [open, setOpen] = useState<{ kind: "connect" | "activity" | "revoke"; id: string } | null>(null);
@@ -137,6 +141,8 @@ export function MyAgentsSection({ records }: { records: VaultRecord[] }) {
   const atLimit = !!d && d.allowance.used >= d.allowance.allowed;
   const toVerify = (a: MyAgent): ToVerify => ({ id: a.id, name: a.name, publicKey: a.publicKey, attestation: a.attestation, personal: { ownerUserId: a.owner.userId, ownerPublicKey: a.owner.publicKey } });
 
+  // A session confined to one organisation (SSO without the authenticator code): personal agents wait for the step-up.
+  if (privateLocked || (q.error instanceof ApiError && q.error.code === "totp_step_up_required")) return <SectionPage title="My agents"><TotpStepUpPanel /></SectionPage>;
   return (
     <SectionPage title="My agents">
       <div className="flex flex-col gap-4">
@@ -144,7 +150,7 @@ export function MyAgentsSection({ records }: { records: VaultRecord[] }) {
           Your agents use the items you give them through the gateway, without ever seeing the credentials. Give them only restricted credentials.
         </p>
         {agentsOff(q.error) ? <p className="text-[13.5px] text-text-secondary">{AGENTS_OFF}</p>
-          : q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error, orgs)}</p>
+          : q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error, { orgs, personal: true })}</p>
           : d && (<>
             {!d.rules.allowed ? <p role="note" className="text-[13.5px] text-text-secondary">{personalAgentsOffLine(d.rules.blockedByOrgId, orgs)}</p> : (
               <div className="flex flex-wrap items-center gap-3">

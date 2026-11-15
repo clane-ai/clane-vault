@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
-import { b64url, publicKeyFromPrivateKey, verifyAgentAttestation, verifyPersonalAgentAttestation } from "@clane-vault/crypto";
+import { verifyAgentAttestation, verifyPersonalAgentAttestation } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { AgentAttestationError, fingerprintOf, gatewayConsistent, gatewayPinStatus, personalGatewayPinStatus } from "@/lib/orgKeys";
+import { AgentAttestationError, fingerprintOf, gatewayConsistent, gatewayPinStatus, ownedByMe, personalGatewayPinStatus } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
 import { SELF_HOST_URL } from "@/features/demo/Demo";
 import { useMyGateway, useRevokeMyAgent, useVerifyMyAgent } from "@/features/settings/myAgents";
@@ -41,8 +41,8 @@ export function AgentVerifyDialog({ agent, personal, onClose }: {
       signed: await gatewayConsistent(identity!) && await (personal
         ? verifyPersonalAgentAttestation(agent.attestation, { ownerUserId: personal.ownerUserId, ownerPublicKey: personal.ownerPublicKey, agentId: agent.id, publicKey: agent.publicKey }, identity!)
         : verifyAgentAttestation(agent.attestation, { orgId: org!.id, agentId: agent.id, publicKey: agent.publicKey }, identity!)),
-      // Bound to my current account key, as this unlocked session derives it: else the gateway holds a key meant for someone else's.
-      ownerOk: !personal || (personal.ownerUserId === user!.id && personal.ownerPublicKey === b64url.encode(await publicKeyFromPrivateKey(keys!.privateKey).catch(() => new Uint8Array()))),
+      // The owner check verifyPersonalAgentKey makes before sealing (not that call itself: the personal pin may not exist yet here).
+      ownerOk: !personal || await ownedByMe(user!.id, { userId: personal.ownerUserId, publicKey: personal.ownerPublicKey }, keys!.privateKey),
       agentFp: await fingerprintOf(agent.publicKey).catch(() => "—"),
       gatewayFp: await fingerprintOf(identity!.publicKey).catch(() => "—"),
     }),
@@ -59,12 +59,12 @@ export function AgentVerifyDialog({ agent, personal, onClose }: {
   const matches = async () => {
     setError(null);
     try { await verify.mutateAsync({ agent, gateway: identity!, repin: pin?.status === "changed" }); toast.success(`${agent.name} is verified`); onClose(); }
-    catch (e) { setError(agentErrorText(e)); }
+    catch (e) { setError(agentErrorText(e, { personal: !!personal })); }
   };
   const revokeIt = async () => {
     setError(null);
     try { await (personal ? myRevoke.mutateAsync({ id: agent.id }) : orgRevoke.mutateAsync({ id: agent.id, reason: "attestation_failed" })); toast.success(`${agent.name} was revoked`); onClose(); }
-    catch (e) { setError(agentErrorText(e)); }
+    catch (e) { setError(agentErrorText(e, { personal: !!personal })); }
   };
 
   const fp = "font-mono text-[12.5px] tracking-[.02em] text-text-primary break-all";
@@ -75,7 +75,7 @@ export function AgentVerifyDialog({ agent, personal, onClose }: {
           <DialogTitle>Verify {agent.name}</DialogTitle>
           <DialogDescription>Compare both fingerprints with the ones the gateway operator publishes before anyone shares with this agent.</DialogDescription>
         </DialogHeader>
-        {gw.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(gw.error)}</p>
+        {gw.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(gw.error, { personal: !!personal })}</p>
           : !check.data ? <p className="text-[13px] text-text-secondary">Checking the gateway's signature…</p>
           : !check.data.ownerOk ? (
             <div className="flex flex-col gap-3">

@@ -214,6 +214,11 @@ export async function verifyAgentKey(me: string, orgId: string, agent: Recipient
   if (!await verifyAgentAttestation(att, { orgId, agentId: agent.id, publicKey }, gw)) throw new AgentAttestationError("invalid", agent.id);
 }
 
+/** My account public key (base64url), as my unlocked private key derives it: never the copy the server lists. */
+export const accountPublicKeyOf = async (myPrivateKey: Uint8Array) => b64url.encode(await publicKeyFromPrivateKey(myPrivateKey));
+/** A personal agent's owner binding is me with my current account key (else the gateway holds a key bound to someone else's). */
+export const ownedByMe = async (me: string, owner: { userId: string; publicKey: string }, myPrivateKey: Uint8Array) =>
+  owner.userId === me && owner.publicKey === await accountPublicKeyOf(myPrivateKey).catch(() => null);
 /**
  * Called before sealing to a personal agent: the owner it is bound to must be me with the key my unlocked private key
  * derives (else the gateway would hold a key bound to someone else's account key), and the personal pin must have signed
@@ -223,7 +228,7 @@ export async function verifyPersonalAgentKey(me: string, agent: { id: string; pu
   const gw = pinnedGateway(me, PERSONAL_SLOT);
   if (!gw) throw new AgentAttestationError("unpinned", agent.id);
   if (!agent.attestation) throw new AgentAttestationError("missing", agent.id);
-  if (owner.userId !== me || owner.publicKey !== b64url.encode(await publicKeyFromPrivateKey(myPrivateKey))) throw new AgentAttestationError("owner", agent.id);
+  if (!await ownedByMe(me, owner, myPrivateKey)) throw new AgentAttestationError("owner", agent.id);
   if (agent.attestation.split(".")[1] !== gw.keyId) throw new AgentAttestationError("gateway_changed", agent.id);
   if (!await verifyPersonalAgentAttestation(agent.attestation, { ownerUserId: owner.userId, ownerPublicKey: owner.publicKey, agentId: agent.id, publicKey: agent.publicKey }, gw)) throw new AgentAttestationError("invalid", agent.id);
 }

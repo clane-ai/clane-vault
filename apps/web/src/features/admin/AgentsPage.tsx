@@ -54,7 +54,7 @@ export function AgentForm({ agent, personal, onDone, onClose }: { agent?: Pick<A
         onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation, personal: { ownerUserId: c.owner.userId, ownerPublicKey: c.owner.publicKey } });
       }
       else { const c = await orgCreate.mutateAsync({ name: name.trim(), expiresAt: expiryOf(expiry) }); onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation }); }
-    } catch (err) { setError(agentErrorText(err, orgs)); }
+    } catch (err) { setError(agentErrorText(err, { orgs, personal })); }
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose(); }}>

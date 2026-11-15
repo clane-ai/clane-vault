@@ -332,15 +332,17 @@ export function settingsNav(noKit: boolean, agents = false): NavGroup[] {
  * `health`: the vault's password health page (it needs the decrypted vault, which the shell holds). `records`: the vault's
  * records, to name the items My agents lists.
  */
-export function SettingsArea({ section, mobile, health, records }: { section: SettingsSection | null; mobile: boolean; health: React.ReactNode; records: VaultRecord[] }) {
+export function SettingsArea({ section, mobile, health, records, privateLocked = false }: { section: SettingsSection | null; mobile: boolean; health: React.ReactNode; records: VaultRecord[]; privateLocked?: boolean }) {
   const noKit = useSecurity().data?.recoveryKit === null;
-  const agents = useMyAgents(); // a 404 (agent access or personal agents off) hides My agents
+  // A 404 (agent access or personal agents off) hides My agents. Not asked while private-locked (`privateLocked`): its
+  // 403 would set the app-wide step-up flag, which replaces the vault with the step-up panel; the item shows after the step-up.
+  const agents = useMyAgents(!privateLocked);
   const agentsOn = agents.isSuccess || (agents.isError && !agentsOff(agents.error));
   if (section === null && !mobile) return <Navigate to="/settings/account" replace />;
   return (
     <SectionLayout title="Settings" base="/settings" groups={settingsNav(noKit, agentsOn)} active={section} mobile={mobile}>
       {section === "account" ? <AccountSettings /> : section === "security" ? <SecuritySettings /> : section === "device" ? <DeviceSettings />
-        : section === "extension" ? <ExtensionSettings /> : section === "health" ? health : section === "agents" ? <MyAgentsSection records={records} /> : null}
+        : section === "extension" ? <ExtensionSettings /> : section === "health" ? health : section === "agents" ? <MyAgentsSection records={records} privateLocked={privateLocked} /> : null}
     </SectionLayout>
   );
 }

@@ -100,12 +100,15 @@ const ERRORS: Record<string, string> = {
   gateway_identity_changed: "The agent gateway's identity changed, so the server refused. Ask whoever runs the server to confirm the new gateway fingerprint.",
   invalid_request: "Use a plain name (up to 60 characters) and an expiry in the future.",
   not_found: "That agent no longer exists. Reload the page.",
+  totp_step_up_required: "Confirm your two-step code for this session first.",
 };
 /** A personal agent refused by an organisation's policy (`orgs`: the user's, to name it). */
 export const personalAgentsOffLine = (orgId: string | null | undefined, orgs: { id: string; name: string }[] = []) =>
   `${orgs.find((o) => o.id === orgId)?.name ?? "One of your organisations"} doesn't allow personal agents, so you can't add one.`;
-export function agentErrorText(e: unknown, orgs?: { id: string; name: string }[]): string {
-  if (e instanceof ApiError && e.code === "personal_agents_disabled") return personalAgentsOffLine((e.body as { orgId?: string } | null)?.orgId, orgs);
+/** `personal`: the owner's own agent, so the line names what the owner can do rather than an admin. `orgs`: to name an organisation. */
+export function agentErrorText(e: unknown, o: { orgs?: { id: string; name: string }[]; personal?: boolean } = {}): string {
+  if (e instanceof ApiError && e.code === "personal_agents_disabled") return personalAgentsOffLine((e.body as { orgId?: string } | null)?.orgId, o.orgs);
+  if (o.personal && e instanceof AgentAttestationError && e.reason === "gateway_changed") return "The gateway's identity changed. Verify the agent again.";
   if (e instanceof AgentAttestationError && e.reason === "gateway_changed") return "The agent was verified, but this device's pinned gateway identity changed meanwhile, so it can't be used from here. Revoke the agent and create it again.";
   return planMessage(e) ?? (e instanceof ApiError ? ERRORS[e.code] : undefined) ?? "Couldn't do that. Try again.";
 }

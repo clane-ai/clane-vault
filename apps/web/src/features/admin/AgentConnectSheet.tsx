@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { copySecret } from "@/lib/clipboard";
+import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { AGENT_PROMPT, agentErrorText, connectSnippets, useCreateToken, useRevokeGrant, useRevokeToken, type Agent } from "./agents";
 
@@ -28,7 +29,8 @@ export function AgentConnectSheet({ agent, url, personal, onClose }: { agent: Pi
   const create = useCreateToken({ personal });
   const revokeToken = useRevokeToken({ personal });
   const revokeGrant = useRevokeGrant({ personal });
-  const run = async (f: () => Promise<unknown>) => { setError(null); try { await f(); } catch (e) { setError(agentErrorText(e)); } };
+  const { orgs } = useSession();
+  const run = async (f: () => Promise<unknown>) => { setError(null); try { await f(); } catch (e) { setError(agentErrorText(e, { orgs, personal })); } };
   const tokens = agent.tokens.filter((t) => !t.revokedAt);
   const grants = agent.grants.filter((g) => !g.revokedAt);
 

@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { PERSONAL_SLOT, pinGateway, pinKey, type GatewayIdentity } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
-import { agentsOff, type AgentGrant, type AgentStatus, type AgentToken, type Gateway } from "@/features/admin/agents";
+import { type AgentGrant, type AgentStatus, type AgentToken, type Gateway } from "@/features/admin/agents";
 
 /** Settings → My agents: the owner's personal agents on /me/agents (docs/design/2026-11-15-personal-agents.md). No organisation context. */
 
@@ -25,11 +25,13 @@ export interface Rotation { records: { id: string }[]; revealed: unknown[] }
 export interface AgentEvent { id: string; at: string; action: string; recordId: string | null; meta: unknown }
 
 const KEY = "my-agents";
-const notOff = (n: number, e: unknown) => !agentsOff(e) && n < 1;
+/** One retry for a network or server error; a refusal (404 off, 403 step-up) is final. */
+const notOff = (n: number, e: unknown) => !(e instanceof ApiError && e.status < 500) && n < 1;
 /** A 404 (agent access or personal agents off) is final and hides the section. */
-export function useMyAgents() {
+/** `enabled` false while the session is confined to one organisation: a 403 there would raise the app-wide step-up prompt. */
+export function useMyAgents(enabled = true) {
   const { user } = useSession();
-  return useQuery({ queryKey: [KEY, user?.id], enabled: !!user, retry: notOff, queryFn: () => api.get<MyAgents>("/me/agents") });
+  return useQuery({ queryKey: [KEY, user?.id], enabled: enabled && !!user, retry: notOff, queryFn: () => api.get<MyAgents>("/me/agents") });
 }
 export function useMyGateway(enabled = true) {
   const { user } = useSession();

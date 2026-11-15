@@ -7,11 +7,12 @@ import { http, HttpResponse } from "msw";
 import { b64url, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, signPersonalAgentKey } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
-import { fingerprintOf, PERSONAL_SLOT, pinnedGateway, pinGateway, pinStatus, type GatewayIdentity } from "@/lib/orgKeys";
+import { AgentAttestationError, fingerprintOf, PERSONAL_SLOT, pinnedGateway, pinGateway, pinStatus, type GatewayIdentity } from "@/lib/orgKeys";
 import type { VaultRecord } from "@/features/vault/types";
 import { MyAgentsSection } from "./MyAgentsSection";
 import { SettingsArea } from "./SettingsPage";
 import type { MyAgent, MyAgents } from "./myAgents";
+import { agentErrorText } from "@/features/admin/agents";
 
 vi.mock("@/lib/clipboard", () => ({ copySecret: vi.fn(async () => undefined) }));
 const ME = "11111111-0000-4000-8000-000000000001";
@@ -183,5 +184,52 @@ describe("Settings → My agents", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByRole("link", { name: /Security/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /My agents/ })).not.toBeInTheDocument();
+  });
+
+  it("an owner key from another key pair: the owner alert, and no Matches", async () => {
+    const gw = await newGateway();
+    gwIdentity = gw.identity;
+    const pub = await agentKey(), other = await agentKey();
+    const attestation = await gw.attest(AGENT_ID, pub, other); // signed for the key the server claims, which isn't mine
+    server.use(http.post("/api/v1/me/agents", () => HttpResponse.json({ id: AGENT_ID, name: "My bot", publicKey: pub, attestation, owner: { userId: ME, publicKey: other },
+      gateway: { keyId: gw.identity.keyId, publicKey: gw.identity.publicKey, fingerprint: "x" } }, { status: 201 })));
+    renderSection();
+    const dialog = await createAgent();
+    expect(await within(dialog).findByText("This agent's key is bound to a different account key than yours, so nothing was shared. Revoke the agent and create it again.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Matches" })).not.toBeInTheDocument();
+    expect(pinnedGateway(ME, PERSONAL_SLOT)).toBeNull();
+  });
+
+  it("a server listing the stale owner key the attestation was made over still shows Needs re-enrolment", async () => {
+    const gw = await newGateway();
+    gwIdentity = gw.identity;
+    await pinGateway(ME, PERSONAL_SLOT, gw.identity);
+    const pub = await agentKey(), stale = await agentKey();
+    agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub, stale), owner: { userId: ME, publicKey: stale } })];
+    renderSection();
+    const bad = await screen.findByRole("listitem", { name: "My bot" });
+    expect(await within(bad).findByText("Needs re-enrolment")).toBeInTheDocument();
+  });
+
+  it("a step-up 403 shows the authenticator step-up in the section", async () => {
+    server.use(http.get("/api/v1/me/agents", () => HttpResponse.json({ error: "totp_step_up_required" }, { status: 403 })));
+    renderSection();
+    expect(await screen.findByRole("heading", { name: "Confirm with your authenticator" })).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't do that. Try again.")).not.toBeInTheDocument();
+  });
+
+  it("a private-locked session doesn't ask /me/agents (no app-wide step-up), and shows the step-up", async () => {
+    let asked = false;
+    server.use(http.get("/api/v1/me/agents", () => { asked = true; return HttpResponse.json({ error: "totp_step_up_required" }, { status: 403 }); }));
+    render(wrap(<MyAgentsSection records={RECORDS} privateLocked />));
+    expect(await screen.findByRole("heading", { name: "Confirm with your authenticator" })).toBeInTheDocument();
+    render(wrap(<SettingsArea section="health" mobile={false} health={<p>health</p>} records={[]} privateLocked />));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(asked).toBe(false);
+  });
+
+  it("personal wording: gateway_changed is something the owner can act on", () => {
+    expect(agentErrorText(new AgentAttestationError("gateway_changed"), { personal: true })).toBe("The gateway's identity changed. Verify the agent again.");
+    expect(agentErrorText(new AgentAttestationError("gateway_changed"))).toContain("Revoke the agent and create it again");
   });
 });
