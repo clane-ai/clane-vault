@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import type { Db } from "./access.js";
+import { recordOrgOf, type Db } from "./access.js";
 import { AgentLimitError } from "./agents.js";
 import { lockUser } from "./orgs.js";
 import { getEntitlements, getPersonalEntitlements, PLAN_SELECT } from "./plans.js";
@@ -48,4 +48,44 @@ export async function assertPersonalAgentSlot(tx: Db, cfg: Config, ownerUserId: 
 export async function logLifecycle(tx: Db, ownerUserId: string, what: "create" | "verify" | "revoke" | "connect" | "suspended", agentId: string): Promise<void> {
   const ms = await tx.membership.findMany({ where: { userId: ownerUserId, status: "active" }, select: { orgId: true } });
   if (ms.length) await tx.event.createMany({ data: ms.map((m) => ({ orgId: m.orgId, actorId: ownerUserId, action: `personal_agent.${what}`, meta: { agentId } })) });
+}
+
+/** At most this many items granted to one personal agent. */
+export const AGENT_ITEM_LIMIT = 200;
+export type GrantRefusal = { code: 400 | 404 | 409; error: "not_found" | "team_record" | "in_trash" | "user_not_active" };
+
+/**
+ * Can `callerId` grant `recordId` to their personal agent `agentId`, in this order: the caller holds the owner row and
+ * is Record.ownerId (404), the record is private (409 team_record) and not trashed (409 in_trash), the agent is the
+ * caller's, verified, live and unexpired (400 user_not_active). Returns the agent's public key (what the box is sealed to).
+ */
+export async function assertGrantable(tx: Db, callerId: string, recordId: string, agentId: string): Promise<GrantRefusal | { publicKey: string }> {
+  const rec = await tx.record.findFirst({ where: { id: recordId, ownerId: callerId, access: { some: { holderType: "user", holderId: callerId, permission: "owner" } } },
+    select: { deletedAt: true, folder: { select: { kind: true, orgId: true } } } });
+  if (!rec) return { code: 404, error: "not_found" };
+  if (recordOrgOf(rec) !== null) return { code: 409, error: "team_record" };
+  if (rec.deletedAt) return { code: 409, error: "in_trash" };
+  const a = await tx.agent.findFirst({ where: { userId: agentId, ownerUserId: callerId, orgId: null, revokedAt: null, verifiedAt: { not: null },
+    OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }], user: { status: "active" } }, select: { publicKey: true } });
+  return a ? { publicKey: a.publicKey } : { code: 400, error: "user_not_active" };
+}
+
+/** GET /agent/sync for a personal agent: its own rows on private records its owner still owns, nothing else (no folders, no members). */
+export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string) {
+  const a = await db.agent.findUniqueOrThrow({ where: { userId: agentUserId },
+    select: { ownerUserId: true, publicKey: true, wrappedPrivateKey: true, kekId: true, expiresAt: true, owner: { select: { publicKey: true } } } });
+  const ownerUserId = a.ownerUserId!;
+  const [rows, rules] = await Promise.all([
+    db.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId, orgId: null, state: "active", record: { ownerId: ownerUserId } }, orderBy: { createdAt: "asc" },
+      select: { wrappedRecordKey: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
+    personalAgentRules(db, cfg, ownerUserId),
+  ]);
+  return {
+    owner: { userId: ownerUserId, publicKey: a.owner!.publicKey }, // current: the gateway refuses when it no longer matches the attestation
+    agentId: agentUserId, publicKey: a.publicKey, wrappedPrivateKey: a.wrappedPrivateKey, kekId: a.kekId, expiresAt: a.expiresAt?.toISOString() ?? null,
+    records: rows.filter((r) => recordOrgOf(r.record) === null).map(({ wrappedRecordKey, record: r }) => ({
+      id: r.id, encBody: r.encBody, revision: r.revision, wrappedRecordKey: wrappedRecordKey!, write: false, deletedAt: r.deletedAt?.toISOString() ?? null })),
+    reveal: [] as never[], deposits: [] as never[],
+    policy: { write: rules.write, reveal: rules.reveal },
+  };
 }

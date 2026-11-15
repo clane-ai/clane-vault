@@ -73,6 +73,10 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
   const shares = ownedIds.length
     ? await db.recordAccess.findMany({ where: { recordId: { in: ownedIds }, holderType: "user", permission: { not: "owner" }, orgId }, select: { recordId: true, holderId: true, permission: true, sealedTo: true } })
     : [];
+  // The Personal space: rows held by the owner's personal agents are per-item grants (agentGrants), never shares (R9).
+  const personalAgentIds = !orgId && shares.length
+    ? new Set((await db.agent.findMany({ where: { userId: { in: [...new Set(shares.map((s) => s.holderId))] }, ownerUserId: { not: null } }, select: { userId: true } })).map((a) => a.userId))
+    : new Set<string>();
   const shareLive = orgId ? await liveKeys(db, orgId, shares.map((s) => s.holderId)) : new Set<string>();
   // The Personal space: which of my orgs each of my records is shared in (managed there).
   const sharedIn = new Map<string, string[]>();
@@ -123,7 +127,8 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         keyFolderId: holder.holderType === "folder" ? holder.holderId : null,
         ...(holder.holderType === "user" && holder.permission !== "owner" ? { sealedTo: holder.sealedTo } : {}),
         ownerId: r.ownerId, ownerName: r.owner.name,
-        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
+        ...(isOwner && !orgId ? { agentGrants: shares.filter((s) => s.recordId === r.id && personalAgentIds.has(s.holderId)).map((s) => ({ agentId: s.holderId, use: true as const, write: false })) } : {}),
+        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
         ...(!isOwner && own ? { sharedBy: r.owner.name } : {}),
         attachments: (files.rows.get(r.id) ?? []).map((a) => attachmentView(a, files.names, permission!)),

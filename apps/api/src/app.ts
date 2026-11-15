@@ -46,6 +46,7 @@ import { gatewayClient, GatewayIdentityChanged, GatewayUnavailable, type Gateway
 import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { myAgentRoutes } from "./routes/myAgents.js";
+import { agentGrantRoutes } from "./routes/agentGrants.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
 import { authServerMetadata, oauthRoutes, sweepOAuthClients } from "./routes/oauth.js";
@@ -164,7 +165,10 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       await api.register(orgAgentRoutes);
       await api.register(agentApiRoutes);
       await api.register(oauthRoutes);
-      if (opts.config.agents.personalAgents) await api.register(myAgentRoutes, { prefix: "/me/agents" });
+      if (opts.config.agents.personalAgents) {
+        await api.register(myAgentRoutes, { prefix: "/me/agents" });
+        await api.register(agentGrantRoutes);
+      }
     }
   }, { prefix: apiPrefix(opts.config) });
   if (opts.config.agents) {

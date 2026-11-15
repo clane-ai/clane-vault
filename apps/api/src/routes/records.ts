@@ -45,6 +45,14 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     return access;
   }
 
+  /** After the commit, best effort: the gateway forgets the cached keys of the agents among `holders` (they lost or changed access). */
+  async function dropAgents(holders: string[]) {
+    if (!holders.length || !app.gateway) return;
+    for (const a of await app.prisma.agent.findMany({ where: { userId: { in: holders } }, select: { userId: true } })) app.gateway.dropAgent(a.userId).catch(() => undefined);
+  }
+  const shareHolders = async (recordId: string) =>
+    (await app.prisma.recordAccess.findMany({ where: { recordId, holderType: "user", permission: { not: "owner" } }, select: { holderId: true } })).map((r) => r.holderId);
+
   app.post("/records", async (req, reply) => {
     const b = z.object({ id: z.string().uuid(), folderId: z.string().uuid().nullable(), type, encBody: envelope, wrappedRecordKey: keyEnvelope, ownerWrappedRecordKey: keyEnvelope.optional() }).parse(req.body);
     const userId = req.auth.userId;
@@ -101,6 +109,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
       await revokeLinksForRecords(tx, [id], now); // one-time links die with the record
     });
     await logEvent(app.prisma, { orgId: acc.orgId ?? undefined, actorId: req.auth.userId, action: "record.trash", recordId: id });
+    await dropAgents(await shareHolders(id));
     return reply.code(204).send();
   });
 
@@ -125,12 +134,14 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     if (!acc) return reply;
     const rec = await app.prisma.record.findUniqueOrThrow({ where: { id } });
     if (!rec.deletedAt) return reply.code(409).send({ error: "not_in_trash" });
+    const holders = await shareHolders(id); // their rows go with the record
     await app.prisma.$transaction(async (tx) => {
       // Its files go with it (FK cascade); S3 objects are written down for the sweep.
       await tombstoneAttachments(tx, [id]);
       await tx.record.delete({ where: { id } });
     });
     await logEvent(app.prisma, { orgId: acc.orgId ?? undefined, actorId: req.auth.userId, action: "record.purge", recordId: id });
+    await dropAgents(holders);
     return reply.code(204).send();
   });
 
@@ -167,6 +178,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
     const prevCharge: Charge = rec.folder?.kind === "team" && rec.folder.orgId ? { kind: "org", orgId: rec.folder.orgId } : { kind: "user", userId: rec.ownerId };
     const recharge = JSON.stringify(nextCharge) !== JSON.stringify(prevCharge);
     let over: QuotaRefusal | null = null;
+    let dropped: string[] = [];
     await app.prisma.$transaction(async (tx) => {
       if (recharge) {
         const usage = await recordUsage(tx, id);
@@ -177,7 +189,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
         }
       }
       // All in one transaction, the cross-org share cleanup and the link revocation included.
-      const dropped = foreign ? (await tx.recordAccess.findMany({ where: foreign, select: { holderId: true } })).map((r) => r.holderId) : [];
+      dropped = foreign ? (await tx.recordAccess.findMany({ where: foreign, select: { holderId: true } })).map((r) => r.holderId) : [];
       if (foreign) await tx.recordAccess.deleteMany({ where: foreign });
       await tx.recordAccess.deleteMany({ where: { recordId: id, holderType: "folder" } });
       if (team) await tx.recordAccess.create({ data: { recordId: id, holderType: "folder", holderId: b.folderId!, permission: "edit", wrappedRecordKey: b.folderWrappedRecordKey! } });
@@ -197,6 +209,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ error: "quota_exceeded", ...refused });
     }
     await logEvent(app.prisma, { orgId: (team ? ctx(req) : access.orgId) ?? undefined, actorId: userId, action: "record.move", recordId: id });
+    await dropAgents(dropped); // a personal agent's grant ends with the move into a team folder
     return { ok: true };
   });
 
