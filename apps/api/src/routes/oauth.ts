@@ -1,9 +1,10 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { logEvent } from "../lib/events.js";
+import { reqMeta, revokeGrant } from "../lib/agentAdmin.js";
 import { agentJwks, hashToken, signAgentAccess, splitRefresh } from "../lib/tokens.js";
 import { fromGateway } from "../plugins/agent.js";
 
@@ -67,7 +68,6 @@ export function refreshGenOf(cfg: Config, grantId: string, current: number, secr
 }
 
 const isUuid = (s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
-export const reqMeta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
 
 /** https, or http on loopback (native and CLI clients); never a fragment. */
 function redirectAllowed(raw: string): boolean {
@@ -81,20 +81,6 @@ function redirectAllowed(raw: string): boolean {
 export const grantableAgent = (now: Date): Prisma.AgentWhereInput =>
   ({ revokedAt: null, verifiedAt: { not: null }, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], user: { status: "active" } });
 
-/** Ends a live grant once (the claim logs and drops the gateway's cache); a second call does nothing. */
-export async function revokeGrant(app: FastifyInstance, where: Prisma.AgentGrantWhereInput, ev: { actorId?: string; reason?: string; req: FastifyRequest }): Promise<boolean> {
-  const g = await app.prisma.agentGrant.findFirst({ where: { ...where, revokedAt: null }, select: { id: true, agentId: true, agent: { select: { orgId: true } } } });
-  if (!g) return false;
-  const done = await app.prisma.$transaction(async (tx) => {
-    if ((await tx.agentGrant.updateMany({ where: { id: g.id, revokedAt: null }, data: { revokedAt: new Date() } })).count !== 1) return false;
-    await logEvent(tx, { orgId: g.agent.orgId ?? undefined, actorId: ev.actorId, action: "agent.grant_revoke", targetUserId: g.agentId,
-      meta: { grantId: g.id, ...(ev.reason ? { reason: ev.reason } : {}) }, ...reqMeta(ev.req) });
-    return true;
-  });
-  // Preflight #11: the gateway forgets its cached keys now rather than in 60 s (best effort).
-  if (done) app.gateway.dropAgent(g.agentId).catch(() => undefined);
-  return done;
-}
 type Grant = (req: FastifyRequest, reply: FastifyReply, form: Form) => Promise<unknown>;
 
 /** OAuth for agents (docs/agents.md), RFC 6749 error bodies. Registered only when agents are on. */

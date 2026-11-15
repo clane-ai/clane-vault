@@ -89,6 +89,20 @@ describe("POST /me/agents", () => {
     expect((await call(m, "GET", "/me/agents")).json().rules).toMatchObject({ allowed: false, blockedByOrgId: o2.id });
   });
 
+  it("a policy switched off after the pre-check but before the transaction still refuses, and creates nothing", async () => {
+    const m = await createActiveUser(t);
+    const orig = t.app.gateway.createPersonalAgentKey.bind(t.app.gateway);
+    t.app.gateway.createPersonalAgentKey = async (ids) => {
+      await t.prisma.organization.updateMany({ data: { policies: { personalAgents: { allowed: false } } } });
+      return orig(ids);
+    };
+    try {
+      const r = await call(m, "POST", "/me/agents", { name: "x" });
+      expect([r.statusCode, r.json()]).toEqual([403, { error: "personal_agents_disabled", orgId: m.orgId }]);
+      expect(await t.prisma.agent.count()).toBe(0);
+    } finally { t.app.gateway.createPersonalAgentKey = orig; }
+  });
+
   it("a session confined to one organisation: 403 totp_step_up_required on every route", async () => {
     const m = await createActiveUser(t);
     await t.prisma.session.updateMany({ where: { userId: m.id }, data: { totpSkippedForOrg: m.orgId } });
@@ -126,6 +140,7 @@ describe("verify, rename, tokens, events", () => {
     expect(await t.prisma.event.count({ where: { action: "personal_agent.verify" } })).toBe(2);
 
     expect((await call(m, "PATCH", `/me/agents/${b.id}`, { name: "renamed" })).json()).toEqual({ ok: true });
+    expect(await t.prisma.event.findFirstOrThrow({ where: { action: "agent.update" } })).toMatchObject({ orgId: null, actorId: m.id, targetUserId: b.id, meta: { fields: ["name"] } });
     const tk = await call(m, "POST", `/me/agents/${b.id}/tokens`, { label: "ci" });
     expect(tk.statusCode).toBe(201);
     expect(tk.json().token).toEqual(expect.any(String));
@@ -147,6 +162,7 @@ describe("GET /admin/agents/personal-count", () => {
     await createTestPersonalAgent(t, { ownerUserId: m.id });
     await createTestPersonalAgent(t, { ownerUserId: m.id });
     await createTestPersonalAgent(t, { ownerUserId: m.id, revoked: true });
+    await createActiveUser(t, { role: "member" }); // a member with no agent is not counted
     const r = (await call(admin, "GET", "/admin/agents/personal-count")).json();
     expect(r).toMatchObject({ agents: 3, members: 2 });
     expect(r.perMember.sort((a: { count: number }, b: { count: number }) => a.count - b.count)).toEqual([{ userId: admin.id, count: 1 }, { userId: m.id, count: 2 }]);
