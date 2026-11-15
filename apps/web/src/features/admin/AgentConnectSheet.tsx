@@ -21,13 +21,13 @@ function CopyButton({ text, label }: { text: string; label: string }) {
  * once: it lives in this sheet's state, and the mutation that fetched it is reset on close and never cached (gcTime 0),
  * so closing the sheet forgets it (the server keeps only its hash).
  */
-export function AgentConnectSheet({ agent, url, onClose }: { agent: Agent; url: string; onClose: () => void }) {
+export function AgentConnectSheet({ agent, url, personal, onClose }: { agent: Pick<Agent, "id" | "name" | "tokens" | "grants">; url: string; personal?: boolean; onClose: () => void }) {
   const [label, setLabel] = useState("API token");
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const create = useCreateToken();
-  const revokeToken = useRevokeToken();
-  const revokeGrant = useRevokeGrant();
+  const create = useCreateToken({ personal });
+  const revokeToken = useRevokeToken({ personal });
+  const revokeGrant = useRevokeGrant({ personal });
   const run = async (f: () => Promise<unknown>) => { setError(null); try { await f(); } catch (e) { setError(agentErrorText(e)); } };
   const tokens = agent.tokens.filter((t) => !t.revokedAt);
   const grants = agent.grants.filter((g) => !g.revokedAt);

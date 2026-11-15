@@ -21,6 +21,8 @@ export const server = setupServer(
   http.get("/api/v1/admin/health", () => HttpResponse.json({ members: [] })),
   http.get("/api/v1/admin/events", () => HttpResponse.json({ events: [], nextBefore: null })),
   http.get("/api/v1/admin/events/actions", () => HttpResponse.json({ actions: [] })),
+  // Personal agents are off unless a test says so (every /me/agents route is 404 then).
+  http.get("/api/v1/me/agents", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   // Billing is off unless a test says so (hosted plans: docs/plans.md).
   http.get("/api/v1/org/plan", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   // Provisioning (docs/provisioning.md): no invitations, no checklist and domain auto-join off unless a test says so.

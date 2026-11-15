@@ -37,7 +37,7 @@ export const listPath = (prefix: string, view: VaultView) => `${prefix}/${view}`
 export const recordPath = (prefix: string, view: VaultView, id: string) => `${prefix}/${view === "links" ? "vault" : view}/record/${id}`;
 export const folderPath = (prefix: string, id: string | null) => (id ? `${prefix}/vault/folder/${id}` : `${prefix}/vault`);
 
-export const SETTINGS_SECTIONS = ["account", "security", "device", "extension", "health"] as const;
+export const SETTINGS_SECTIONS = ["account", "security", "device", "extension", "health", "agents"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export const ORG_ADMIN_SECTIONS = ["risk", "people", "groups", "agents", "events", "health", "migrate",

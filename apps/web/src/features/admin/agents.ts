@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "@/lib/api";
+import { api, ApiError, type OrgApi } from "@/lib/api";
 import { AgentAttestationError, pinGateway, pinKey, type GatewayIdentity } from "@/lib/orgKeys";
 import { useOrgApi, useScope } from "@/lib/scope";
 import { useSession } from "@/lib/session";
@@ -7,11 +7,12 @@ import { planMessage } from "./plan";
 
 /** Admin → Agents (docs/design/2026-10-17-agent-access.md §4.2, §4.5, §4.7, §7). */
 
-export type AgentStatus = "awaiting_verification" | "active" | "expired" | "revoked";
-export const STATUS_LABEL: Record<AgentStatus, string> = { awaiting_verification: "Awaiting verification", active: "Active", expired: "Expired", revoked: "Revoked" };
+/** `suspended`: a personal agent an organisation's policy turned off (it comes back if the policy allows it again). */
+export type AgentStatus = "awaiting_verification" | "active" | "suspended" | "expired" | "revoked";
+export const STATUS_LABEL: Record<AgentStatus, string> = { awaiting_verification: "Awaiting verification", active: "Active", suspended: "Suspended by an organisation's policy", expired: "Expired", revoked: "Revoked" };
 export interface AgentToken { id: string; label: string; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null }
 /** An OAuth grant (a client an admin allowed on the consent page). */
-export interface AgentGrant { id: string; clientName: string; grantedBy: { id: string; name: string } | null; createdAt: string; revokedAt?: string | null }
+export interface AgentGrant { id: string; clientName: string; grantedBy?: { id: string; name: string } | null; createdAt: string; revokedAt?: string | null }
 export interface Agent {
   id: string; name: string; status: AgentStatus; publicKey: string; attestation: string; expiresAt: string | null; lastUsedAt: string | null;
   createdAt: string; verifiedAt: string | null; folders: { id: string }[]; groups: { id: string; name: string }[]; tokens: AgentToken[]; grants: AgentGrant[];
@@ -40,7 +41,7 @@ export function useGateway(enabled = true, quiet = false) {
 
 function useAgentMutation<V, R>(fn: (v: V) => Promise<R>, opts: { gcTime?: number } = {}) {
   const qc = useQueryClient();
-  return useMutation({ ...opts, mutationFn: fn, onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: ["admin-agents"] }), qc.invalidateQueries({ queryKey: ["org-plan"] })]) });
+  return useMutation({ ...opts, mutationFn: fn, onSettled: () => Promise.all(["admin-agents", "org-plan", "my-agents"].map((k) => qc.invalidateQueries({ queryKey: [k] }))) });
 }
 
 export function useCreateAgent() {
@@ -71,20 +72,25 @@ export function useRevokeAgent() {
   return useAgentMutation((v: { id: string; reason?: string }) =>
     oapi.delReq(`/admin/agents/${v.id}`, v.reason ? { reason: v.reason } : {}) as unknown as Promise<{ rotate: Rotation }>);
 }
-export function useCreateToken() {
+/** `personal`: the owner's own agent, on /me/agents (no organisation context). */
+function useAgentApi({ personal }: { personal?: boolean }): { a: Pick<OrgApi, "post" | "del">; base: string } {
   const oapi = useOrgApi();
+  return personal ? { a: api, base: "/me/agents" } : { a: oapi, base: "/admin/agents" };
+}
+export function useCreateToken(o: { personal?: boolean } = {}) {
+  const { a, base } = useAgentApi(o);
   return useAgentMutation((v: { agentId: string; label: string; expiresAt?: string | null }) =>
-    oapi.post<{ id: string; token: string }>(`/admin/agents/${v.agentId}/tokens`, { label: v.label, ...(v.expiresAt ? { expiresAt: v.expiresAt } : {}) }),
+    a.post<{ id: string; token: string }>(`${base}/${v.agentId}/tokens`, { label: v.label, ...(v.expiresAt ? { expiresAt: v.expiresAt } : {}) }),
   // The answer holds the token: never kept in the mutation cache once the sheet lets go of it.
   { gcTime: 0 });
 }
-export function useRevokeToken() {
-  const oapi = useOrgApi();
-  return useAgentMutation((v: { agentId: string; tokenId: string }) => oapi.del(`/admin/agents/${v.agentId}/tokens/${v.tokenId}`));
+export function useRevokeToken(o: { personal?: boolean } = {}) {
+  const { a, base } = useAgentApi(o);
+  return useAgentMutation((v: { agentId: string; tokenId: string }) => a.del(`${base}/${v.agentId}/tokens/${v.tokenId}`));
 }
-export function useRevokeGrant() {
-  const oapi = useOrgApi();
-  return useAgentMutation((v: { agentId: string; grantId: string }) => oapi.del(`/admin/agents/${v.agentId}/grants/${v.grantId}`));
+export function useRevokeGrant(o: { personal?: boolean } = {}) {
+  const { a, base } = useAgentApi(o);
+  return useAgentMutation((v: { agentId: string; grantId: string }) => a.del(`${base}/${v.agentId}/grants/${v.grantId}`));
 }
 
 const ERRORS: Record<string, string> = {
@@ -95,7 +101,11 @@ const ERRORS: Record<string, string> = {
   invalid_request: "Use a plain name (up to 60 characters) and an expiry in the future.",
   not_found: "That agent no longer exists. Reload the page.",
 };
-export function agentErrorText(e: unknown): string {
+/** A personal agent refused by an organisation's policy (`orgs`: the user's, to name it). */
+export const personalAgentsOffLine = (orgId: string | null | undefined, orgs: { id: string; name: string }[] = []) =>
+  `${orgs.find((o) => o.id === orgId)?.name ?? "One of your organisations"} doesn't allow personal agents, so you can't add one.`;
+export function agentErrorText(e: unknown, orgs?: { id: string; name: string }[]): string {
+  if (e instanceof ApiError && e.code === "personal_agents_disabled") return personalAgentsOffLine((e.body as { orgId?: string } | null)?.orgId, orgs);
   if (e instanceof AgentAttestationError && e.reason === "gateway_changed") return "The agent was verified, but this device's pinned gateway identity changed meanwhile, so it can't be used from here. Revoke the agent and create it again.";
   return planMessage(e) ?? (e instanceof ApiError ? ERRORS[e.code] : undefined) ?? "Couldn't do that. Try again.";
 }
