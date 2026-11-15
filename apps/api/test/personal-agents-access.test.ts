@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomBytes, randomUUID } from "node:crypto";
 import { SignJWT, decodeJwt, exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
 import { b64url, createTeamFolder, encryptNewRecord, openPersonalAgentRecordKey, sealPersonalAgentRecordKey, wrapKey } from "@clane-vault/crypto";
@@ -160,6 +160,34 @@ describe("POST /records/:id/agent-grants", () => {
     expect((await grantItem(owner, r, agent)).statusCode).toBe(201);
     const p = await call(owner, "PATCH", `/records/${r.id}/shares/${agent.id}`, { permission: "edit" }, { org: false });
     expect([p.statusCode, p.json()]).toEqual([400, { error: "agent_use_only" }]);
+  });
+
+  it("DELETE /records/:id/shares/<agentId> from the Personal space is 400 use_agent_grants and leaves the grant", async () => {
+    const { owner, agent } = await setup();
+    const r = await record(owner);
+    expect((await grantItem(owner, r, agent)).statusCode).toBe(201);
+    const d = await call(owner, "DELETE", `/records/${r.id}/shares/${agent.id}`, undefined, { org: false });
+    expect([d.statusCode, d.json()]).toEqual([400, { error: "use_agent_grants" }]);
+    expect(await t.prisma.recordAccess.count({ where: { recordId: r.id, holderId: agent.id } })).toBe(1);
+    expect(await t.prisma.event.count({ where: { action: "record.unshare" } })).toBe(0);
+  });
+
+  it("trash, purge and move answer success when dropping the agents' caches fails after the commit", async () => {
+    const { owner, agent } = await setup();
+    const f = await teamFolder(owner);
+    const throwing = vi.spyOn(t.app.gateway, "dropAgent").mockImplementation(() => { throw new Error("gateway exploded"); });
+    try {
+      const moved = await record(owner);
+      expect((await grantItem(owner, moved, agent)).statusCode).toBe(201);
+      expect((await call(owner, "PUT", `/records/${moved.id}/folder`, { folderId: f.id, folderWrappedRecordKey: await wrapKey(moved.recordKey, f.folderKey, `record-key:${moved.id}`) })).statusCode).toBe(200);
+      const r = await record(owner);
+      expect((await grantItem(owner, r, agent)).statusCode).toBe(201);
+      expect((await call(owner, "DELETE", `/records/${r.id}`)).statusCode).toBe(204);
+      const lookup = vi.spyOn(t.app.prisma.agent, "findMany").mockRejectedValueOnce(new Error("db gone"));
+      expect((await call(owner, "DELETE", `/records/${r.id}/purge`)).statusCode).toBe(204);
+      lookup.mockRestore();
+      expect(throwing).toHaveBeenCalled();
+    } finally { throwing.mockRestore(); }
   });
 });
 

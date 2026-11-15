@@ -46,9 +46,12 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
   }
 
   /** After the commit, best effort: the gateway forgets the cached keys of the agents among `holders` (they lost or changed access). */
-  async function dropAgents(holders: string[]) {
-    if (!holders.length || !app.gateway) return;
-    for (const a of await app.prisma.agent.findMany({ where: { userId: { in: holders } }, select: { userId: true } })) app.gateway.dropAgent(a.userId).catch(() => undefined);
+  async function dropAgents(holders: string[] | Promise<string[]>) {
+    try {
+      const ids = await holders;
+      if (!ids.length || !app.gateway) return;
+      for (const a of await app.prisma.agent.findMany({ where: { userId: { in: ids } }, select: { userId: true } })) app.gateway.dropAgent(a.userId).catch(() => undefined);
+    } catch { /* the action already committed; the gateway's cache expires in 60 s anyway */ }
   }
   const shareHolders = async (recordId: string) =>
     (await app.prisma.recordAccess.findMany({ where: { recordId, holderType: "user", permission: { not: "owner" } }, select: { holderId: true } })).map((r) => r.holderId);
@@ -109,7 +112,7 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
       await revokeLinksForRecords(tx, [id], now); // one-time links die with the record
     });
     await logEvent(app.prisma, { orgId: acc.orgId ?? undefined, actorId: req.auth.userId, action: "record.trash", recordId: id });
-    await dropAgents(await shareHolders(id));
+    await dropAgents(shareHolders(id));
     return reply.code(204).send();
   });
 
@@ -257,6 +260,9 @@ export const recordRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/records/:id/shares/:userId", async (req, reply) => {
     const { id, userId } = shareParam.parse(req.params);
     if (!(await owned(req, reply, id))) return reply;
+    // A personal agent's grant ends only through DELETE /records/:id/agent-grants/:agentId (its event, the gateway told).
+    if (!ctx(req) && (await app.prisma.agent.findFirst({ where: { userId, ownerUserId: { not: null } }, select: { userId: true } })))
+      return reply.code(400).send({ error: "use_agent_grants" });
     const n = await app.prisma.$transaction(async (tx) => {
       const d = await tx.recordAccess.deleteMany({ where: { recordId: id, holderType: "user", holderId: userId, permission: { not: "owner" }, orgId: ctx(req) } });
       // Their live one-time links on this record go too, unless a team folder still gives them edit.

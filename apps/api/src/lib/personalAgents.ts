@@ -89,3 +89,33 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
     policy: { write: rules.write, reveal: rules.reveal },
   };
 }
+
+export interface PersonalRotation { records: { id: string }[]; revealed: { id: string; fields: string[] }[] }
+
+/**
+ * In the caller's transaction: lockUser(agent) (the lock a grant takes, so none lands mid-revoke); claim revokedAt (null
+ * when already revoked); delete its RecordAccess rows; revoke tokens and grants; wrappedPrivateKey null; User disabled;
+ * logLifecycle("revoke"). Returns the records whose keys the agent's gateway held: the owner rotates them.
+ */
+export async function revokePersonalAgent(tx: Db, agentUserId: string, byUserId: string): Promise<PersonalRotation | null> {
+  await lockUser(tx, agentUserId);
+  const now = new Date();
+  const a = await tx.agent.findFirst({ where: { userId: agentUserId, ownerUserId: { not: null }, revokedAt: null }, select: { ownerUserId: true } });
+  if (!a || (await tx.agent.updateMany({ where: { userId: agentUserId, revokedAt: null }, data: { revokedAt: now, revokedById: byUserId, wrappedPrivateKey: null } })).count !== 1) return null;
+  const held = await tx.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId }, select: { recordId: true }, distinct: ["recordId"] });
+  await tx.recordAccess.deleteMany({ where: { holderType: "user", holderId: agentUserId } });
+  await tx.agentToken.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
+  await tx.agentGrant.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
+  await tx.user.update({ where: { id: agentUserId }, data: { status: "disabled" } });
+  await logLifecycle(tx, a.ownerUserId!, "revoke", agentUserId);
+  return { records: held.map((r) => ({ id: r.recordId })), revealed: [] };
+}
+
+/** Revokes every live personal agent of the owner, then deletes all of that owner's agents' User rows (R3); returns their ids. */
+export async function revokePersonalAgentsOf(tx: Db, ownerUserId: string): Promise<string[]> {
+  const all = await tx.agent.findMany({ where: { ownerUserId }, select: { userId: true, revokedAt: true } });
+  for (const a of all) if (!a.revokedAt) await revokePersonalAgent(tx, a.userId, ownerUserId);
+  const ids = all.map((a) => a.userId);
+  if (ids.length) await tx.user.deleteMany({ where: { id: { in: ids }, kind: "agent" } });
+  return ids;
+}

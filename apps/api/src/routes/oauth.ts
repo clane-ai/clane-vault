@@ -7,6 +7,8 @@ import { logEvent } from "../lib/events.js";
 import { reqMeta, revokeGrant } from "../lib/agentAdmin.js";
 import { agentJwks, hashToken, signAgentAccess, splitRefresh } from "../lib/tokens.js";
 import { fromGateway } from "../plugins/agent.js";
+import { isPrivateLocked } from "../lib/privateLock.js";
+import { logLifecycle, personalAgentRules } from "../lib/personalAgents.js";
 
 const STATIC = /^cvat_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_[A-Za-z0-9_-]{43}$/;
 type Form = Record<string, string | undefined>;
@@ -124,19 +126,39 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const rows = await app.prisma.agent.findMany({ where: { ...grantableAgent(new Date()),
       org: { memberships: { some: { userId: req.auth.userId, status: "active", role: { in: ["owner", "admin"] } } } } },
       orderBy: { createdAt: "asc" }, select: { userId: true, orgId: true, user: { select: { name: true } }, org: { select: { name: true } } } });
-    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org?.name ?? null })) };
+    // The caller's own personal agents, unless the session is confined to one organisation or the rules say no.
+    const personal = !isPrivateLocked(req) && (await personalAgentRules(app.prisma, app.config, req.auth.userId)).allowed
+      ? await app.prisma.agent.findMany({ where: { ...grantableAgent(new Date()), ownerUserId: req.auth.userId }, orderBy: { createdAt: "asc" }, select: { userId: true, user: { select: { name: true } } } })
+      : [];
+    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: [
+      ...rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org?.name ?? null })),
+      ...personal.map((a) => ({ id: a.userId, name: a.user.name, orgId: null, orgName: null, personal: true })),
+    ] };
   });
 
-  /** Consent by an owner or admin of the agent's org (X-Org-Id, so that org's SSO and IP policies apply). */
-  app.post("/oauth/authorize", { config: PER_MINUTE, preHandler: [app.requireAuth, app.orgAdmin] }, async (req, reply) => {
+  /**
+   * Consent by an owner or admin of the agent's org (X-Org-Id, so that org's SSO and IP policies apply), or for a
+   * personal agent by its owner (no organisation context).
+   */
+  app.post("/oauth/authorize", { config: PER_MINUTE, preHandler: app.requireAuth }, async (req, reply) => {
     const b = z.object({ clientId: z.string(), redirectUri: z.string(), codeChallenge: z.string().regex(CHALLENGE), codeChallengeMethod: z.literal("S256"),
       state: z.string().max(1000).optional(), resource: z.string().optional(), agentId: z.string().uuid() }).parse(req.body);
     const c = await clientFor(b.clientId, b.redirectUri);
     if (typeof c === "string") return reply.code(400).send({ error: c });
     if (badResource(b.resource)) return reply.code(400).send({ error: "invalid_target" });
     const now = new Date();
-    const a = await app.prisma.agent.findFirst({ where: { userId: b.agentId, orgId: req.org!.id, revokedAt: null, user: { status: "active" } }, select: { verifiedAt: true, expiresAt: true } });
+    const a = await app.prisma.agent.findFirst({ where: { userId: b.agentId, revokedAt: null, user: { status: "active" } }, select: { verifiedAt: true, expiresAt: true, orgId: true, ownerUserId: true } });
     if (!a) return reply.code(400).send({ error: "invalid_request" });
+    if (a.ownerUserId) {
+      if (a.ownerUserId !== req.auth.userId) return reply.code(400).send({ error: "invalid_request" });
+      if (isPrivateLocked(req)) return reply.code(403).send({ error: "totp_step_up_required" });
+      const rules = await personalAgentRules(app.prisma, app.config, req.auth.userId);
+      if (!rules.allowed) return reply.code(403).send({ error: "personal_agents_disabled", orgId: rules.blockedByOrgId ?? undefined });
+    } else {
+      await app.orgAdmin(req, reply);
+      if (reply.sent) return reply;
+      if (a.orgId !== req.org!.id) return reply.code(400).send({ error: "invalid_request" });
+    }
     if (a.expiresAt && a.expiresAt <= now) return reply.code(403).send({ error: "agent_expired" });
     if (!a.verifiedAt) return reply.code(403).send({ error: "agent_unverified" });
     const code = randomBytes(32).toString("base64url");
@@ -203,6 +225,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
       if (!a || !client) return null;
       await tx.agentGrant.create({ data: { id, agentId: row.agentId, clientId: row.clientId, grantedById: row.grantedById, refreshHash: refresh.hash, expiresAt: new Date(now.getTime() + GRANT_TTL_MS) } });
       await logEvent(tx, { orgId: a.orgId ?? undefined, actorId: row.grantedById, action: "agent.grant", targetUserId: row.agentId, meta: { clientName: client.name, grantId: id }, ...reqMeta(req) });
+      if (a.ownerUserId) await logLifecycle(tx, a.ownerUserId, "connect", row.agentId);
       return a;
     });
     if (!agent) return invalidGrant(reply);

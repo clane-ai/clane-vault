@@ -6,7 +6,7 @@ import { createAgentToken, ensureIdentity, expiry, gatewayInfo, grantView, patch
 import { agentEmail, fingerprintOf, personalAttestationOk } from "../lib/agents.js";
 import { GatewayUnavailable } from "../lib/gateway.js";
 import { isPrivateLocked } from "../lib/privateLock.js";
-import { assertPersonalAgentSlot, logLifecycle, personalAgentRules } from "../lib/personalAgents.js";
+import { assertPersonalAgentSlot, logLifecycle, personalAgentRules, revokePersonalAgent } from "../lib/personalAgents.js";
 
 const idParam = z.object({ id: z.string().uuid() });
 
@@ -97,4 +97,26 @@ export const myAgentRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/:id/tokens/:tokenId", async (req, reply) => revokeAgentToken(app, req, reply, () => mine(req, reply), undefined));
 
   app.delete("/:id/grants/:grantId", async (req, reply) => revokeAgentGrant(app, req, reply, () => mine(req, reply)));
+
+  /** Revokes the agent for good and answers the records whose keys its gateway held, for the owner to rotate. */
+  app.delete("/:id", async (req, reply) => {
+    const a = await mine(req, reply);
+    if (!a) return reply;
+    const rotate = await app.prisma.$transaction((tx) => revokePersonalAgent(tx, a.userId, me(req)));
+    if (!rotate) return reply.code(409).send({ error: "agent_revoked" });
+    app.gateway.dropAgent(a.userId).catch(() => undefined); // best effort: it forgets the cached keys now
+    return { rotate };
+  });
+
+  /** The agent's owner-visible events (orgId null), newest first. */
+  app.get("/:id/activity", async (req, reply) => {
+    const q = z.object({ before: z.string().regex(/^\d{1,18}$/).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(req.query);
+    const a = await mine(req, reply);
+    if (!a) return reply;
+    const rows = await app.prisma.event.findMany({ where: { orgId: null, OR: [{ actorId: a.userId }, { targetUserId: a.userId }], ...(q.before ? { id: { lt: BigInt(q.before) } } : {}) },
+      orderBy: { id: "desc" }, take: q.limit + 1, select: { id: true, at: true, action: true, recordId: true, meta: true } });
+    const page = rows.slice(0, q.limit);
+    return { events: page.map((e) => ({ id: e.id.toString(), at: e.at.toISOString(), action: e.action, recordId: e.recordId, meta: e.meta })),
+      nextBefore: rows.length > q.limit ? page.at(-1)!.id.toString() : null };
+  });
 };

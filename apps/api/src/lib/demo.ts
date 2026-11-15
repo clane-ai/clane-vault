@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "../config.js";
 import type { Db } from "./access.js";
 import { tombstoneAttachments } from "./attachments/sweep.js";
+import { revokePersonalAgentsOf } from "./personalAgents.js";
 
 /**
  * Public demo mode (docs/demo.md). A visitor gets a sandbox: their own account (made in the browser like any sign-up)
@@ -67,6 +68,9 @@ export async function checkDemoStartup(prisma: Db, config: Pick<Config, "demo" |
  * accounts, with every record, attachment, link, folder, event and session they or the organisation hold.
  */
 async function deleteSandbox(tx: Db, orgId: string | null, userIds: string[]): Promise<void> {
+  // Their personal agents first (their User rows don't cascade with the owner's); events naming the agents go below.
+  const agentIds: string[] = [];
+  for (const u of userIds) agentIds.push(...await revokePersonalAgentsOf(tx, u));
   const owners = userIds.length ? [{ ownerId: { in: userIds } }] : [];
   const inOrg = orgId ? [{ folder: { orgId } }] : [];
   const recordIds = (await tx.record.findMany({ where: { OR: [...owners, ...inOrg] }, select: { id: true } })).map((r) => r.id);
@@ -74,7 +78,7 @@ async function deleteSandbox(tx: Db, orgId: string | null, userIds: string[]): P
   await tombstoneAttachments(tx, recordIds);
   await tx.event.deleteMany({ where: { OR: [
     ...(orgId ? [{ orgId }] : []),
-    ...(userIds.length ? [{ actorId: { in: userIds } }, { targetUserId: { in: userIds } }] : []),
+    ...(userIds.length ? [{ actorId: { in: [...userIds, ...agentIds] } }, { targetUserId: { in: [...userIds, ...agentIds] } }] : []),
     ...(recordIds.length ? [{ recordId: { in: recordIds } }] : []),
   ] } });
   // Links, record access rows and attachments (with their chunks) cascade with the records.
