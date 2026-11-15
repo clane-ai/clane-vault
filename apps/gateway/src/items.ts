@@ -1,8 +1,8 @@
 import {
-  CryptoError, agentSecretOf, basicUsername, decryptFolderName, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, unwrapKey,
+  CryptoError, agentSecretOf, basicUsername, decryptFolderName, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, unwrapKey,
   type AgentInject, type AgentMethod, type AgentPolicy, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
-import type { AgentSync } from "./apiClient.js";
+import { isPersonal, type AgentSync, type OrgAgentSync, type PersonalAgentSync } from "./apiClient.js";
 import type { HeldSecrets, Logger } from "./log.js";
 
 export interface ItemSummary {
@@ -10,6 +10,7 @@ export interface ItemSummary {
   methods?: AgentMethod[]; paths?: string[];
 }
 type SyncRecord = AgentSync["records"][number];
+type OrgRecord = OrgAgentSync["records"][number];
 
 /** An item, or every item, would not open (no folder key, no folder, a dead agent key); a CryptoError is the other kind. */
 export class ItemUnopenable extends Error { override name = "ItemUnopenable"; }
@@ -18,10 +19,26 @@ type Refusal = { error: "refused"; reason: "not_found" | "no_policy" };
 /** Lower-case, runs outside [a-z0-9] → "-", trimmed, at most 60 characters. */
 export const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60).replace(/-$/, "");
 
-const live = (sync: AgentSync) => sync.records.filter((r) => !r.deletedAt);
+const live = (sync: AgentSync) => (sync.records as SyncRecord[]).filter((r) => !r.deletedAt);
+
+/** A personal agent's records are each sealed to it, under the one prefix "personal". */
+function personalOpener(sync: PersonalAgentSync, keys: MembershipKeys) {
+  return {
+    async prefix(): Promise<string> { return "personal"; },
+    async body(r: SyncRecord): Promise<RecordBody> {
+      const rk = await openPersonalAgentRecordKey(r.wrappedRecordKey, { ownerUserId: sync.owner.userId, agentId: sync.agentId, recordId: r.id }, keys);
+      try { return await decryptRecordBody(r.id, r.encBody, rk); } finally { rk.fill(0); }
+    },
+    close() {},
+  };
+}
 
 /** Opens folder keys once per call; close() zeroes every one. */
 function opener(sync: AgentSync, keys: MembershipKeys) {
+  return isPersonal(sync) ? personalOpener(sync, keys) : orgOpener(sync, keys);
+}
+
+function orgOpener(sync: OrgAgentSync, keys: MembershipKeys) {
   const folderKeys = new Map<string, Uint8Array>(), prefixes = new Map<string, string>();
   async function folderKey(id: string) {
     let k = folderKeys.get(id);
@@ -34,7 +51,8 @@ function opener(sync: AgentSync, keys: MembershipKeys) {
     return k;
   }
   return {
-    async prefix(r: SyncRecord): Promise<string> {
+    async prefix(rec: SyncRecord): Promise<string> {
+      const r = rec as OrgRecord;
       if (r.holderType === "user") return "shared";
       const id = r.keyFolderId ?? "";
       let p = prefixes.get(id);
@@ -46,7 +64,8 @@ function opener(sync: AgentSync, keys: MembershipKeys) {
       }
       return p;
     },
-    async body(r: SyncRecord): Promise<RecordBody> {
+    async body(rec: SyncRecord): Promise<RecordBody> {
+      const r = rec as OrgRecord;
       const rk = r.holderType === "folder"
         ? await unwrapKey(r.wrappedRecordKey, await folderKey(r.keyFolderId ?? ""), `record-key:${r.id}`)
         : await openOrgRecordShare(r.wrappedRecordKey, { orgId: sync.orgId, recordId: r.id }, keys);
@@ -69,7 +88,7 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
       try {
         prefix = await o.prefix(r);
         if (onlyPrefix !== undefined && prefix !== onlyPrefix) {
-          if (r.holderType === "folder") opened++; // its folder key opened: the agent's key works
+          if ((r as OrgRecord).holderType === "folder") opened++; // its folder key opened: the agent's key works
           continue;
         }
         body = await o.body(r);

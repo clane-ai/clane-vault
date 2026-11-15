@@ -1,13 +1,22 @@
 import type { AgentMethod } from "@clane-vault/crypto";
 import { httpsOrLoopback, type GatewayConfig } from "./config.js";
 
-/** GET /agent/sync: the agent's `/sync?space=org` body plus its wrapped key (plan Task 5). Only the fields the gateway reads. */
-export interface AgentSync {
+/** GET /agent/sync for an organisation agent: its `/sync?space=org` body plus its wrapped key (plan Task 5). Only the fields the gateway reads. */
+export interface OrgAgentSync {
   orgId: string; wrappedPrivateKey: string; kekId: string; membershipKeys: { publicKey: string }[]; expiresAt: string | null;
   folders: { id: string; kind: "team" | "private"; encName: string; wrappedFolderKey?: string; sealedTo?: string | null }[];
   records: { id: string; folderId: string | null; encBody: string; holderType: "user" | "folder"; keyFolderId: string | null; wrappedRecordKey: string; deletedAt: string | null }[];
   entitlements: { approvals: boolean };
 }
+/** GET /agent/sync for a personal agent: its owner (and the owner key the API reports now), its own grants. `wrappedPrivateKey` null: revoked. */
+export interface PersonalAgentSync {
+  owner: { userId: string; publicKey: string }; agentId: string; publicKey: string; wrappedPrivateKey: string | null; kekId: string; expiresAt: string | null;
+  records: { id: string; encBody: string; revision: number; wrappedRecordKey: string; write: boolean; deletedAt: string | null }[];
+  reveal: unknown[]; deposits: unknown[];
+  policy: { write: boolean; reveal: "off" | "approval" | "standing" };
+}
+export type AgentSync = OrgAgentSync | PersonalAgentSync;
+export const isPersonal = (s: AgentSync): s is PersonalAgentSync => "owner" in s;
 export interface UseEvent { at: string; recordId?: string; action: "use" | "refused" | "reflected"; host: string; method: AgentMethod; reason?: string; truncated?: boolean }
 
 export class ApiRefused extends Error {

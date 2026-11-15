@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from "zod";
 import { b64url, generateKeyPair } from "@clane-vault/crypto";
 import type { GatewayConfig } from "./config.js";
-import { wrapAgentKey } from "./envelope.js";
+import { wrapAgentKey, wrapPersonalAgentKey } from "./envelope.js";
 import type { Identity } from "./identity.js";
 import type { Kek } from "./kek.js";
 import { safeError, type HeldSecrets, type Logger } from "./log.js";
@@ -19,7 +19,11 @@ import { RateLimiter } from "./rateLimit.js";
 export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number }
 
 const MAX_BODY = 16 * 1024;
-const enrolBody = z.object({ agentId: z.string().uuid(), orgId: z.string().uuid() });
+// Exactly one shape: an organisation agent, or a personal agent bound to its owner's 32-byte X25519 key (43 base64url characters).
+const enrolBody = z.union([
+  z.strictObject({ agentId: z.string().uuid(), orgId: z.string().uuid() }),
+  z.strictObject({ agentId: z.string().uuid(), ownerUserId: z.string().uuid(), ownerPublicKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
+]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Promise<{ publicServer: Server; internalServer: Server; close(): Promise<void>; keys: AgentKeyCache; syncs: SyncCache }> {
@@ -55,13 +59,19 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
     if (req.method === "POST" && path === "/internal/agents") {
       const p = enrolBody.safeParse(await readJson(req, MAX_BODY));
       if (!p.success) return send(res, 400, { error: "invalid_request" });
-      const { agentId, orgId } = p.data;
+      const b = p.data;
       const kp = await generateKeyPair();
       try {
-        const ids = { orgId, agentId, publicKey: b64url.encode(kp.publicKey) };
-        const wrappedPrivateKey = await wrapAgentKey(kek, ids, kp.privateKey);
-        const attestation = await identity.sign(ids);
-        return send(res, 200, { publicKey: ids.publicKey, wrappedPrivateKey, kekId: kek.id, attestation });
+        const publicKey = b64url.encode(kp.publicKey);
+        let wrappedPrivateKey: string, attestation: string;
+        if ("orgId" in b) {
+          const ids = { orgId: b.orgId, agentId: b.agentId, publicKey };
+          [wrappedPrivateKey, attestation] = [await wrapAgentKey(kek, ids, kp.privateKey), await identity.sign(ids)];
+        } else {
+          const ids = { ownerUserId: b.ownerUserId, ownerPublicKey: b.ownerPublicKey, agentId: b.agentId, publicKey };
+          [wrappedPrivateKey, attestation] = [await wrapPersonalAgentKey(kek, ids, kp.privateKey), await identity.signPersonal(ids)];
+        }
+        return send(res, 200, { publicKey, wrappedPrivateKey, kekId: kek.id, attestation });
       } finally {
         kp.privateKey.fill(0);
       }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { verifyAgentAttestation } from "@clane-vault/crypto";
+import { verifyAgentAttestation, verifyGatewayMessage, verifyPersonalAgentAttestation } from "@clane-vault/crypto";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { EnvelopeError } from "../src/envelope.js";
 import { fileKek, tempDir } from "./helpers.js";
@@ -17,6 +17,10 @@ describe("gateway identity", () => {
     expect([b.keyId, b.publicKey]).toEqual([a.keyId, a.publicKey]);
     const ids = { orgId: "o", agentId: "a", publicKey: "pk" };
     expect(await verifyAgentAttestation(await b.sign(ids), ids, a)).toBe(true);
+    const pids = { ownerUserId: "u", ownerPublicKey: "opk", agentId: "a", publicKey: "pk" };
+    expect(await verifyPersonalAgentAttestation(await b.signPersonal(pids), pids, a)).toBe(true);
+    expect(await verifyGatewayMessage(await b.signMessage("d1", "agent-deposit:x"), "d1", "agent-deposit:x", a)).toBe(true);
+    expect(await verifyGatewayMessage(await b.signMessage("d1", "agent-deposit:x"), "u1", "agent-deposit:x", a)).toBe(false);
   });
   it("gives two replicas starting at once the same identity", async () => {
     const dir = tempDir();

@@ -4,7 +4,8 @@ import { ApiRefused, type ApiClient } from "./apiClient.js";
 import type { GatewayConfig } from "./config.js";
 import { HttpError } from "./http.js";
 
-export interface AgentPrincipal { agentId: string; orgId: string; accessToken: string; exp: number }
+/** Exactly one of `orgId` (an organisation agent) and `ownerUserId` (a personal agent) is set. */
+export interface AgentPrincipal { agentId: string; orgId: string | null; ownerUserId: string | null; accessToken: string; exp: number }
 
 export type BearerAuth = ((authorization: string | undefined, onExchange?: () => void) => Promise<AgentPrincipal | null>) & {
   /** Evicts the agent's cached exchanges (revoked or refused), so its static token is checked at the API again. */
@@ -49,9 +50,11 @@ export function bearerAuth(cfg: GatewayConfig, api: ApiClient, now: () => number
     try { issuer = await api.issuer(); } catch { throw new ApiUnavailable("issuer"); }
     try {
       const { payload: c } = await jwtVerify(jwt, jwks, { audience: cfg.publicUrl, issuer, algorithms: ["ES256"] });
-      if (c.scope !== "agent" || typeof c.sub !== "string" || typeof c.org !== "string" || typeof c.exp !== "number" || typeof c.grant !== "string") return null;
+      const org = typeof c.org === "string" ? c.org : null, owner = typeof c.owner === "string" ? c.owner : null;
+      if (c.scope !== "agent" || typeof c.sub !== "string" || typeof c.exp !== "number" || typeof c.grant !== "string") return null;
+      if ((org === null) === (owner === null) || ("org" in c && org === null) || ("owner" in c && owner === null)) return null; // exactly one, and a string
       if (grant !== undefined && c.grant !== grant) return null;
-      return { agentId: c.sub, orgId: c.org, accessToken: jwt, exp: c.exp };
+      return { agentId: c.sub, orgId: org, ownerUserId: owner, accessToken: jwt, exp: c.exp };
     } catch (e) {
       if (e instanceof HttpError) throw e;
       return null;

@@ -11,7 +11,7 @@ import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
 import { ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
-import type { AgentKeyCache, SyncCache } from "./keys.js";
+import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
 import type { HeldSecrets, Logger } from "./log.js";
 import { performRequest, type OutboundInput } from "./outbound/request.js";
 import { parseCidrs, type Resolver } from "./outbound/ssrf.js";
@@ -42,6 +42,10 @@ export function clientAddress(req: IncomingMessage, hops: number): string {
   return chain[Math.min(hops, chain.length - 1)]!;
 }
 
+const OWNER_KEY_CHANGED: Refusal = { error: "refused", reason: "owner_key_changed" };
+/** A personal agent whose owner key the API now reports differently: refused before anything is opened or sent. */
+const ownerKeyChanged = (e: unknown): Refusal => { if (e instanceof OwnerKeyChanged) return OWNER_KEY_CHANGED; throw e; };
+
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
 const classOf = (e: unknown) => (e instanceof Error ? e.name : typeof e);
 
@@ -64,8 +68,9 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
     ({ at: new Date().toISOString(), action, host, method, ...extra });
 
   return {
-    async listSecrets(p: AgentPrincipal): Promise<SecretListing[]> {
-      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log));
+    async listSecrets(p: AgentPrincipal): Promise<SecretListing[] | Refusal> {
+      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log)).catch(ownerKeyChanged);
+      if (!Array.isArray(items)) return items;
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
         ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}) }));
     },
@@ -94,7 +99,7 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
           d.log.error({ event: unopenable ? "item_unopenable" : "item_error", class: classOf(e) });
           return { error: "refused", reason: unopenable ? "not_found" : "upstream_error" } as Refusal;
         }
-      });
+      }).catch(ownerKeyChanged);
       if (!ran && "error" in r) d.events.push(p, event("refused", req.method, hostOf(req.url), { reason: r.reason }));
       await d.events.flush(p);
       return r;
@@ -145,7 +150,7 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
     }
   };
   server.registerTool("list_secrets", { description: "The items you may use: handles, hosts and how the credential is injected. Never a secret." },
-    (extra) => run(extra, async (p) => ({ secrets: await tools.listSecrets(p) })));
+    (extra) => run(extra, async (p) => { const r = await tools.listSecrets(p); return Array.isArray(r) ? { secrets: r } : r; }));
   server.registerTool("http_request", {
     description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id).",
     inputSchema: httpRequestInput,

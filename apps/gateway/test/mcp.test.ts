@@ -3,7 +3,7 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RecordBody } from "@clane-vault/crypto";
+import { b64url, generateKeyPair as generateX25519, type RecordBody } from "@clane-vault/crypto";
 import { generateKeyPair, SignJWT } from "jose";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -145,6 +145,15 @@ describe("bearerAuth", () => {
       (async () => Response.json({ issuer: "http://localhost:3001/app" })) as unknown as typeof fetch).issuer()).toBe("http://localhost:3001/app");
   });
 
+  it("a personal agent's JWT (owner, no org) verifies; one with both org and owner is refused", async () => {
+    const { api } = await fake();
+    const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
+    const jwt = await api.personal.token();
+    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.personal.agentId, orgId: null, ownerUserId: api.personal.ownerId, accessToken: jwt, exp: expect.any(Number) });
+    for (const t of [await api.personal.token({ org: api.agent.orgId }), await api.personal.token({ owner: undefined }), await api.personal.token({ owner: 7 })])
+      expect(await auth(`Bearer ${t}`)).toBeNull();
+  });
+
   it("a well-formed ES256 JWT with an unknown kid is refused (null), not 503", async () => {
     const { api } = await fake();
     const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
@@ -158,7 +167,7 @@ describe("bearerAuth", () => {
     const { api } = await fake();
     const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
     const jwt = await api.issueToken({ grant: "an-agent-grant-id" });
-    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.agent.id, orgId: api.agent.orgId, accessToken: jwt, exp: expect.any(Number) });
+    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.agent.id, orgId: api.agent.orgId, ownerUserId: null, accessToken: jwt, exp: expect.any(Number) });
     expect(api.tokenCalls).toBe(0);
   });
 
@@ -230,7 +239,7 @@ describe("RateLimiter", () => {
 });
 
 describe("EventQueue", () => {
-  const p: AgentPrincipal = { agentId: "a1", orgId: "o", accessToken: "tok", exp: 0 };
+  const p: AgentPrincipal = { agentId: "a1", orgId: "o", ownerUserId: null, accessToken: "tok", exp: 0 };
   const ev = (n: number): UseEvent => ({ at: String(n), action: "use", host: "h", method: "GET" });
   it("keeps the newest 200 per agent and sends them with the agent's token", async () => {
     const sent: [string, UseEvent[]][] = [];
@@ -511,6 +520,34 @@ describe("MCP endpoint", () => {
     const r = await client.callTool({ name: "list_secrets", arguments: {} });
     expect(result(r)).toEqual({ secrets: [expect.objectContaining({ handle: "payments/stripe", hosts: ["api.test"] })] });
     expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it("a personal agent: personal/ handles, the credential injected and scrubbed; a swapped owner key refuses both tools with no outbound call", async () => {
+    const { api, gw, url } = await start();
+    const seen: http.IncomingHttpHeaders[] = [];
+    const echo = http.createServer((req, res) => { seen.push(req.headers); req.resume(); req.on("end", () => res.end(`you sent ${req.headers.authorization}`)); });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    closers.push(() => new Promise((r) => { echo.closeAllConnections(); echo.close(() => r()); }));
+    const port = (echo.address() as AddressInfo).port;
+    const id = await api.personal.addRecord(apiKey("Echo", [`api.test:${port}`]));
+    const { client } = await connect(url, await api.personal.token());
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets"]);
+    expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "personal/echo", hosts: [`api.test:${port}`] })] });
+    const args = { item: "personal/echo", method: "GET", url: `http://api.test:${port}/v1` };
+    const r = result(await client.callTool({ name: "http_request", arguments: args }));
+    expect(seen[0]!.authorization).toBe(`Bearer ${SECRET}`);
+    expect(r).toMatchObject({ status: 200, body: "you sent Bearer [clane:redacted]" });
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+    expect(api.events).toEqual(expect.arrayContaining([expect.objectContaining({ action: "use", recordId: id })]));
+
+    api.events.length = 0;
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(result(await client.callTool({ name: "http_request", arguments: args }))).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(seen).toHaveLength(1);
+    expect(api.events).toEqual([{ at: expect.any(String), action: "refused", host: "api.test", method: "GET", reason: "owner_key_changed" }]);
+    expect(gw.keys.has(api.personal.agentId)).toBe(false);
   });
 
   it("two connects with one static token make one exchange", async () => {

@@ -3,10 +3,10 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { b64url, publicKeyFromPrivateKey, verifyAgentAttestation } from "@clane-vault/crypto";
+import { b64url, generateKeyPair, publicKeyFromPrivateKey, verifyAgentAttestation, verifyPersonalAgentAttestation } from "@clane-vault/crypto";
 import { createGateway } from "../src/app.js";
 import type { GatewayConfig } from "../src/config.js";
-import { unwrapAgentKey } from "../src/envelope.js";
+import { unwrapAgentKey, unwrapPersonalAgentKey } from "../src/envelope.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { createLogger, HeldSecrets } from "../src/log.js";
 import { fileKek, tempDir } from "./helpers.js";
@@ -55,6 +55,31 @@ describe("internal routes", () => {
     expect(await verifyAgentAttestation(r.attestation, { ...ids, publicKey: r.publicKey }, identity)).toBe(true);
     const priv = await unwrapAgentKey(kek, { ...ids, publicKey: r.publicKey }, r.wrappedPrivateKey);
     expect(b64url.encode(await publicKeyFromPrivateKey(priv))).toBe(r.publicKey);
+  });
+  it("POST /internal/agents mints a k2 key bound to the owner's key for a personal agent", async () => {
+    const { int, kek, identity } = await start();
+    const owner = { agentId: randomUUID(), ownerUserId: randomUUID(), ownerPublicKey: b64url.encode((await generateKeyPair()).publicKey) };
+    const res = await fetch(`${int}/internal/agents`, { method: "POST", body: JSON.stringify(owner), headers: auth });
+    expect(res.status).toBe(200);
+    const r = await res.json() as { publicKey: string; wrappedPrivateKey: string; kekId: string; attestation: string };
+    expect(r.kekId).toBe(kek.id);
+    expect(r.wrappedPrivateKey).toMatch(/^k2\.[^.]+\.[^.]+\.v1\./);
+    const ids = { ...owner, publicKey: r.publicKey };
+    expect(await verifyPersonalAgentAttestation(r.attestation, ids, identity)).toBe(true);
+    expect(await verifyAgentAttestation(r.attestation, { orgId: owner.ownerUserId, agentId: owner.agentId, publicKey: r.publicKey }, identity)).toBe(false);
+    const priv = await unwrapPersonalAgentKey(kek, ids, r.wrappedPrivateKey);
+    expect(b64url.encode(await publicKeyFromPrivateKey(priv))).toBe(r.publicKey);
+  });
+  it("POST /internal/agents refuses a body naming both an org and an owner, extra keys, or a bad owner key", async () => {
+    const { int } = await start();
+    const opk = b64url.encode((await generateKeyPair()).publicKey);
+    const agentId = randomUUID(), ownerUserId = randomUUID();
+    for (const body of [{ agentId, orgId: randomUUID(), ownerUserId, ownerPublicKey: opk }, { agentId, orgId: randomUUID(), ownerUserId },
+      { agentId, ownerUserId, ownerPublicKey: opk, extra: 1 }, { agentId, ownerUserId }, { agentId, ownerUserId, ownerPublicKey: "short" },
+      { agentId, ownerUserId, ownerPublicKey: `${opk}AAAA` }]) {
+      const res = await fetch(`${int}/internal/agents`, { method: "POST", body: JSON.stringify(body), headers: auth });
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
   });
   it("POST /internal/agents refuses a bad body", async () => {
     const { int } = await start();

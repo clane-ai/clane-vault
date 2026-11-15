@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { apiClient, ApiRefused } from "../src/apiClient.js";
-import { AgentKeyCache, SyncCache } from "../src/keys.js";
+import { apiClient, ApiRefused, type PersonalAgentSync } from "../src/apiClient.js";
+import { b64url, generateKeyPair } from "@clane-vault/crypto";
+import { AgentKeyCache, OwnerKeyChanged, SyncCache } from "../src/keys.js";
 import type { Kek } from "../src/kek.js";
 import { startFakeApi } from "./fakeApi.js";
 import { fileKek } from "./helpers.js";
@@ -100,6 +101,39 @@ describe("AgentKeyCache", () => {
     expect(loser.privateKey.every((x) => x === 0)).toBe(true);
     expect(live.privateKey.some((x) => x !== 0)).toBe(true);
     expect(kek.unwraps).toBe(2);
+  });
+});
+
+describe("AgentKeyCache, personal agent", () => {
+  const personalSync = async () => await client().sync(await api.personal.token()) as PersonalAgentSync;
+
+  it("opens the k2 key with the owner key the API reports, with orgId \"\"", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const keys = await cache.open(api.personal.agentId, await personalSync());
+    expect(keys.orgId).toBe("");
+    expect(b64url.encode(keys.publicKey)).toBe(api.personal.publicKey);
+    expect(cache.has(api.personal.agentId)).toBe(true);
+  });
+
+  it("after a hit, a sync with another owner.publicKey throws OwnerKeyChanged and drops the entry", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const sync = await personalSync();
+    cache.release(api.personal.agentId, await cache.open(api.personal.agentId, sync));
+    cache.release(api.personal.agentId, await cache.open(api.personal.agentId, sync));
+    expect(kek.unwraps).toBe(1);
+    const other = { ...sync, owner: { ...sync.owner, publicKey: b64url.encode((await generateKeyPair()).publicKey) } };
+    await expect(cache.open(api.personal.agentId, other)).rejects.toBeInstanceOf(OwnerKeyChanged);
+    expect(cache.has(api.personal.agentId)).toBe(false);
+  });
+
+  it("a null wrappedPrivateKey (revoked) is ApiRefused(401) and drops the entry", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const sync = await personalSync();
+    cache.release(api.personal.agentId, await cache.open(api.personal.agentId, sync));
+    const e = await cache.open(api.personal.agentId, { ...sync, wrappedPrivateKey: null }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ApiRefused);
+    expect((e as ApiRefused).status).toBe(401);
+    expect(cache.has(api.personal.agentId)).toBe(false);
   });
 });
 

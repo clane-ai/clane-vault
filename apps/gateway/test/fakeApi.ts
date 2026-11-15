@@ -3,11 +3,11 @@ import type { AddressInfo } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
-  b64url, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, sealOrgFolderKey, sealOrgRecordShare, serverRecordType,
-  wrapKey, type RecordBody,
+  b64url, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, sealOrgFolderKey, sealOrgRecordShare, sealPersonalAgentRecordKey,
+  serverRecordType, wrapKey, type RecordBody,
 } from "@clane-vault/crypto";
 import type { Kek } from "../src/kek.js";
-import { wrapAgentKey } from "../src/envelope.js";
+import { wrapAgentKey, wrapPersonalAgentKey } from "../src/envelope.js";
 import type { UseEvent } from "../src/apiClient.js";
 
 /**
@@ -22,6 +22,14 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   const publicKey = b64url.encode(kp.publicKey);
   const wrappedPrivateKey = await wrapAgentKey(o.kek, { orgId, agentId, publicKey }, kp.privateKey);
   kp.privateKey.fill(0);
+  // A personal agent: its key wrapped under k2, bound to its owner's public key; records sealed to it one by one.
+  const personalId = randomUUID(), personalOwnerId = randomUUID();
+  const ownerKeys = await generateX25519(), pkp = await generateX25519();
+  const personalPublicKey = b64url.encode(pkp.publicKey);
+  let ownerPublicKey = b64url.encode(ownerKeys.publicKey);
+  const personalWrapped = await wrapPersonalAgentKey(o.kek, { ownerUserId: personalOwnerId, ownerPublicKey, agentId: personalId, publicKey: personalPublicKey }, pkp.privateKey);
+  pkp.privateKey.fill(0);
+  const personalRecords: Record<string, unknown>[] = [];
   const signing = await generateKeyPair("ES256", { extractable: true });
   const jwk = { ...(await exportJWK(signing.publicKey)), alg: "ES256", use: "sig" };
   jwk.kid = await calculateJwkThumbprint(jwk);
@@ -81,16 +89,30 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
     records, wrappedPrivateKey, kekId: o.kek.id, expiresAt: null, entitlements: { approvals: false },
   });
 
+  /** `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). */
+  async function addPersonalRecord(body: RecordBody, sealFor = personalId): Promise<string> {
+    const id = randomUUID(), recordKey = new Uint8Array(randomBytes(32));
+    personalRecords.push({ id, encBody: await encryptRecordBody(id, body, recordKey), revision: 1, write: false, deletedAt: null,
+      wrappedRecordKey: await sealPersonalAgentRecordKey(recordKey, { ownerUserId: personalOwnerId, agentId: sealFor, recordId: id }, pkp.publicKey) });
+    return id;
+  }
+
+  const personalSyncBody = () => ({
+    owner: { userId: personalOwnerId, publicKey: ownerPublicKey }, agentId: personalId, publicKey: personalPublicKey, wrappedPrivateKey: personalWrapped,
+    kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: [], deposits: [], policy: { write: true, reveal: "off" },
+  });
+
   const send = (res: ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, { "content-type": "application/json" }).end(body === undefined ? undefined : JSON.stringify(body));
   };
   const read = async (req: IncomingMessage) => { let s = ""; for await (const c of req) s += c; bodies.push(s); return s; };
   // requireAgent's order: gateway token, access token, agent state, expiry.
-  async function agentAuth(req: IncomingMessage): Promise<number | null> {
+  async function agentAuth(req: IncomingMessage): Promise<number | { sub: unknown }> {
     if (req.headers["x-gateway-token"] !== token) return 401;
     const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-    try { await jwtVerify(bearer ?? "", signing.publicKey, { issuer, audience: aud, algorithms: ["ES256"] }); } catch { return 401; }
-    return revoked ? 401 : expired ? 403 : null;
+    let sub: unknown;
+    try { sub = (await jwtVerify(bearer ?? "", signing.publicKey, { issuer, audience: aud, algorithms: ["ES256"] })).payload.sub; } catch { return 401; }
+    return revoked ? 401 : expired ? 403 : { sub };
   }
 
   const server = createServer(async (req, res) => {
@@ -107,9 +129,9 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       return send(res, 200, { access_token: await issueToken({ grant: tokenId }), token_type: "Bearer", expires_in: 900 });
     }
     if (path === "/agent/sync" || path === "/agent/events") {
-      const refused = await agentAuth(req);
-      if (refused) return send(res, refused, { error: refused === 401 ? "unauthorized" : "agent_expired" });
-      if (req.method === "GET" && path === "/agent/sync") { syncCalls++; return send(res, 200, syncBody()); }
+      const a = await agentAuth(req);
+      if (typeof a === "number") return send(res, a, { error: a === 401 ? "unauthorized" : "agent_expired" });
+      if (req.method === "GET" && path === "/agent/sync") { syncCalls++; return send(res, 200, a.sub === personalId ? personalSyncBody() : syncBody()); }
       if (req.method === "POST") { events.push(...(JSON.parse(await read(req)) as { events: UseEvent[] }).events); return send(res, 200, { ok: true }); }
     }
     send(res, 404, { error: "not_found" });
@@ -120,6 +142,14 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   return {
     url, issuer, token, staticToken, events, bodies, kid: jwk.kid!, agent: { id: agentId, orgId, publicKey }, agent2,
     addFolderRecord, addSharedRecord, issueToken,
+    /** A personal agent: its tokens carry `owner` and no `org`; its sync is a PersonalAgentSync. */
+    personal: {
+      agentId: personalId, ownerId: personalOwnerId, ownerKeys, publicKey: personalPublicKey,
+      token: (over: Record<string, unknown> = {}) => issueToken({ sub: personalId, org: undefined, owner: personalOwnerId, ...over }),
+      addRecord: addPersonalRecord,
+      /** What the API reports as the owner's key from now on (the wrapped key stays bound to the first). */
+      setOwnerPublicKey(b64: string) { ownerPublicKey = b64; },
+    },
     get syncCalls() { return syncCalls; },
     get tokenCalls() { return tokenCalls; },
     revoke() { revoked = true; },
