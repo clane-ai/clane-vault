@@ -47,7 +47,9 @@ export interface SyncRecord {
   ownerId?: string; ownerName?: string; sharedWith?: ShareInfo[]; sharedBy?: string;
   /** Personal space: the orgs this record of mine is shared in (its shares are managed there). */ sharedIn?: string[];
   /** Files (ready ones). Absent from servers before 1.6. */ attachments?: SyncAttachment[];
+  /** Personal space, records I own: my personal agents that were given this item. */ agentGrants?: AgentGrantInfo[];
 }
+export interface AgentGrantInfo { agentId: string; use: boolean; write: boolean; reveal?: string[] }
 /** `privateLocked`: the session skipped the authenticator code (an org's trusted IdP MFA): own private items are left out until a step-up. */
 /** Membership key material (wrapped under my user key) for the active org: what opens what is sealed to me there. */
 export interface MembershipKeyRow { publicKey: string; wrappedPrivateKey: string; state: "current" | "retiring" }
@@ -64,6 +66,7 @@ export interface VaultRecord {
   ownerId?: string; ownerName?: string; sharedWith?: ShareInfo[]; sharedBy?: string;
   /** Personal space: the orgs this record of mine is shared in (its shares are managed there). */ sharedIn?: string[];
   /** Files on the record, still encrypted: names and keys are opened on demand (features/attachments). */ attachments?: SyncAttachment[];
+  /** Personal space: my personal agents that were given this item. */ agentGrants?: AgentGrantInfo[];
 }
 
 export const PERMISSION_LABEL: Record<Permission, string> = { owner: "Owner", edit: "Can edit", view: "Can view", use: "Use only" };

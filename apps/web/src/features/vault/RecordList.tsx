@@ -38,9 +38,10 @@ function RowCopy({ value, label, title, icon: Icon }: { value: string; label: st
   );
 }
 
-function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb }: {
+function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb, pick }: {
   r: VaultRecord; selected: boolean; inset?: boolean; onSelect: (id: string) => void; reasons?: AttentionReason[]; view: VaultView;
   /** The record's folder (flat lists show it as a crumb). */ folder?: VaultFolder | null; crumb?: boolean;
+  /** Multi-select (Give to agent…): this row's checkbox. */ pick?: { checked: boolean; onChange: () => void };
 }) {
   const b = r.body;
   // A sensible second line per type (username, host, SSID, a card's last four digits…); never a secret.
@@ -60,6 +61,7 @@ function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb }: {
         inset ? cn(INSET, GUIDE) : "pl-3",
         selected ? "bg-blue-tint" : "hover:bg-app has-[[data-row-main]:focus-visible]:bg-app")}>
       {selected && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-blue-500" />}
+      {pick && <input type="checkbox" aria-label={`Select ${b?.title ?? "this record"}`} checked={pick.checked} onChange={pick.onChange} className="mr-2 size-4 shrink-0 accent-blue-500" />}
       <button type="button" data-row-main onClick={() => onSelect(r.id)} aria-current={selected ? "true" : undefined}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 text-left focus-visible:outline-none">
         <RecordAvatar title={b?.title} kind={b?.type} size={22} />
@@ -118,7 +120,7 @@ export function EmptyState({ icon: Icon, title, line, action }: { icon: LucideIc
 /** Renders a folder row's Options menu around `trigger` (the row's … button); `open` is controlled so a right-click opens it too. */
 export type FolderMenu = (f: VaultFolder, trigger: React.ReactNode, open: boolean, onOpenChange: (o: boolean) => void) => React.ReactNode;
 
-export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMenu, currentFolderId, onOpenFolder, onCreate, onNewRecord, empty: empty_, reasons, view = "vault", folderOf, noFolderLabel = "No folder" }: {
+export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMenu, currentFolderId, onOpenFolder, onCreate, onNewRecord, empty: empty_, reasons, view = "vault", folderOf, noFolderLabel = "No folder", onGiveToAgent }: {
   groups: { folder: VaultFolder | null; records: VaultRecord[] }[]; flat: VaultRecord[]; mode: "folders" | "flat"; selectedId: string | null; onSelect: (id: string) => void;
   /** Each folder row's Options menu (none offline). */ folderMenu?: FolderMenu;
   /** The folder the Options in the list header act on: highlighted. */ currentFolderId?: string | null;
@@ -130,8 +132,10 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
   /** The list shown: decides the permission chip (Shared with me), chips vs dot (Needs attention), no copy in the Trash. */ view?: VaultView;
   /** A record's folder, for the crumb in flat lists. */ folderOf?: (id: string | null) => VaultFolder | null;
   /** The group of records outside any folder here: "No folder" (Personal), "Shared directly" (an organisation). */ noFolderLabel?: string;
+  /** Personal space with personal agents: rows can be picked, and the picked records given to an agent. */ onGiveToAgent?: (records: VaultRecord[]) => void;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const empty = mode === "flat" ? flat.length === 0 : groups.every((g) => g.records.length === 0) && groups.length === 0;
   if (empty) return (
@@ -140,12 +144,24 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
         action={onCreate && <Button onClick={onCreate}><Plus className="size-4" />Add a login</Button>} />}
     </ListCard>
   );
-  if (mode === "flat") return (
-    <ListCard>
-      {flat.map((r) => <Row key={r.id} r={r} view={view} selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} crumb folder={folderOf?.(r.folderId)} />)}
-    </ListCard>
+  const all = mode === "flat" ? flat : groups.flatMap((g) => g.records);
+  const chosen = onGiveToAgent ? all.filter((r) => picked.has(r.id)) : [];
+  const pick = onGiveToAgent ? (r: VaultRecord) => ({ checked: picked.has(r.id), onChange: () => setPicked((s) => { const x = new Set(s); x.has(r.id) ? x.delete(r.id) : x.add(r.id); return x; }) }) : () => undefined;
+  const bar = chosen.length > 0 && (
+    <div className="mb-2 flex items-center gap-2 text-[13px] text-text-secondary">
+      <span className="flex-1">{chosen.length} selected</span>
+      <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())}>Clear</Button>
+      <Button size="sm" onClick={() => onGiveToAgent!(chosen)}>Give to agent…</Button>
+    </div>
   );
-  return (
+  if (mode === "flat") return (<>
+    {bar}
+    <ListCard>
+      {flat.map((r) => <Row key={r.id} r={r} view={view} selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} crumb folder={folderOf?.(r.folderId)} pick={pick(r)} />)}
+    </ListCard>
+  </>);
+  return (<>
+    {bar}
     <ListCard>
       {groups.map((g) => {
         const key = g.folder?.id ?? "none";
@@ -189,7 +205,7 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
               menuFor === key, (o) => setMenuFor(o ? key : null))
               : <span className="ml-2 size-7 shrink-0" aria-hidden="true" />}
             </div>
-            {isOpen && g.records.map((r) => <Row key={r.id} r={r} view={view} inset selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} />)}
+            {isOpen && g.records.map((r) => <Row key={r.id} r={r} view={view} inset selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} pick={pick(r)} />)}
             {isOpen && n === 0 && g.folder && (
               <div className={cn("relative flex min-h-9 items-center gap-1 border-b border-border-subtle pr-2 text-[12.5px] text-text-secondary", INSET, GUIDE)}>
                 No records here yet
@@ -203,5 +219,5 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
         );
       })}
     </ListCard>
-  );
+  </>);
 }

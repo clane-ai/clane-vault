@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  b64url, CryptoError, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, serverRecordType, wrapKey,
+  b64url, CryptoError, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, serverRecordType, wrapKey,
   type RecordBody, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import { ApiError, forOrg } from "@/lib/api";
 import { useSession, type Org } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
 import { dropSync, loadSync, orgKey, saveSync } from "@/lib/offline";
-import { assertPinned, ensureGatewayPinned, isAgent, myMembershipKey, pinKey, sealFolderKeyTo, sealShareTo } from "@/lib/orgKeys";
+import {
+  assertPinned, ensureGatewayPinned, isAgent, KeyChangedError, myMembershipKey, PERSONAL_SLOT, pinKey, pinStatus, sealFolderKeyTo, sealShareTo, verifyPersonalAgentKey,
+} from "@/lib/orgKeys";
+import type { MyAgent } from "@/features/settings/myAgents";
 import { decryptSync } from "./decrypt";
 import type { FolderMember, Grant, Permission, Person, SyncResponse, VaultFolder, VaultRecord } from "./types";
 
@@ -260,6 +263,26 @@ export function useVault() {
       }
     }), ...after });
 
+  /**
+   * Personal space: gives one of my records to one of my personal agents ("use"). Nothing is sealed unless the agent's key
+   * is attested by the pinned gateway and bound to my current account key, and it is the key this device pinned for it.
+   */
+  const grantAgent = useMutation({ mutationFn: async (v: { r: VaultRecord; agent: MyAgent }) => {
+    if (!user) throw new Error("Not signed in");
+    const a = v.agent;
+    if (pinStatus(user.id, PERSONAL_SLOT, a.id, a.publicKey).status === "changed") throw new KeyChangedError(a.id);
+    await ensureGatewayPinned(oapi, user.id, PERSONAL_SLOT, "/me/agents/gateway");
+    const wrappedRecordKey = await withKey((k) => withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
+      await verifyPersonalAgentKey(user.id, a, a.owner, k.privateKey);
+      const sealed = await sealPersonalAgentRecordKey(rk, { ownerUserId: user.id, agentId: a.id, recordId: v.r.id }, b64url.decode(a.publicKey));
+      assertOpen();
+      return sealed;
+    }));
+    await oapi.post(`/records/${v.r.id}/agent-grants`, { agentId: a.id, wrappedRecordKey });
+    pinKey(user.id, PERSONAL_SLOT, a.id, a.publicKey);
+  }, ...after });
+  const revokeAgentGrant = useSimple((v: { recordId: string; agentId: string }) => oapi.del(`/records/${v.recordId}/agent-grants/${v.agentId}`));
+
   return {
     folders: q.data?.folders ?? [], records: q.data?.records ?? [], isLoading: q.isLoading, error: q.error,
     /** Own private items were left out (session without the authenticator code yet). */ privateLocked: !!q.data?.privateLocked,
@@ -281,6 +304,8 @@ export function useVault() {
     shareRecordIn: (r: VaultRecord, inOrg: Org, person: Person, permission: Grant) => shareIn.mutateAsync({ r, in: inOrg, person, permission }),
     updateShare: (recordId: string, userId: string, permission: Grant) => updateShare.mutateAsync({ recordId, userId, permission }),
     unshare: (recordId: string, userId: string) => unshare.mutateAsync({ recordId, userId }),
+    grantAgent: (record: VaultRecord, agent: MyAgent) => grantAgent.mutateAsync({ r: record, agent }),
+    revokeAgentGrant: (recordId: string, agentId: string) => revokeAgentGrant.mutateAsync({ recordId, agentId }),
   };
 }
 

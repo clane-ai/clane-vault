@@ -27,6 +27,9 @@ import { Sidebar, isCollapseShortcut, useSidebarCollapsed, type SidebarView } fr
 import { FolderPeopleSheet } from "./FolderPeopleSheet";
 import { RecordActivity, WhoCanOpen } from "./RecordSharing";
 import { ShareSheet } from "./ShareSheet";
+import { GrantToAgentDialog } from "./GrantToAgentDialog";
+import { liveAgents } from "./RecordAgentsSection";
+import { useMyAgents } from "@/features/settings/myAgents";
 import { HealthView } from "@/features/health/HealthPage";
 import { useHealthReport } from "@/features/health/useHealthReport";
 import { GroupAccessBanner } from "@/features/groups/GroupAccessBanner";
@@ -74,6 +77,9 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   const paths = useSpacePaths();
   const blocked = !!org && ssoBlocked === org.id;
   const v = useVault();
+  // Personal space only, and not before the sync said it isn't private-locked (a 403 there raises the app-wide step-up).
+  const myAgents = liveAgents(useMyAgents(!org && !offline && !v.isLoading && !v.privateLocked).data?.agents);
+  const [giving, setGiving] = useState<VaultRecord[] | null>(null);
   // Every page and section has its own URL (lib/paths): the view, the open folder and the selected record come from it.
   const location = useLocation();
   const navigate = useNavigate();
@@ -345,6 +351,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                     currentFolderId={currentFolder?.id ?? null} onOpenFolder={openFolder} folderMenu={options ?? undefined}
                     onCreate={listView === "vault" && !query && !offline ? onCreate : undefined} reasons={reasons} view={listView} folderOf={folderOf} noFolderLabel={org ? "Shared directly" : "No folder"}
                     onNewRecord={onNew && !offline ? (id) => onNew("record", id) : undefined}
+                    onGiveToAgent={!org && !offline && listView === "vault" && myAgents.length > 0 ? setGiving : undefined}
                     empty={listView === "trash" && !query ? <EmptyState icon={Trash2} title="Trash is empty" line="Records you move to the trash stay here until you delete them forever." />
                       : listView === "shared" && !query ? <EmptyState icon={Users} title="Nothing shared with you yet" line="When someone shares a record with you, it shows up here." />
                       : listView === "attention" && !query ? <EmptyState icon={ShieldCheck} title="Nothing needs attention" line="No weak, reused or old passwords. Nice work." /> : undefined} />}
@@ -363,13 +370,15 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
               </RecordPanel>
               {selected.permission === "owner" && (
                 <ShareSheet record={selected} teamFolder={folderOf(selected.folderId)?.kind === "team" ? folderOf(selected.folderId) : null} open={sharing} onClose={() => setSharing(false)}
-                  onShare={(p, perm) => v.shareRecord(selected, p, perm)} onShareIn={(o, p, perm) => v.shareRecordIn(selected, o, p, perm)} onUpdate={(uid, perm) => v.updateShare(selected.id, uid, perm)} onRemove={(uid) => v.unshare(selected.id, uid)} />
+                  onShare={(p, perm) => v.shareRecord(selected, p, perm)} onShareIn={(o, p, perm) => v.shareRecordIn(selected, o, p, perm)} onUpdate={(uid, perm) => v.updateShare(selected.id, uid, perm)} onRemove={(uid) => v.unshare(selected.id, uid)}
+                  onGrantAgent={(a) => v.grantAgent(selected, a)} onRevokeAgent={(id) => v.revokeAgentGrant(selected.id, id)} />
               )}
             </div>
           )}
         </div>}
         <StatusBar syncedAt={v.isLoading ? null : offline ? (v.savedAt ? new Date(v.savedAt) : null) : new Date()} offline={offline} />
       </main>
+      {giving && user && <GrantToAgentDialog records={giving} agents={myAgents} me={user.id} onGrant={(r, a) => v.grantAgent(r, a)} onClose={() => setGiving(null)} />}
       <FolderPeopleSheet folder={managing} onClose={() => setManagingId(null)} onAdd={(f, p, perm) => v.addMember(f, p, perm)} onGiveAccess={(f, m) => v.giveAccessAgain(f, m)}
         onUpdate={(fid, uid, perm) => v.updateMember(fid, uid, perm)} onRemove={(fid, uid) => v.removeMember(fid, uid)} />
       {renaming && (

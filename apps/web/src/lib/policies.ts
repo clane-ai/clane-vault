@@ -12,7 +12,10 @@ export interface OrgPolicies {
   /** File attachments (docs/attachments.md): new uploads allowed, a lower per-file limit (MiB), previews in the browser. */
   attachments: { allowed: boolean; maxFileMb: number | null; previews: boolean };
   offlineAllowed: boolean; extensionAllowed: boolean; breachCheckAllowed: boolean; ipRestricted: boolean;
+  /** Members' personal agents (the one policy that reaches the Personal space; every plan). */ personalAgents: PersonalAgentsPolicy;
+  /** This server has personal agents at all (agent access on, PERSONAL_AGENTS not off). */ personalAgentsEnabled: boolean;
 }
+export interface PersonalAgentsPolicy { allowed: boolean; maxPerMember: number | null; write: boolean; reveal: "off" | "approval" | "standing" }
 /** A master password rule (an org's, or the app's own floor). */
 export interface PasswordPolicy { minLength: number; minScore: number }
 
@@ -20,6 +23,7 @@ export const DEFAULT_POLICIES: OrgPolicies = {
   autoLockMinutes: null, minPasswordLength: 12, minPasswordScore: 0, links: { allowed: true, maxExpiryHours: 168, requirePassword: false, allowAttachments: true },
   attachments: { allowed: true, maxFileMb: null, previews: true },
   offlineAllowed: true, extensionAllowed: true, breachCheckAllowed: true, ipRestricted: false,
+  personalAgents: { allowed: true, maxPerMember: null, write: true, reveal: "approval" }, personalAgentsEnabled: false,
 };
 export const BASE_PASSWORD_POLICY: PasswordPolicy = { minLength: 12, minScore: 0 };
 

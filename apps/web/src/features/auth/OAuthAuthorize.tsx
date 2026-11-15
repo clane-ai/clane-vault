@@ -10,7 +10,9 @@ import { oauthNav } from "./oauthNav";
 
 const PARAMS = ["client_id", "redirect_uri", "response_type", "code_challenge", "code_challenge_method", "state", "resource"];
 
-interface Info { issuer?: string; client: { name: string }; agents: { id: string; name: string; orgId: string; orgName: string }[] }
+/** `personal`: one of the caller's own personal agents (no organisation). */
+type InfoAgent = { id: string; name: string; orgId: string; orgName: string; personal?: false } | { id: string; name: string; orgId: null; orgName: null; personal: true };
+interface Info { issuer?: string; client: { name: string }; agents: InfoAgent[] }
 
 
 const INVALID = "This connection request isn't valid. Start again from your AI app.";
@@ -18,7 +20,7 @@ const MESSAGES: Record<string, string> = {
   rate_limited: "Too many attempts. Wait a minute and try again.",
   agent_expired: "That agent has expired. Pick another or renew it on the Agents page.",
   agent_unverified: "That agent isn't verified yet. Verify it on the Agents page first.",
-  forbidden: "Only owners and admins can connect agents.",
+  forbidden: "Only owners and admins can connect an organisation's agents.",
 };
 
 /** http(s) only, so a crafted redirect_uri can't become a javascript: or data: navigation. */
@@ -72,7 +74,8 @@ export default function OAuthAuthorize() {
     if (!agent) return;
     setBusy(true); setError(null);
     try {
-      const { redirectTo } = await forOrg(agent.orgId).post<{ redirectTo: string }>("/oauth/authorize", {
+      // A personal agent belongs to no organisation: no X-Org-Id.
+      const { redirectTo } = await forOrg(agent.personal ? null : agent.orgId).post<{ redirectTo: string }>("/oauth/authorize", {
         clientId: q.get("client_id"), redirectUri: q.get("redirect_uri"), codeChallenge: q.get("code_challenge"),
         codeChallengeMethod: q.get("code_challenge_method"), ...(q.get("state") ? { state: q.get("state") } : {}),
         ...(q.get("resource") ? { resource: q.get("resource") } : {}), agentId: agent.id,
@@ -103,15 +106,17 @@ export default function OAuthAuthorize() {
         </>
       ) : (
         <>
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-1 text-[13px] font-medium text-text-primary">Act as agent</legend>
-            {info.agents.map((a) => (
-              <label key={a.id} className="flex cursor-pointer items-center gap-2 rounded-[10px] border border-border px-3 py-2 text-[14px]">
-                <input type="radio" name="agent" value={a.id} checked={agentId === a.id} onChange={() => setAgentId(a.id)} />
-                <span>{a.name} <span className="text-text-muted">· {a.orgName}</span></span>
-              </label>
-            ))}
-          </fieldset>
+          {([["Act as agent", info.agents.filter((a) => !a.personal)], ["Your agents", info.agents.filter((a) => a.personal)]] as const).map(([legend, list]) => list.length > 0 && (
+            <fieldset key={legend} className="flex flex-col gap-2">
+              <legend className="mb-1 text-[13px] font-medium text-text-primary">{legend}</legend>
+              {list.map((a) => (
+                <label key={a.id} className="flex cursor-pointer items-center gap-2 rounded-[10px] border border-border px-3 py-2 text-[14px]">
+                  <input type="radio" name="agent" value={a.id} checked={agentId === a.id} onChange={() => setAgentId(a.id)} />
+                  <span>{a.name}{a.orgName && <span className="text-text-muted"> · {a.orgName}</span>}</span>
+                </label>
+              ))}
+            </fieldset>
+          ))}
           {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
           <div className="flex gap-3">
             <Button variant="cta" size="lg" className="h-11 flex-1" disabled={!agent || busy} onClick={() => void allow()}>{busy ? "Connecting…" : "Allow"}</Button>

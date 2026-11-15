@@ -230,4 +230,21 @@ describe("Admin → Agents", () => {
     expect(await screen.findByText("Available on the Business plan.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
   });
+
+  it("one line counts members' personal agents, expandable per member; hidden on a 404", async () => {
+    server.use(
+      http.get("/api/v1/admin/agents/personal-count", () => HttpResponse.json({ agents: 7, members: 4, perMember: [{ userId: "u1", count: 4 }, { userId: "u2", count: 1 }] })),
+      http.get("/api/v1/users", () => HttpResponse.json({ users: [{ id: "u1", name: "Sara", email: "s@x", publicKey: "" }] })),
+    );
+    const view = renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "Personal agents: 7 across 4 members" }));
+    const list = await screen.findByRole("list", { name: "Personal agents per member" });
+    expect(await within(list).findByText("Sara")).toBeInTheDocument();
+    expect(within(list).getByText("4")).toBeInTheDocument();
+    view.unmount();
+    server.use(http.get("/api/v1/admin/agents/personal-count", () => HttpResponse.json({ error: "not_found" }, { status: 404 })));
+    renderPage();
+    await screen.findByText("No agents yet.");
+    expect(screen.queryByText(/^Personal agents:/)).toBeNull();
+  });
 });

@@ -13,6 +13,7 @@ import { useOrgApi, useScope } from "@/lib/scope";
 import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { DEFAULT_POLICIES, useOrgPolicies, type PersonalAgentsPolicy } from "@/lib/policies";
 import { useReloadOrgs } from "@/features/orgs/orgs";
 import { LockLine } from "@/features/admin/PlanLock";
 import { useLocked } from "@/features/admin/plan";
@@ -24,6 +25,8 @@ export interface AdminPolicies {
   /** File attachments (docs/attachments.md); absent from servers before 1.6. */
   attachments?: { allowed: boolean; maxFileMb: number | null; previews: boolean };
   offlineAllowed: boolean; extensionAllowed: boolean; breachCheckAllowed: boolean; ipAllowlist: string[]; ownerBreakGlass: boolean;
+  /** Saved only through its own route (PUT …/personal-agents), never with the rest: absent from servers without it. */
+  personalAgents?: PersonalAgentsPolicy;
 }
 interface PoliciesView { policies: AdminPolicies; changedAt: string | null; changedBy: { id: string; name: string } | null; yourIp: string | null }
 
@@ -41,6 +44,50 @@ function Toggle({ id, label, line, checked, onChange, disabled }: { id: string; 
   );
 }
 
+const REVEAL: [PersonalAgentsPolicy["reveal"], string][] = [["off", "Off"], ["approval", "With approval"], ["standing", "Without approval"]];
+
+/** The Personal agents block: its own form and route, editable on every plan (an organisation's protection of its members' accounts). */
+function PersonalAgentsBlock({ stored, onSaved }: { stored: PersonalAgentsPolicy; onSaved: (v: PoliciesView) => Promise<void> }) {
+  const oapi = useOrgApi();
+  const [pa, setPa] = useState(stored);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setPa(stored), [stored]);
+  const set = (v: Partial<PersonalAgentsPolicy>) => setPa((x) => ({ ...x, ...v }));
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError(null);
+    try { await onSaved(await oapi.put<PoliciesView>("/admin/settings/policies/personal-agents", pa)); toast.success("Personal agents policy saved"); }
+    catch (err) { setError(err instanceof ApiError && err.code === "invalid_request" ? "Use a number from 1 to 20 per member, or leave it empty for no limit." : "Couldn't save the personal agents policy. Try again."); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section aria-label="Personal agents">
+      <form onSubmit={save} className={cn(card, "flex flex-col gap-4")} noValidate>
+        <h3 className={h2}>Personal agents</h3>
+        <Toggle id="pol-pa" label="Members may use personal agents" line="Members' own agents, in their Personal space. Off: they stop working." checked={pa.allowed} onChange={(v) => set({ allowed: v })} />
+        {pa.allowed && <>
+          <div className="flex items-center gap-2 text-[14px] text-text-primary">
+            <span aria-hidden="true">At most</span>
+            <Input id="pol-pa-max" aria-label="At most n per member" inputMode="numeric" className="w-[90px]" placeholder="No limit" value={pa.maxPerMember ?? ""}
+              onChange={(e) => set({ maxPerMember: e.target.value.trim() === "" ? null : Number(e.target.value.replace(/\D/g, "")) || 0 })} />
+            <span aria-hidden="true">per member</span>
+          </div>
+          <Toggle id="pol-pa-write" label="Agents may save and update items" line="Agents can save new credentials to their owner's inbox and update items they were given." checked={pa.write} onChange={(v) => set({ write: v })} />
+          <div className="flex flex-col gap-1.5"><Label htmlFor="pol-pa-reveal">Reading values</Label>
+            <Select value={pa.reveal} onValueChange={(v) => set({ reveal: v as PersonalAgentsPolicy["reveal"] })}>
+              <SelectTrigger id="pol-pa-reveal" aria-label="Reading values" className="w-[190px]"><SelectValue /></SelectTrigger>
+              <SelectContent>{REVEAL.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
+            </Select></div>
+        </>}
+        <p className="text-[12.5px] text-text-secondary">This is the one policy that reaches members' Personal space. It can switch personal agents off; it cannot show you what they hold.</p>
+        {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
+        <div className="flex justify-end border-t border-border-default pt-3"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save personal agents"}</Button></div>
+      </form>
+    </section>
+  );
+}
+
 /** Organisation settings → Policies (owners and admins of the active org). */
 export function OrgPoliciesSection() {
   const { org } = useSession();
@@ -48,6 +95,7 @@ export function OrgPoliciesSection() {
   const qc = useQueryClient();
   const reload = useReloadOrgs();
   const locked = useLocked("policyEdit");
+  const { personalAgentsEnabled } = useOrgPolicies();
   const KEY = ["admin-policies", useScope()];
   const q = useQuery({ queryKey: KEY, queryFn: () => oapi.get<PoliciesView>("/admin/settings/policies") });
   const [p, setP] = useState<AdminPolicies | null>(null);
@@ -67,7 +115,9 @@ export function OrgPoliciesSection() {
     setBusy(true); setError(null);
     try {
       const ipAllowlist = ips.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      const r = await oapi.put<PoliciesView>("/admin/settings/policies", { ...p, ipAllowlist });
+      // The Personal agents block has its own route: the server keeps the stored one when the key is absent.
+      const { personalAgents: _pa, ...rest } = p;
+      const r = await oapi.put<PoliciesView>("/admin/settings/policies", { ...rest, ipAllowlist });
       qc.setQueryData(KEY, r);
       await reload(); // members' clients read the new policies with the org list
       toast.success("Policies saved");
@@ -150,6 +200,8 @@ export function OrgPoliciesSection() {
           </fieldset>
         </form>
       )}
+      {p && personalAgentsEnabled && <PersonalAgentsBlock stored={q.data?.policies.personalAgents ?? DEFAULT_POLICIES.personalAgents}
+        onSaved={async (r) => { qc.setQueryData(KEY, r); await reload(); }} />}
     </section>
   );
 }

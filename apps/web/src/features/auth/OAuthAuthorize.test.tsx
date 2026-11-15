@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -114,5 +114,30 @@ describe("OAuth consent page", () => {
     expect(screen.queryByRole("button", { name: "Allow" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(go).toHaveBeenCalledWith("https://claude.ai/cb?error=access_denied&state=st1");
+  });
+
+  it("lists my personal agents under Your agents; allowing one posts with no X-Org-Id", async () => {
+    let seen: { org: string | null; body: unknown } | null = null;
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, agents: [A1, { id: "p1", name: "My bot", orgId: null, orgName: null, personal: true }] })),
+      http.post("/api/v1/oauth/authorize", async ({ request }) => { seen = { org: request.headers.get("x-org-id"), body: await request.json() }; return HttpResponse.json({ redirectTo: "https://claude.ai/cb?code=XYZ&state=st1" }); }),
+    );
+    const go = renderPage({ state: "unlocked", orgs: [{ id: "o1", role: "member" }] });
+    const mine = await screen.findByRole("group", { name: "Your agents" });
+    await userEvent.click(within(mine).getByRole("radio", { name: /My bot/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("https://claude.ai/cb?code=XYZ&state=st1"));
+    expect(seen).toMatchObject({ org: null, body: { agentId: "p1" } });
+  });
+
+  it("forbidden names organisation agents", async () => {
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, agents: [A1] })),
+      http.post("/api/v1/oauth/authorize", () => HttpResponse.json({ error: "forbidden" }, { status: 403 })),
+    );
+    renderPage();
+    await userEvent.click(await screen.findByRole("radio", { name: /Billing bot/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Only owners and admins can connect an organisation's agents.");
   });
 });
