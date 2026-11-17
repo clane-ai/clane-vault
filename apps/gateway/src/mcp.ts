@@ -16,6 +16,7 @@ import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSumma
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
 import type { HeldSecrets, Logger } from "./log.js";
 import { performRequest, type OutboundInput } from "./outbound/request.js";
+import { scrub, variantsOf } from "./outbound/scrub.js";
 import { parseCidrs, type Resolver } from "./outbound/ssrf.js";
 import type { RateLimiter } from "./rateLimit.js";
 
@@ -164,8 +165,9 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
         try {
           return await withItem(sync, keys, item, d.held, async (x) => {
             ran = true;
-            const grab = (body: string, status: number) => {
-              value = status >= 200 && status < 300 ? pointerValue(body, capture!.from) : null;
+            // Whatever the status, the value at the pointer is scrubbed (a 4xx/5xx or an unfollowed 3xx can carry a minted credential too).
+            const grab = (body: string) => {
+              value = pointerValue(body, capture!.from);
               if (value) release = d.held.hold(value);
               return value;
             };
@@ -179,8 +181,14 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
             d.events.push(p, event("use", req.method, o.host, { recordId: x.recordId, ...(o.result.truncated ? { truncated: true } : {}) }));
             if (o.reflected) d.events.push(p, event("reflected", req.method, o.host, { recordId: x.recordId }));
             if (!capture) return o.result;
-            if (value === null) return { ...o.result, capture: { refused: "not_found" } };
-            return { ...o.result, ...(await saveCaptured(p, sync as PersonalAgentSync, keys, capture, value)) };
+            // A cut body can't be parsed and may hold the minted credential unscrubbed: withheld.
+            if (o.result.truncated) return { ...o.result, body: "", capture: { refused: "invalid" } };
+            const v = value as string | null; // assigned in grab
+            if (v === null || o.result.status < 200 || o.result.status >= 300) return { ...o.result, capture: { refused: "not_found" } };
+            // Never launder the injected credential (an echoing upstream) into a new item; nor save a value too short to scrub reliably.
+            if (v.length < 8 || x.secret.includes(v) || scrub(v, variantsOf(x.secret, x.policy.inject.kind === "basic" ? x.username : undefined)).hits)
+              return { ...o.result, capture: { refused: "invalid" } };
+            return { ...o.result, ...(await saveCaptured(p, sync as PersonalAgentSync, keys, capture, v)) };
           }, d.log);
         } catch (e) {
           if (ran) throw e;
@@ -241,7 +249,7 @@ const updateSecretInput = { item: z.string().max(200), set: fieldsInput, revisio
 
 interface Session { agentId: string; transport: WebStandardStreamableHTTPServerTransport; busy: boolean; timer?: NodeJS.Timeout }
 /** One per HTTP request, handed to the tools through the transport's authInfo. */
-interface Call { principal: AgentPrincipal; refused: boolean }
+interface Call { principal: AgentPrincipal; refused: boolean; /** An http_request in it carries `capture`. */ capture: boolean }
 
 const asResult = (x: object) => ({ content: [{ type: "text" as const, text: JSON.stringify(x) }], structuredContent: x as Record<string, unknown> });
 
@@ -270,9 +278,10 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
   const onHttpRequest = (input: object, extra: Parameters<typeof run>[0]) =>
     run(extra, (p) => tools.httpRequest(p, input as HttpRequestInput), (p) => tools.busy(p, input as HttpRequestInput));
   if (personal) server.registerTool("http_request", { ...httpRequest, inputSchema: { ...httpRequestInput, capture: captureInput.optional() } }, onHttpRequest);
-  // An organisation session refuses `capture` rather than silently dropping it.
-  else server.registerTool("http_request", { ...httpRequest,
-    inputSchema: z.looseObject(httpRequestInput).refine((x) => !("capture" in x), "capture is for personal agents only") }, onHttpRequest);
+  // An organisation session keeps its schema (zod strips `capture`), but refuses `capture` as an input error rather than dropping it.
+  else server.registerTool("http_request", { ...httpRequest, inputSchema: httpRequestInput }, (input, extra) => (extra.authInfo?.extra?.call as Call).capture
+    ? { content: [{ type: "text" as const, text: "Input validation error: capture is for personal agents only" }], isError: true }
+    : onHttpRequest(input, extra));
   if (!personal) return server;
   server.registerTool("save_secret", {
     description: "Saves a credential already in the conversation as a new item in the owner's inbox (they keep or delete it). Returns its handle.",
@@ -351,12 +360,14 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
     if (req.method !== "POST" && req.method !== "DELETE") return send(res, 405, { error: "method_not_allowed" }, { allow: "POST, DELETE" });
     const body = req.method === "POST" ? await readJson(req, MAX_BODY) : undefined;
     const msgs = Array.isArray(body) ? body : [body];
+    let capture = false;
     for (const m of msgs) {
       const msg = m as { method?: unknown; params?: { name?: unknown } } | null;
       if (msg?.method !== "tools/call") continue;
       if (msg.params?.name === "http_request" && limited(res, `http:${p.agentId}`, cfg.agentRatePerMinute)) return;
-      const capturing = (msg.params as { arguments?: { capture?: unknown } } | undefined)?.arguments?.capture !== undefined;
-      if (msg.params?.name === "http_request" && capturing && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
+      const capturing = msg.params?.name === "http_request" && (msg.params as { arguments?: { capture?: unknown } }).arguments?.capture !== undefined;
+      if (capturing && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
+      capture ||= capturing;
       if (msg.params?.name === "list_secrets" && limited(res, `list:${p.agentId}`, LIST_PER_MINUTE)) return;
       if ((msg.params?.name === "save_secret" || msg.params?.name === "update_secret") && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
     }
@@ -374,7 +385,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       return send(res, 400, { error: "invalid_request" });
     }
 
-    const call: Call = { principal: p, refused: false };
+    const call: Call = { principal: p, refused: false, capture };
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) for (const x of [v ?? []].flat()) headers.append(k, x);
     const r = await s.transport.handleRequest(new Request(new URL(req.url ?? "/", "http://gateway"), { method: req.method, headers }), {

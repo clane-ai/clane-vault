@@ -35,6 +35,8 @@ async function upstream() {
     req.on("end", () => {
       const created = JSON.stringify({ id: 7, token: CANARY });
       if (req.url === "/fail") res.writeHead(500).end(created);
+      else if (req.url === "/echo") res.writeHead(201).end(JSON.stringify({ headers: { Authorization: req.headers.authorization } }));
+      else if (req.url === "/short") res.writeHead(201).end(JSON.stringify({ token: "ghp_123" }));
       else if (req.url === "/big") res.writeHead(201).end(JSON.stringify({ token: CANARY, pad: "x".repeat(4096) }));
       else res.writeHead(201, { "content-type": "application/json" }).end(created);
     });
@@ -63,10 +65,10 @@ async function setup(over: Partial<GatewayConfig> = {}) {
     const client = new Client({ name: "test", version: "1" });
     await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
     closers.unshift(() => client.close().catch(() => {}));
-    return async (name: string, args: Record<string, unknown>) => {
+    return Object.assign(async (name: string, args: Record<string, unknown>) => {
       const r = await client.callTool({ name, arguments: args });
       return { r, out: (r as { structuredContent?: Record<string, unknown> }).structuredContent, text: JSON.stringify(r) };
-    };
+    }, { client });
   };
   const tool = await connect(await api.personal.token());
   const capture = { from: "/token", title: "GitHub deploy token", type: "apiKey", agent_use: { hosts: ["api.github.test"], inject: { kind: "bearer" } } };
@@ -135,17 +137,39 @@ describe("http_request capture", () => {
     expect(up.seen).toEqual(["POST /create"]);
   });
 
-  it("no value at the pointer, a non-2xx or a truncated response: capture.refused not_found and nothing saved", async () => {
+  it("no value at the pointer is not_found; a non-2xx is not_found and still scrubbed of the value; a truncated body is withheld", async () => {
     const { api, tool, req, capture } = await setup({ maxResponseBytes: 1024 });
     expect((await tool("http_request", req("/create", { ...capture, from: "/missing" }))).out).toMatchObject({ status: 201, capture: { refused: "not_found" } });
-    expect((await tool("http_request", req("/fail"))).out).toMatchObject({ status: 500, capture: { refused: "not_found" } });
-    expect((await tool("http_request", req("/big"))).out).toMatchObject({ status: 201, truncated: true, capture: { refused: "not_found" } });
+    const fail = await tool("http_request", req("/fail"));
+    expect(fail.out).toMatchObject({ status: 500, capture: { refused: "not_found" } });
+    expect(fail.out!.body).toContain("[clane:redacted]");
+    for (const f of FORMS) expect(fail.text).not.toContain(f);
+    const big = await tool("http_request", req("/big"));
+    expect(big.out).toMatchObject({ status: 201, truncated: true, body: "", capture: { refused: "invalid" } });
+    for (const f of FORMS) expect(big.text).not.toContain(f);
+    expect(api.personal.writes).toEqual([]);
+  });
+
+  it("the injected credential echoed back is never saved: invalid, scrubbed, reflected; a value under 8 characters is invalid", async () => {
+    const { api, tool, req, capture } = await setup();
+    const echo = await tool("http_request", req("/echo", { ...capture, from: "/headers/Authorization", agent_use: { hosts: ["evil.test"], inject: { kind: "bearer" } } }));
+    expect(echo.out).toMatchObject({ status: 201, capture: { refused: "invalid" } });
+    expect(echo.out).not.toHaveProperty("saved");
+    for (const f of ["ghp_ADMIN_TOKEN_1", Buffer.from("ghp_ADMIN_TOKEN_1").toString("base64")]) expect(echo.text).not.toContain(f);
+    expect(api.events).toEqual(expect.arrayContaining([expect.objectContaining({ action: "reflected" })]));
+    const short = await tool("http_request", req("/short"));
+    expect(short.out).toMatchObject({ status: 201, capture: { refused: "invalid" } });
+    expect(short.text).not.toContain("ghp_123");
     expect(api.personal.writes).toEqual([]);
   });
 
   it("is an input error in an organisation session, and for a type with no default secret field", async () => {
     const { api, up, tool, connect, req, capture } = await setup();
     const org = await connect(api.staticToken);
+    // Its listed schema is the shipped one: no capture, nothing about additional properties.
+    const schema = (await org.client.listTools()).tools.find((t) => t.name === "http_request")!.inputSchema;
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["body", "headers", "item", "method", "url"]);
+    expect(schema).not.toHaveProperty("additionalProperties");
     expect((await org("http_request", { ...req(), item: "ops/github-admin" })).r.isError).toBe(true);
     expect((await tool("http_request", req("/create", { ...capture, type: "note" }))).r.isError).toBe(true);
     expect((await tool("http_request", req("/create", { ...capture, from: `/${"x".repeat(256)}` }))).r.isError).toBe(true);
