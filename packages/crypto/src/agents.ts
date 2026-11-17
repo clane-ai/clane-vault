@@ -160,3 +160,17 @@ export const sealPersonalAgentRecordKey = (recordKey: Uint8Array, ids: RecordIds
   sealTo(agentPublicKey, recordKey, personalAgentRecordAad(ids.ownerUserId, ids.agentId, ids.recordId));
 export const openPersonalAgentRecordKey = (sealed: string, ids: RecordIds, keys: SealKeys) =>
   openSealed(keys.privateKey, keys.publicKey, sealed, personalAgentRecordAad(ids.ownerUserId, ids.agentId, ids.recordId));
+
+/** base64url(SHA-256(UTF-8 of text)): what deposit and update signatures name instead of the body. */
+export async function sha256B64(text: string): Promise<string> {
+  return b64url.encode(new Uint8Array(await crypto.subtle.digest("SHA-256", utf8.encode(text) as BufferSource)));
+}
+export const agentDepositOwnerAad = (ownerUserId: string, id: string) => `agent-deposit-owner:${ownerUserId}:${id}`;
+export const agentDepositMessage = (m: { ownerUserId: string; ownerPublicKey: string; agentId: string; id: string; revision: number; encBodyHash: string }) =>
+  `agent-deposit:${m.ownerUserId}:${m.ownerPublicKey}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+export const agentUpdateMessage = (m: { ownerUserId: string; agentId: string; id: string; revision: number; encBodyHash: string }) =>
+  `agent-update:${m.ownerUserId}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+export const sealDepositKeyToOwner = (recordKey: Uint8Array, ids: { ownerUserId: string; id: string }, ownerPublicKey: Uint8Array) =>
+  sealTo(ownerPublicKey, recordKey, agentDepositOwnerAad(ids.ownerUserId, ids.id));
+export const openDepositKey = (sealed: string, ids: { ownerUserId: string; id: string }, keys: SealKeys) =>
+  openSealed(keys.privateKey, keys.publicKey, sealed, agentDepositOwnerAad(ids.ownerUserId, ids.id));

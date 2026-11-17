@@ -90,12 +90,20 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
   // Files on every record in the response: ciphertext metadata only (docs/design/2026-10-12-attachments.md §6.1).
   const files = await readyAttachments(db, attachmentConfig(cfg).enabled ? records.map((r) => r.id) : []);
 
+  // The Personal space: how many agent deposits wait in the inbox (never the deposits: they are not records yet), and
+  // whose kept deposit each record was (provenance; the agent's name is looked up, the column outlives the agent).
+  const personal = !orgId && !locked && !!cfg.agents?.personalAgents;
+  const agentInbox = personal ? await db.agentDeposit.count({ where: { ownerUserId: userId } }) : 0;
+  const creators = personal ? new Map((await db.user.findMany({ where: { id: { in: [...new Set(records.flatMap((r) => (r.createdByAgentId ? [r.createdByAgentId] : [])))] } },
+    select: { id: true, name: true } })).map((u) => [u.id, u.name])) : new Map<string, string>();
+
   const membersOf = new Map<string, typeof members>();
   for (const m of members) membersOf.set(m.folderId, [...(membersOf.get(m.folderId) ?? []), m]);
 
   return {
     serverTime: new Date().toISOString(),
     ...(locked && !orgOnly ? { privateLocked: true } : {}),
+    ...(personal ? { agentInbox } : {}),
     ...(orgId ? { orgId, membershipKeys: myKeys } : {}),
     folders: folders.map((f) => ({
       id: f.id, kind: f.kind, encName: f.encName, ownerId: f.ownerId, deletedAt: f.deletedAt?.toISOString() ?? null,
@@ -130,6 +138,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         ...(isOwner && !orgId ? { agentGrants: shares.filter((s) => s.recordId === r.id && personalAgentIds.has(s.holderId)).map((s) => ({ agentId: s.holderId, use: true as const, write: false })) } : {}),
         ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
+        ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "" } } : {}),
         ...(!isOwner && own ? { sharedBy: r.owner.name } : {}),
         attachments: (files.rows.get(r.id) ?? []).map((a) => attachmentView(a, files.names, permission!)),
       };

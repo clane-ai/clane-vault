@@ -58,3 +58,10 @@ export const attestationOk = (att: string, ids: { orgId: string; agentId: string
 /** A personal agent's attestation: "personal-agent-key:<ownerUserId>:<ownerPublicKey>:<agentId>:<publicKey>". */
 export const personalAttestationOk = (att: string, i: { ownerUserId: string; ownerPublicKey: string; agentId: string; publicKey: string }, identity: GatewayIdentityInfo): boolean =>
   gatewaySigned(att, "g1", `personal-agent-key:${i.ownerUserId}:${i.ownerPublicKey}:${i.agentId}:${i.publicKey}`, identity);
+
+/** sha256B64 from @clane-vault/crypto: base64url(SHA-256(UTF-8)). */
+export const sha256B64 = (text: string): string => createHash("sha256").update(text, "utf8").digest("base64url");
+
+/** agentDepositMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const depositMessage = (m: { ownerUserId: string; ownerPublicKey: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
+  `agent-deposit:${m.ownerUserId}:${m.ownerPublicKey}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;

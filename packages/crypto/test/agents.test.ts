@@ -4,6 +4,7 @@ import {
   generateIdentityKeyPair, gatewayKeyId, signAgentKey, verifyAgentAttestation, b64url,
   personalAgentKeyMessage, personalAgentPrivateKeyAad, personalAgentRecordAad, signPersonalAgentKey, verifyPersonalAgentAttestation,
   verifyGatewayMessage, sealPersonalAgentRecordKey, openPersonalAgentRecordKey, generateKeyPair, randomBytes,
+  sha256B64, agentDepositOwnerAad, agentDepositMessage, agentUpdateMessage, sealDepositKeyToOwner, openDepositKey,
 } from "../src/index.js";
 
 const ok = { v: 1, hosts: ["API.Stripe.com", "*.github.com:8443"], inject: { kind: "bearer" } };
@@ -82,5 +83,21 @@ describe("personal agents", () => {
     const s = await sealPersonalAgentRecordKey(rk, ids, kp.publicKey);
     expect(await openPersonalAgentRecordKey(s, ids, kp)).toEqual(rk);
     await expect(openPersonalAgentRecordKey(s, { ...ids, recordId: "r2" }, kp)).rejects.toThrow();
+  });
+});
+
+describe("agent deposits", () => {
+  it("builds the messages and the hash", async () => {
+    expect(agentDepositMessage({ ownerUserId: "u", ownerPublicKey: "opk", agentId: "a", id: "d", revision: 2, encBodyHash: "h" })).toBe("agent-deposit:u:opk:a:d:2:h");
+    expect(agentUpdateMessage({ ownerUserId: "u", agentId: "a", id: "d", revision: 2, encBodyHash: "h" })).toBe("agent-update:u:a:d:2:h");
+    expect(agentDepositOwnerAad("u", "d")).toBe("agent-deposit-owner:u:d");
+    expect(await sha256B64("")).toBe("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+  });
+
+  it("seals the deposit key to the owner and opens it only for that id", async () => {
+    const kp = await generateKeyPair(); const rk = randomBytes(32);
+    const s = await sealDepositKeyToOwner(rk, { ownerUserId: "u", id: "d" }, kp.publicKey);
+    expect(await openDepositKey(s, { ownerUserId: "u", id: "d" }, kp)).toEqual(rk);
+    await expect(openDepositKey(s, { ownerUserId: "u", id: "d2" }, kp)).rejects.toThrow();
   });
 });

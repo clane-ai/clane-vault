@@ -47,6 +47,8 @@ import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { myAgentRoutes } from "./routes/myAgents.js";
 import { agentGrantRoutes } from "./routes/agentGrants.js";
+import { agentDepositRoutes } from "./routes/agentDeposits.js";
+import { sweepAgentWrites } from "./lib/personalAgents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
 import { authServerMetadata, oauthRoutes, sweepOAuthClients } from "./routes/oauth.js";
@@ -168,6 +170,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       if (opts.config.agents.personalAgents) {
         await api.register(myAgentRoutes, { prefix: "/me/agents" });
         await api.register(agentGrantRoutes);
+        await api.register(agentDepositRoutes);
       }
     }
   }, { prefix: apiPrefix(opts.config) });
@@ -190,6 +193,8 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     opts.prisma.m365Connect.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.agentOAuthCode.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     sweepOAuthClients(opts.prisma).catch((e: unknown) => app.log.error(e));
+    // Unkept agent deposits after 90 days (spec §4.3).
+    if (opts.config.agents?.personalAgents) sweepAgentWrites(opts.prisma).catch((e: unknown) => app.log.error(e));
     // Attachments: abandoned uploads (24 h), removed files and purged S3 objects (docs/attachments.md).
     sweeper.run().catch((e: unknown) => app.log.error(e));
   }, SWEEP_INTERVAL_MS);

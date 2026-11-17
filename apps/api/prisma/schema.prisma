@@ -115,6 +115,7 @@ model User {
   agent             Agent?     @relation("agentUser")
   /// Personal agents this person owns (docs/design/2026-11-15-personal-agents.md).
   personalAgents    Agent[]    @relation("personalAgents")
+  agentDeposits     AgentDeposit[]
 
   @@index([demoExpiresAt])
   @@index([kind])
@@ -369,6 +370,8 @@ model Record {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   deletedAt DateTime?
+  /// The personal agent whose deposit the owner kept as this record (provenance only). No relation: it outlives the agent.
+  createdByAgentId String? @db.Uuid
   access    RecordAccess[]
   links     ShareLink[]
   attachments Attachment[]
@@ -982,9 +985,38 @@ model Agent {
   createdAt         DateTime     @default(now())
   tokens            AgentToken[]
   grants            AgentGrant[]
+  deposits          AgentDeposit[]
 
   @@index([orgId])
   @@index([ownerUserId])
+}
+
+/// An item a personal agent wrote, signed by the gateway: not a record until the owner's browser keeps it (spec §4).
+model AgentDeposit {
+  /// Becomes Record.id on Keep (the body's AAD binds it).
+  id             String   @id @db.Uuid
+  ownerUserId    String   @db.Uuid
+  owner          User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  agentId        String   @db.Uuid
+  agent          Agent    @relation(fields: [agentId], references: [userId], onDelete: Cascade)
+  /// Coarse, as Record.type: "login" or "item".
+  type           String
+  /// aeadEncrypt(recordKey, body, "record-body:<id>")
+  encBody        String
+  revision       Int      @default(1)
+  /// s1. to the owner's account public key (AAD agent-deposit-owner:<ownerUserId>:<id>)
+  ownerSealedKey String
+  /// s1. to the agent's public key (AAD personal-agent-record:<ownerUserId>:<agentId>:<id>)
+  agentSealedKey String
+  /// d1.<gatewayKeyId>.<sig> over the body at `revision`
+  signature      String
+  /// The token label or OAuth client name the agent wrote through.
+  connectedApp   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ownerUserId])
+  @@index([agentId])
 }
 
 /// Static bearer token for API/SDK clients: the token itself is shown once; only its hash is kept.

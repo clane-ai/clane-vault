@@ -1,3 +1,5 @@
+import type { FastifyRequest } from "fastify";
+import type { PrismaClient } from "@prisma/client";
 import type { Config } from "../config.js";
 import { recordOrgOf, type Db } from "./access.js";
 import { AgentLimitError } from "./agents.js";
@@ -75,19 +77,39 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
   const a = await db.agent.findUniqueOrThrow({ where: { userId: agentUserId },
     select: { ownerUserId: true, publicKey: true, wrappedPrivateKey: true, kekId: true, expiresAt: true, owner: { select: { publicKey: true } } } });
   const ownerUserId = a.ownerUserId!;
-  const [rows, rules] = await Promise.all([
+  const [rows, rules, deposits, unkept] = await Promise.all([
     db.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId, orgId: null, state: "active", record: { ownerId: ownerUserId } }, orderBy: { createdAt: "asc" },
       select: { wrappedRecordKey: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
     personalAgentRules(db, cfg, ownerUserId),
+    db.agentDeposit.findMany({ where: { agentId: agentUserId }, orderBy: { createdAt: "asc" }, select: { id: true, encBody: true, revision: true, agentSealedKey: true } }),
+    db.agentDeposit.count({ where: { ownerUserId } }),
   ]);
   return {
     owner: { userId: ownerUserId, publicKey: a.owner!.publicKey }, // current: the gateway refuses when it no longer matches the attestation
     agentId: agentUserId, publicKey: a.publicKey, wrappedPrivateKey: a.wrappedPrivateKey, kekId: a.kekId, expiresAt: a.expiresAt?.toISOString() ?? null,
     records: rows.filter((r) => recordOrgOf(r.record) === null).map(({ wrappedRecordKey, record: r }) => ({
       id: r.id, encBody: r.encBody, revision: r.revision, wrappedRecordKey: wrappedRecordKey!, write: false, deletedAt: r.deletedAt?.toISOString() ?? null })),
-    reveal: [] as never[], deposits: [] as never[],
+    reveal: [] as never[], deposits,
+    inboxFree: Math.max(0, DEPOSIT_INBOX_LIMIT - unkept), // the limit is the owner's, across all their agents (F2)
     policy: { write: rules.write, reveal: rules.reveal },
   };
+}
+
+/** Unkept deposits per owner, across all their agents. */
+export const DEPOSIT_INBOX_LIMIT = 100;
+/** Unkept deposits are deleted this long after they were made. */
+export const DEPOSIT_TTL_MS = 90 * 86400e3;
+
+/** The name of what the agent is connected through: the token's label, or the OAuth client's name behind the grant. */
+export async function connectedApp(db: Db, a: FastifyRequest["agent"]): Promise<string> {
+  if (a.via === "token") return (await db.agentToken.findUnique({ where: { id: a.grantId }, select: { label: true } }))?.label ?? "";
+  const g = await db.agentGrant.findUnique({ where: { id: a.grantId }, select: { clientId: true } });
+  return (g && (await db.agentOAuthClient.findUnique({ where: { id: g.clientId }, select: { name: true } }))?.name) ?? "";
+}
+
+/** The periodic sweep: deletes unkept deposits older than 90 days. Returns how many rows went. */
+export async function sweepAgentWrites(prisma: PrismaClient, now = new Date()): Promise<number> {
+  return (await prisma.agentDeposit.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - DEPOSIT_TTL_MS) } } })).count;
 }
 
 export interface PersonalRotation { records: { id: string }[]; revealed: { id: string; fields: string[] }[] }
@@ -104,6 +126,7 @@ export async function revokePersonalAgent(tx: Db, agentUserId: string, byUserId:
   if (!a || (await tx.agent.updateMany({ where: { userId: agentUserId, revokedAt: null }, data: { revokedAt: now, revokedById: byUserId, wrappedPrivateKey: null } })).count !== 1) return null;
   const held = await tx.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId }, select: { recordId: true }, distinct: ["recordId"] });
   await tx.recordAccess.deleteMany({ where: { holderType: "user", holderId: agentUserId } });
+  await tx.agentDeposit.deleteMany({ where: { agentId: agentUserId } }); // unkept ones; kept records are the owner's
   await tx.agentToken.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.agentGrant.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.user.update({ where: { id: agentUserId }, data: { status: "disabled" } });

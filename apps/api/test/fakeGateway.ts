@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
-import { b64url, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, signAgentKey, signPersonalAgentKey } from "@clane-vault/crypto";
+import { b64url, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, signAgentKey, signGatewayMessage, signPersonalAgentKey, type GatewaySigTag } from "@clane-vault/crypto";
 import type { GatewayIdentityInfo } from "../src/lib/gateway.js";
 
 /** A stand-in for apps/gateway's internal port: real key pairs and real attestations, an opaque envelope. */
@@ -50,6 +50,8 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token, identity, created, dropped, rotateIdentity,
     setDown(d: boolean) { down = d; },
+    /** Tests: sign as the gateway's identity key (deposits, updates). */
+    sign: (tag: GatewaySigTag, message: string) => signGatewayMessage(priv, identity.keyId, tag, message),
     /** Tests: attest a different agent id than the one asked for. */
     setSignWrongAgent(b: boolean) { signWrongAgent = b; },
     close: () => new Promise<void>((r) => server.close(() => r())),
