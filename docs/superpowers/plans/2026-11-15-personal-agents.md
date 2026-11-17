@@ -1,8 +1,8 @@
-# Personal agents, agent writes and agent reveal (Phases A–D) Implementation Plan
+# Personal agents, agent writes, agent reveal and .env file items (Phases A–E) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every signed-in person can enrol their own agent, grant it single items from their Personal space (Use), let it save and update secrets through a reviewed inbox, and let it read named fields after an in-app approval (or, where the operator and every policy allow it, without one).
+**Goal:** Every signed-in person can enrol their own agent, grant it single items from their Personal space (Use), let it save and update secrets through a reviewed inbox, and let it read named fields after an in-app approval (or, where the operator and every policy allow it, without one). A project's `.env` file can be kept as one item whose entries are shown, copied, used by an agent and updated one at a time.
 
 **Architecture:** A personal agent is the shipped agent principal (`User` kind `agent` + `Agent` row) with `ownerUserId` in place of `orgId`, and no `Membership`. The owner's public key is bound into the gateway's attestation and into the AAD of the agent's wrapped key (`k2.`), so a swapped owner key stops the agent. Access is one `RecordAccess` row per item, sealed by the owner's browser after it verified the attestation. Writes arrive as gateway-signed `AgentDeposit` rows that only the owner's unlocked browser turns into records; the `s1.`-on-own-record guard in `decrypt.ts` is untouched. Approved reveal never gives the gateway a record key: the browser seals only the approved fields to a one-time key the gateway signed. Standing reveal is a field in the encrypted body, gated by `GATEWAY_REVEAL=standing` and every applicable organisation policy.
 
@@ -10,7 +10,7 @@
 
 **Spec:** `docs/design/2026-11-15-personal-agents.md`. It builds on `docs/design/2026-10-17-agent-access.md` ("the shipped design"). Executors read both.
 
-**Phases.** A = Tasks 1–9 (personal agents, Use). B = Tasks 10–15 (writes). C = Tasks 16–21 (approved reveal). D = Tasks 22–23 (standing reveal). Each phase ends in an acceptance task (e2e + docs) and ships on its own; do not start a phase before the previous one's acceptance task passes.
+**Phases.** A = Tasks 1–9 (personal agents, Use). B = Tasks 10–15 (writes). C = Tasks 16–21 (approved reveal). D = Tasks 22–23 (standing reveal). E = Tasks 24–28 (`.env` file items, spec §10). **Execution order is A, B, E, C, D:** Phase E starts after Phase B's acceptance task (Task 15) passes and is finished before Task 16 starts; its tasks are written at the end of this document only because they were added later. Each phase ends in an acceptance task (e2e + docs) and ships on its own; do not start a phase before the previous one in that order has passed its acceptance task.
 
 ## Resolved decisions (spec §9, the owner said "build it")
 
@@ -66,8 +66,16 @@
   - The shipped restricted-credential warning (`AgentWarning`) above every grant, every time.
   - Personal-agent server instructions (from Phase C): *"`http_request` uses a credential without showing it; prefer it. `get_secret` shows you a value only where the owner allowed it, and they may be asked to approve."*
 - Public repository: no billing provider code, no deploy secrets, no hosted-service host names or settings beyond what `docs/agents.md` already contains.
-- Migrations, one per phase: `20261115000000_personal_agents`, `20261116000000_agent_writes`, `20261117000000_agent_reveal`. Phase D has none.
-- Commit after each task; messages start `Personal agents:`.
+- Migrations, one per phase: `20261115000000_personal_agents`, `20261116000000_agent_writes`, `20261117000000_agent_reveal`. Phases D and E have none.
+- Commit after each task; messages start `Personal agents:` (Phase E: `Env files:`).
+- **`.env` file items (Phase E, spec §10).**
+  - The record type id is `envFile`, its label *.env file*, its template keys `project`, `environment`, `fileName`, `content`. The file's text is stored verbatim in `data.content` and is the only stored form; entries are always parsed from it with `parseEnv` (`packages/crypto/src/envFile.ts`). No code stores a parsed copy.
+  - `parseEnv(t).map((l) => l.raw).join("") === t` for every string. A download is exactly the stored text as UTF-8.
+  - Limits: `content` at most 32 768 UTF-8 bytes (`MAX_ENV_BYTES`), at most 500 entries (`MAX_ENV_ENTRIES`), no NUL; keys match `/^[A-Za-z0-9_.-]{1,128}$/` (`ENV_KEY`); `update_secret`'s `set.env` takes 1 to 50 keys. The 49 000-byte body limit, the 20 writes an hour and the 100 unkept deposits apply unchanged.
+  - References: `env:<KEY>` is a usage-policy `secret` and (from Phase C) a reveal field. `data.content` of an `envFile` is never a policy secret and never a reveal field: no whole-file injection, no whole-file reveal. `defaultSecretRef("envFile")` is `null`. With duplicate keys the last entry is the value.
+  - The type and its editor are part of the vault and are present with agent access off; the first constraint above covers only Tasks 26 and 27. The API is not changed: the server sees `type: "item"` and ciphertext.
+  - The gateway holds an env file's whole text and every entry value of 8 or more characters (`ENV_HOLD_MIN`) in `HeldSecrets` during a write.
+  - UI copy, exact: *"This file is too large for a .env item (32 KB). Attach it to a Secure note instead."*; *"This file isn't UTF-8 text. Attach it to a Secure note instead."*; *"n lines aren't KEY=value. They are kept as they are."*; *"Overridden below"*; *"The gateway can open this whole file. It will only send the entry you chose."*; *"The current contents will be replaced."*; *"The existing item keeps its own agent settings."*
 
 ## Review Focus
 
@@ -76,6 +84,9 @@
 3. **A captured credential cannot be saved** (inbox full, write limit reached, API down) after the upstream already created it. Expected: inbox space and the write limit are checked **before** the outbound call (`inbox_full` or 429, nothing sent). If the save still fails afterwards, the response is scrubbed of the value all the same and carries `capture: { refused: <reason> }`, so the model can tell the person to delete the orphaned credential. *Tests in Task 13.*
 4. **The agent rewrites a deposit while its owner is reading it**, or updates a record the owner is editing. Expected: `keep` with a stale `revision` answers `409 conflict` and the inbox reloads; an agent update with a stale revision answers `conflict` and writes no overwrite row; a person's later save hides *Changed by agent*. *Tests in Tasks 10, 11 and 14.*
 5. **The shipped share routes are used on a grant row** (`PATCH`/`DELETE /records/:id/shares/<agentId>` from the Personal space, where `orgId` is null and so matches). Expected: `PATCH` to anything above `use` answers `400 agent_use_only`; the row never appears in `sharedWith`; `agentWrite` cannot be set through it. *Tests in Task 4.*
+6. **A `.env` that is not tidy**: CRLF endings, a byte-order mark, duplicate keys, an unterminated quote, a line that is not `KEY=value`, a 40 KB file, a UTF-16 file. Expected: whatever is accepted downloads byte for byte as it was dropped; odd lines are kept and counted, not dropped; a refused file gets the attach hint and changes nothing. *Tests in Tasks 24 and 25.*
+7. **The entry a usage policy injects disappears** (the owner deletes the line in *Edit as text*, an agent replaces the file, *Replace the contents of* brings a file without it). Expected: the save is refused with the validator's message (`invalid` for the agent) and the stored record is unchanged; the policy never ends up injecting another entry. *Tests in Tasks 24, 25, 26 and 27.*
+8. **An env file is opened in the editor and saved without touching the text, or with one value changed.** Expected: untouched, the stored `content` is the same string (a text area would have turned `\r\n` into `\n`); with one value changed, only that line differs. *Tests in Task 25.*
 
 ---
 
@@ -674,6 +685,8 @@
   export const REVEAL_REF = /^(username|password|url|notes|totp|data\.[A-Za-z0-9_]{1,40}|field:[A-Za-z0-9_-]{1,64})$/;
   /** 1–20 unique refs, each matching REVEAL_REF and naming something this body has ("totp" needs totpSecret; data.<key> ∈ dataKeysOf(type); field:<id> ∈ body.fields). Returns them sorted. Throws otherwise. */
   export function validateRevealFields(fields: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret">): string[];
+  // Phase E is already in when this task runs (spec §10.5): REVEAL_REF also accepts `env:[A-Za-z0-9_.-]{1,128}`; `body` is Pick<…, "type" | "fields" | "totpSecret" | "data">;
+  // `env:<KEY>` is valid only on an envFile whose content has the key (`envKeys`); `data.content` on an envFile throws. revealFieldsOf returns `envValue(content, key)` under "env:<KEY>".
   /** Only the named fields that have a value. "totp" → totpCode(body.totpSecret, atMs). The seed is never returned under any ref. */
   export async function revealFieldsOf(body: RecordBody, fields: string[], atMs?: number): Promise<Record<string, string>>;
   export interface RevealStub { title: string; type: RecordType; fields: string[] }
@@ -724,7 +737,7 @@
     expect(agentRevealAad("q", "r", "a")).toBe("agent-reveal:q:r:a");
     expect(personalAgentStubAad("u", "a", "r")).toBe("personal-agent-stub:u:a:r");
     ```
-    Both seal pairs round-trip and fail under another id.
+    Both seal pairs round-trip and fail under another id. Env files (spec §10.7), with `env = { type: "envFile", title: "E", data: { content: "A=1\nB=2\n" } }`: `validateRevealFields(["env:A"], env)` is `["env:A"]`; `["data.content"]`, `["env:NOPE"]`, and `["env:A"]` on the login body throw; `revealFieldsOf(env, ["env:A"])` equals `{ "env:A": "1" }` and its JSON does not contain `B` or `2`.
   - API: `PUT` → 200 and the agent's sync lists the stub; **no `RecordAccess` row** for the agent was created; `/sync` shows `agentGrants: [{ agentId, use: false, write: false, reveal: ["username"] }]`. Refusals as for grants (team-folder record `409 team_record`, another user's agent `400 user_not_active`), plus `fields: ["totpSecret"]` → 400 and policy `reveal: "off"` → `403 reveal_disabled` with the sync's `reveal` then `[]`.
   - Review Focus 2: moving the record into a team folder deletes the stub; a trashed record's stub is not in the sync; revoking the agent deletes its stubs.
 - [ ] **Step 2: Run** `npx vitest run test/agents.test.ts` in `packages/crypto` and `npx vitest run test/agent-reveals.test.ts` in `apps/api`. Expected: FAIL.
@@ -853,7 +866,7 @@
   ```
   The Personal vault is loaded and decrypted for the check when the active space is an organisation.
 - `RevealApproval`: a blocking sheet for the oldest request: the agent, the connected app, the item's title (from the user's own vault, never from the request), the field labels, the time, and the reason under *"Written by the agent. It may not be true."* Buttons **Allow once** and **Deny**. When `checkRequest` is not `ok` there is **no Allow button** and one line says why (*"This request was not signed by your gateway."* / *"This asks for an item or fields you did not allow."*). A countdown to `expiresAt`; an expired request leaves the sheet. A `paused` entry shows a notice: *"<agent> was denied three times. Its requests are paused until <time>."*
-- `RecordAgentsSection`: the mode select becomes *None* / *Can use* / *Can reveal* / *Can use and reveal*. Reveal opens a field picker (the record's own fields; `username` preselected, `password` unticked; `totp` labelled *Current one-time code*) with the sentence *"Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards."* and, below it, *"Prefer Can use. Reveal only what can't be sent in an HTTP call and is easy to change."* Saving seals `{ title, type, fields }` with `sealRevealStub` after `verifyPersonalAgentKey` and calls `PUT /records/:id/agent-reveal/:agentId`. The reveal options are absent when `rules.reveal` or `gateway.reveal` (from `GET /me/agents`) is `off`. Renaming a revealable record reseals its stubs.
+- `RecordAgentsSection`: the mode select becomes *None* / *Can use* / *Can reveal* / *Can use and reveal*. Reveal opens a field picker (the record's own fields; `username` preselected, `password` unticked; `totp` labelled *Current one-time code*; for an `envFile` the picker lists its keys as `env:<KEY>`, none preselected, and has no *Contents* option) with the sentence *"Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards."* and, below it, *"Prefer Can use. Reveal only what can't be sent in an HTTP call and is easy to change."* Saving seals `{ title, type, fields }` with `sealRevealStub` after `verifyPersonalAgentKey` and calls `PUT /records/:id/agent-reveal/:agentId`. The reveal options are absent when `rules.reveal` or `gateway.reveal` (from `GET /me/agents`) is `off`. Renaming a revealable record reseals its stubs.
 - `MyAgentsSection`: the switch *Email me when an agent asks for a secret* (`PATCH /me/agents/settings`); the revoke dialog also lists `rotate.revealed`: *"These fields were shown to the AI model. Change them."*
 
 - [ ] **Step 1: Write the failing tests** (real crypto, a test identity pinned in `PERSONAL_SLOT`):
@@ -918,7 +931,7 @@
 - Modify: `apps/gateway/src/apiClient.ts`, `apps/gateway/src/reveal.ts`, `apps/gateway/src/items.ts`; Test: `apps/gateway/test/reveal.test.ts`, `noPlaintext.test.ts`
 
 **Interfaces:**
-- Crypto: `export interface AgentReveal { v: 1; agents: string[]; fields: string[] }`; `export function validateAgentReveal(p: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret">): AgentReveal` (unknown keys refused; `agents` 1–20 unique UUIDs; `fields` through `validateRevealFields`). `RecordBody.agentReveal?: AgentReveal`, validated in `validateV2` after `agentPolicy`; on a lenient read an invalid one is dropped, as `agentPolicy` is. A client from before this field drops it on save: standing reveal then stops (fails closed).
+- Crypto: `export interface AgentReveal { v: 1; agents: string[]; fields: string[] }`; `export function validateAgentReveal(p: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret" | "data">): AgentReveal` (unknown keys refused; `agents` 1–20 unique UUIDs; `fields` through `validateRevealFields`). `RecordBody.agentReveal?: AgentReveal`, validated in `validateV2` after `agentPolicy`; on a lenient read an invalid one is dropped, as `agentPolicy` is. A client from before this field drops it on save: standing reveal then stops (fails closed).
 - API: `POST /agent/reveals/standing { recordId: uuid, fields: string[] }` (`requireAgent`) → `201 { ok: true }`. `409 reveal_off` unless `rules.reveal === "standing"` and the agent holds a `RecordAccess` row for the owner's live private record. Event `agent.reveal` (`recordId`, `meta { fields, app, standing: true }`). No schema change, so Phase D has no migration.
 - Gateway `apiClient.ts`: `standingReveal(token: string, r: { recordId: string; fields: string[] }): Promise<{ ok: true } | { refused: "reveal_off" }>`.
 - Gateway `requestReveal`: before the approval path, the **standing path** applies when all of these hold: `cfg.reveal === "standing"`; `sync.policy.reveal === "standing"`; the agent holds the record's key; the decrypted `body.agentReveal?.agents` includes the agent's id; every asked field is in `body.agentReveal.fields`. Then `standingReveal` is called first — only a `201` releases values — and `revealFieldsOf(body, fields)` is returned, held in `held` until written. If any condition fails, the approval path of Task 18 runs as before (so an item can have both).
@@ -958,6 +971,217 @@
 
 ---
 
+## Phase E — `.env` file items (runs after Task 15 and before Task 16)
+
+Spec §10. No migration, no API route, no new tool, no new setting. Tasks 24 and 25 are plain vault work and behave the same with agent access off. Tasks 26 and 27 build on Phase B (Tasks 12–14) and on the pre-flight rulings F1, F2 and F7, which apply to the paths below unchanged: the owner key is checked first, `inboxFree` decides `inbox_full`, the write limit is taken before the transport.
+
+### Task 24: Crypto — the `envFile` type, the parser, `env:` secret references
+
+**Files:**
+- Create: `packages/crypto/src/envFile.ts`; Test: `packages/crypto/test/envFile.test.ts`
+- Modify: `packages/crypto/src/recordTypes.ts`, `records.ts`, `agents.ts`, `index.ts` (`export * from "./envFile.js"`); Test: `packages/crypto/test/recordTypes.test.ts`, `agents.test.ts`
+- Modify: `apps/web/src/features/vault/recordKinds.ts` (`TYPE_ICON` and `PLACEHOLDER` are `Record<RecordType, …>`, so the web app does not typecheck until they have the new key); Test: `apps/web/src/features/vault/recordTypes.test.tsx`
+
+**Interfaces:**
+- Produces, `envFile.ts` (imports nothing but `utf8` from `encoding.js`):
+  ```ts
+  export const MAX_ENV_BYTES = 32_768;      // UTF-8 bytes of the text
+  export const MAX_ENV_ENTRIES = 500;
+  export const ENV_KEY = /^[A-Za-z0-9_.-]{1,128}$/;
+  /** One logical line with its terminator. For an entry, raw === head + token + tail: `token` is the value as written (quotes included, "" when empty), `tail` is spaces, a comment and the terminator. A quoted value may make one line span several physical lines. */
+  export type EnvLine =
+    | { kind: "entry"; raw: string; key: string; value: string; head: string; token: string; tail: string }
+    | { kind: "blank" | "comment" | "invalid"; raw: string };
+  /** Spec §10.3. Never throws. parseEnv(t).map((l) => l.raw).join("") === t for every string. */
+  export function parseEnv(text: string): EnvLine[];
+  /** Entries in file order; `overridden` when a later line sets the same key. */
+  export function envEntries(text: string): { key: string; value: string; overridden: boolean }[];
+  export function envKeys(text: string): string[];                       // unique, in order of first appearance
+  export function envValue(text: string, key: string): string | null;   // the last entry with that key; null when there is none
+  export function quoteEnvValue(value: string): string;                  // spec §10.3: bare, else '…', else "…" with \\ \" \n \r \t
+  /** Replaces the token of the last entry with that key; without one, appends `KEY=<quoted>` plus the file's first line terminator (default "\n"), after terminating an unterminated last line. Throws on a key that fails ENV_KEY. */
+  export function setEnvEntry(text: string, key: string, value: string): string;
+  export function diffEnv(before: string, after: string): { added: string[]; changed: string[]; removed: string[] };   // by envValue, each list in `after`'s (removed: `before`'s) key order
+  /** Throws "env file is too large", "env file has too many entries" or "env file isn't text" (a NUL). */
+  export function checkEnvContent(text: string): void;
+  /** The name a download gets: `name` when it matches /^[A-Za-z0-9._-]{1,100}$/ and is not only dots, else ".env". (`safeFilename` strips the leading dot, so it is not used here.) */
+  export const envFileName: (name?: string) => string;
+  ```
+- `recordTypes.ts`: `"envFile"` is appended to `RECORD_TYPES`; its definition goes in `DEFS` after `apiKey`, exactly as in spec §10.2.
+- `records.ts` `validateV2`: after `cleanData`, `if (clean.type === "envFile" && data?.content !== undefined) checkEnvContent(data.content)`. `cleanData` already keeps the string untouched (no trim).
+- `agents.ts`:
+  - `validateAgentPolicy(p, body: Pick<RecordBody, "type" | "fields" | "data">)`. A `secret` of `env:<KEY>` is valid only when `body.type === "envFile"` and `envKeys(body.data?.content ?? "")` has the key. For an `envFile`, `data.content` is refused (*"an env file is injected one entry at a time"*). `defaultSecretRef("envFile")` is `null`, so the existing *"choose which field to inject…"* refusal covers a policy without `secret`.
+  - `agentSecretOf`: `env:<KEY>` → `envValue(body.data?.content ?? "", key)`; an empty value → `null`, as for every empty field.
+- `recordKinds.ts`: `TYPE_ICON.envFile = FileKey` (lucide); `PLACEHOLDER.envFile = "Billing API production"`; `recordSubtitle`: `join(d.project, d.environment) || d.fileName || typeLabel("envFile")`; `searchableText` also pushes `envKeys(b.data.content)` for an `envFile` (never a value: `content` is a secret kind and stays skipped).
+
+- [ ] **Step 1: Write the failing tests.**
+  - `envFile.test.ts`:
+    ```ts
+    const FILE = '﻿# billing\r\nexport STRIPE_KEY = \'sk_live_1\' # live\r\nPORT=3000\r\n\r\nDB="line1\nline2\\tx"\r\nPW=abc#123\r\nPW2=abc #123\r\nA=1\r\nA=2\r\nnot a line\r\nBAD="open\r\nREF=${A}\r\nE=\r\nT=`tick`';
+    const v = (k: string) => envValue(FILE, k);
+    expect(parseEnv(FILE).map((l) => l.raw).join("")).toBe(FILE);
+    expect(envKeys(FILE)).toEqual(["STRIPE_KEY", "PORT", "DB", "PW", "PW2", "A", "REF", "E", "T"]);
+    expect([v("STRIPE_KEY"), v("PORT"), v("DB"), v("PW"), v("PW2"), v("A"), v("REF"), v("E"), v("T"), v("BAD")])
+      .toEqual(["sk_live_1", "3000", "line1\nline2\tx", "abc#123", "abc", "2", "${A}", "", "tick", null]);
+    expect(parseEnv(FILE).filter((l) => l.kind === "invalid").map((l) => l.raw)).toEqual(["not a line\r\n", 'BAD="open\r\n']);
+    expect(envEntries("A=1\nA=2").map((e) => e.overridden)).toEqual([true, false]);
+    expect(envValue("K='a\\nb'", "K")).toBe("a\\nb");                       // single quotes are literal
+    for (const bad of ['K="a"b', "=x", "K", "K: v", "a b=1"]) expect(parseEnv(bad)[0]!.kind).toBe("invalid");
+    for (const any of ["", "\n", "\r", '"', "A='\n", "\u0000", "=".repeat(9)]) expect(parseEnv(any).map((l) => l.raw).join("")).toBe(any);
+
+    expect(["abc", "x y", "it's", "l1\nl2", "", "a#b", "$x"].map(quoteEnvValue)).toEqual(["abc", "'x y'", '"it\'s"', '"l1\\nl2"', "", "'a#b'", "'$x'"]);
+    expect(setEnvEntry(FILE, "STRIPE_KEY", "sk_live_2")).toBe(FILE.replace("'sk_live_1'", "sk_live_2"));   // export, spacing, comment, CRLF and BOM stay
+    expect(setEnvEntry("A=1\nA=2\n", "A", "3")).toBe("A=1\nA=3\n");
+    expect(setEnvEntry("A=1", "B", "x y")).toBe("A=1\nB='x y'\n");
+    expect(setEnvEntry("A=1\r\n", "B", "2")).toBe("A=1\r\nB=2\r\n");
+    expect(setEnvEntry("", "B", "2")).toBe("B=2\n");
+    expect(() => setEnvEntry("", "a b", "1")).toThrow();
+    for (const val of ["", " lead", "tab\there", 'q"q\'q', "back\\slash", "multi\r\nline", "#hash", "üñí"]) expect(envValue(setEnvEntry("X=0\n", "X", val), "X")).toBe(val);
+    expect(diffEnv("A=1\nB=2\nD=4\n", "A=1\nB=3\nC=4\n")).toEqual({ added: ["C"], changed: ["B"], removed: ["D"] });
+
+    expect(() => checkEnvContent("A=" + "x".repeat(MAX_ENV_BYTES - 2))).not.toThrow();
+    expect(() => checkEnvContent("A=" + "x".repeat(MAX_ENV_BYTES - 1))).toThrow("too large");
+    expect(() => checkEnvContent("é".repeat(MAX_ENV_BYTES / 2 + 1))).toThrow("too large");                // bytes, not characters
+    expect(() => checkEnvContent(Array.from({ length: 501 }, (_, i) => `K${i}=1`).join("\n"))).toThrow("too many");
+    expect(() => checkEnvContent("A=1\u0000")).toThrow("text");
+    expect([envFileName(".env.production"), envFileName("../x"), envFileName(".."), envFileName(undefined)]).toEqual([".env.production", ".env", ".env", ".env"]);
+    ```
+  - `recordTypes.test.ts`: `serverRecordType({ type: "envFile" })` is `"item"`. A body `{ type: "envFile", title: "T", data: { project: "billing", content: FILE } }` round-trips `encryptRecordBody` → `decryptRecordBody` with `data.content === FILE` (Review Focus 6). `normalizeRecordBody` throws for a 32 769-byte `content`, and for `data: { nope: "x" }`.
+  - `agents.test.ts`, with `body = { type: "envFile", data: { content: "STRIPE_KEY=sk_live_1\nEMPTY=\n" } }` and `pol = (secret?: string) => ({ v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, ...(secret ? { secret } : {}) })`: `validateAgentPolicy(pol("env:STRIPE_KEY"), body).secret` is `"env:STRIPE_KEY"`; `pol()`, `pol("env:NOPE")`, `pol("data.content")` and `pol("env:")` throw; `pol("env:STRIPE_KEY")` on `{ type: "apiKey" }` throws. `agentSecretOf({ ...body, title: "T", agentPolicy: pol("env:STRIPE_KEY") })` is `"sk_live_1"`; with `env:EMPTY` it is `null`. `normalizeRecordBody` on a body whose policy names `env:STRIPE_KEY` and whose `content` is `"OTHER=1"` throws (Review Focus 7); `decryptRecordBody` of such a stored body returns it without `agentPolicy` (the lenient read).
+  - `recordTypes.test.tsx`: `recordSubtitle` of the body above is `"billing"`; `searchableText` contains `"STRIPE_KEY"` and nothing containing `"sk_live_1"`.
+- [ ] **Step 2: Run** `npx vitest run test/envFile.test.ts test/recordTypes.test.ts test/agents.test.ts` in `packages/crypto`. Expected: FAIL (`envFile.js` does not exist).
+- [ ] **Step 3: Implement.** `parseEnv` is one hand-written scanner over the string, a line at a time, with no regular expression that can backtrack over the whole input.
+- [ ] **Step 4: Run** `npx vitest run` in `packages/crypto`, `apps/gateway` and `apps/extension`, and `npx vitest run` plus the typecheck in `apps/web`. Expected: PASS; the type picker test (`toHaveLength(RECORD_TYPES.length)`) passes with fifteen.
+- [ ] **Step 5: Commit** `git commit -m "Env files: the envFile record type, a lossless .env parser, and env:<KEY> as an agent secret reference"`
+
+### Task 25: Web — the entry list, the editor, file in and out, *New → .env file*
+
+**Files:**
+- Create: `apps/web/src/features/vault/EnvFile.tsx`; Test: `apps/web/src/features/vault/EnvFile.test.tsx`
+- Modify: `apps/web/src/features/vault/RecordPanel.tsx`, `RecordEditor.tsx`, `AgentPolicyEditor.tsx`, `RecordAgentsSection.tsx`, `NewMenu.tsx`, `NewRecordDialog.tsx`, `VaultScreen.tsx`
+- Test: `apps/web/src/features/vault/NewMenu.test.tsx`, `RecordAgents.test.tsx`
+
+**Interfaces:**
+- Consumes: Task 24.
+- `EnvFile.tsx`:
+  ```ts
+  /** Bytes → text, losslessly: file.size > MAX_ENV_BYTES → Error(TOO_LARGE) before reading; new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }) (a throw → Error(NOT_TEXT)); then checkEnvContent. */
+  export async function readEnvFile(file: File): Promise<string>;
+  /** `.env.production` and `production.env` → "production"; `.env` → "". */
+  export const environmentOf: (fileName: string) => string;
+  /** The text area's "\n" put back to "\r\n" when `stored` used it: stored.includes("\r\n") ? edited.replace(/\r?\n/g, "\r\n") : edited. */
+  export const keepEol: (stored: string, edited: string) => string;
+  export function downloadEnv(content: string, fileName?: string): void;   // new Blob([content]) under envFileName(fileName)
+  /** Read-only rows: key, masked value, Show (absent with useOnly), Copy. Earlier duplicates carry "Overridden below". One line under the list when parseEnv found invalid lines. */
+  export function EnvEntries(p: { content: string; useOnly?: boolean }): JSX.Element;
+  /** The editor's Contents field: drop zone + Choose file, entry rows as masked inputs (setEnvEntry), Add entry (key checked against ENV_KEY), and the Edit as text toggle (a masked text area, keepEol on change). */
+  export function EnvFileField(p: { value: string; onChange: (content: string) => void; onFile?: (name: string) => void }): JSX.Element;
+  ```
+  Copy, exact: `TOO_LARGE` = *"This file is too large for a .env item (32 KB). Attach it to a Secure note instead."*; `NOT_TEXT` = *"This file isn't UTF-8 text. Attach it to a Secure note instead."*; invalid lines: *"n lines aren't KEY=value. They are kept as they are."* (*"1 line isn't KEY=value. It is kept as it is."*).
+- `RecordPanel`: for an `envFile`, the generic row `t:content` is left out and `<EnvEntries>` follows the fields card, under a header row with **Copy all** (`CopyButton` on the whole text) and **Download** (absent with *Use only*).
+- `RecordEditor`: the template field `content` of an `envFile` renders `<EnvFileField>` instead of `ValueInput`. `onFile` fills *File name* and *Environment* (`environmentOf`) only when they are empty. The `AgentPolicyEditor` gets `body={{ type, fields: keptFields, data }}`. A save the validator refuses shows its message, as today.
+- `AgentPolicyEditor`: `body: Pick<RecordBody, "type" | "fields" | "data">`. For an `envFile` the *Secret* options are `envKeys(content)` as `{ ref: "env:<KEY>", label: "<KEY>" }` and nothing else (no *Contents*, no *Default for this record type*).
+- `RecordAgentsSection`: for an `envFile`, the line *"The gateway can open this whole file. It will only send the entry you chose."* under the mode select.
+- `NewMenu`: `NewKind` gains `"env"`; the item **.env file** sits under *Record*, disabled with the same `recordHint`. `NewRecordDialog` gains `type?: RecordType` (the type preselected, default `"login"`); `VaultScreen`'s `onNew("env")` opens it with `type: "envFile"`.
+
+- [ ] **Step 1: Write the failing tests** (`FILE` as in Task 24, built with `new File([new TextEncoder().encode(FILE)], ".env.production")`):
+  - `readEnvFile` returns exactly `FILE` (BOM and CRLF intact). A 32 769-byte file → `TOO_LARGE` without `arrayBuffer` being called (spy). UTF-16 bytes (`[0xff, 0xfe, 0x41, 0x00]`) → `NOT_TEXT`. `environmentOf(".env.production")`, `("staging.env")`, `(".env")` → `"production"`, `"staging"`, `""`.
+  - Editor: dropping the file fills *File name* `.env.production` and *Environment* `production`; saving posts `type: "item"` and a body whose `data.content === FILE` (spec §10.7).
+  - Review Focus 8: opening the editor on that record and saving untouched → the saved `data.content === FILE`. Typing a new value into the `STRIPE_KEY` row → `FILE.replace("'sk_live_1'", "<typed>")`. Opening *Edit as text* and appending a line (the text area reports `\n`) → every line ending in the saved text is `\r\n`.
+  - Dropping a 40 KB file shows `TOO_LARGE` and leaves the field as it was (Review Focus 6).
+  - Panel: one row per entry with the key visible and no value in the document until **Show**; **Copy all** copies `FILE`; **Download** builds a `Blob` whose bytes equal the dropped bytes, named `.env.production` (`URL.createObjectURL` spy). With `permission: "use"`: no Show, no Download, Copy present. *"1 line isn't KEY=value…"* is absent for a clean file and present for `FILE` as *"2 lines…"*.
+  - `AgentPolicyEditor` for an `envFile`: the *Secret* options are the nine keys; choosing `STRIPE_KEY` yields `secret: "env:STRIPE_KEY"`. Removing that line in *Edit as text* and saving shows the validator's message and sends no request (Review Focus 7).
+  - `NewMenu`: **.env file** calls `onNew("env")`; the dialog opened with `type="envFile"` shows *.env file* selected.
+- [ ] **Step 2: Run** `npx vitest run src/features/vault/EnvFile.test.tsx src/features/vault/NewMenu.test.tsx src/features/vault/RecordAgents.test.tsx` in `apps/web`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `npx vitest run` and the typecheck in `apps/web`. Expected: PASS, `RecordEditor.test.tsx`, `RecordPanel.test.tsx` and `recordTypes.test.tsx` unchanged.
+- [ ] **Step 5: Commit** `git commit -m "Env files: per-entry view with masked values, editor with file drop, byte-exact download, New → .env file"`
+
+### Task 26: Gateway — env files in `list_secrets`, `save_secret`, `update_secret` and `capture`
+
+**Files:**
+- Modify: `apps/gateway/src/items.ts`, `apps/gateway/src/deposits.ts`, `apps/gateway/src/mcp.ts`
+- Test: `apps/gateway/test/items.test.ts`, `deposits.test.ts`, `mcp.test.ts`, `capture.test.ts`, `noPlaintext.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 12, 13, 24 (`envKeys`, `envEntries`, `setEnvEntry`, `quoteEnvValue`, `ENV_KEY`).
+- `items.ts`: `ItemSummary` gains `env_keys?: string[]` and `env_injects?: string`, set in `summarize` for `body.type === "envFile"` from `envKeys(body.data?.content ?? "")` and from a policy `secret` of `env:<KEY>`. Both session kinds get them (an organisation agent may hold an env file in a shared folder). `withItem` needs no change: `agentSecretOf` resolves the entry, and only that value is held and injected.
+- `deposits.ts`:
+  - `export const ENV_HOLD_MIN = 8;` `buildDeposit` and `buildUpdate`, for an `envFile`, hold in `held` the whole `content` and every entry value of at least `ENV_HOLD_MIN` characters, old and new, until they return (spec §10.6).
+  - `buildUpdate`'s `set` becomes `NonNullable<SaveInput["fields"]> & { env?: Record<string, string> }`. `set.env` is applied with `setEnvEntry` in the object's key order. It throws (→ `invalid`) when the body is not an `envFile`, when `set.data?.content` is also given, or when a key fails `ENV_KEY`. The result goes through `normalizeRecordBody` as before, which refuses a file over the limits or one that lost the policy's entry.
+- `mcp.ts`:
+  - `update_secret`'s `set` schema gains `env: z.record(z.string().regex(ENV_KEY), z.string().max(MAX_ENV_BYTES))` with 1 to 50 keys, optional.
+  - `capture` gains `entry?: string` (`ENV_KEY`). `type: "envFile"` requires it (else an input error) and is exempt from the `defaultSecretRef(type) !== null` rule; the deposit's `data.content` is `` `${entry}=${quoteEnvValue(value)}\n` `` and `data.fileName` is `".env"`. `entry` with any other type is an input error.
+  - `save_secret`'s description gains one sentence: *"For a .env file use type envFile with fields.data.content; you have then seen its values, so prefer capture for a value an API returns."*
+  - The tool list, the limits and the refusal reasons are unchanged.
+
+- [ ] **Step 1: Write the failing tests** (`CONTENT = "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=3000\n"`):
+  - `items`: an env file with policy `secret: "env:STRIPE_KEY"` is summarised with `type: "envFile"`, `env_keys: ["STRIPE_KEY", "PORT"]`, `env_injects: "STRIPE_KEY"`, and `JSON.stringify(summary)` does not contain `sk_live_ENVCANARY1`. `withItem` passes `secret: "sk_live_ENVCANARY1"` to `f`.
+  - `mcp`, `http_request` on that item: the upstream received `authorization: Bearer sk_live_ENVCANARY1`; an upstream that echoes the header gets it back as `[clane:redacted]`. A policy naming `env:PORT` on a file where `PORT=` is empty → `no_policy`.
+  - `mcp`, writes: `save_secret { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: CONTENT } } }` → `{ item: "personal/billing" }`; the fake API's deposit decrypts to `data.content === CONTENT`; `list_secrets` shows it with `deposit: true` and `env_keys`. A 40 KB `content` → `invalid`, nothing posted. With `agent_use.secret: "env:NOPE"` → `invalid`.
+  - `update_secret { item, set: { env: { STRIPE_KEY: "sk_live_ENVCANARY2", NEW: "a b" } } }` on a record with `write: true` → the stored body's `content` is `"STRIPE_KEY=sk_live_ENVCANARY2\nPORT=3000\nNEW='a b'\n"` and `JSON.stringify(after.agentPolicy) === JSON.stringify(before.agentPolicy)`. With `write: false` → `not_writable`, no `PUT`. `set.env` on an `apiKey` item → `invalid`. `set: { env: {…}, data: { content: "X=1" } }` → `invalid`. `set: { data: { content: "PORT=1\n" } }` on an item whose policy injects `STRIPE_KEY` → `invalid`, and the fake API saw no `PUT` (Review Focus 7).
+  - F1 holds: after `setOwnerPublicKey`, the `save_secret` above → `owner_key_changed` and no deposit at the fake API.
+  - `capture` with `{ from: "/token", title: "Deploy", type: "envFile", entry: "DEPLOY_TOKEN" }` against an upstream answering `{"token":"tok env CANARY"}` → the deposit's `content` is `"DEPLOY_TOKEN='tok env CANARY'\n"` and the tool result has no canary. `type: "envFile"` without `entry`, and `entry` with `type: "apiKey"`, are input errors.
+  - `noPlaintext`: the canary test also runs the env-file `save_secret` and the `set.env` update; `sk_live_ENVCANARY1` and `sk_live_ENVCANARY2` appear in no log line and no API request body.
+  - An organisation session still lists exactly two tools; its `list_secrets` shows `env_keys` for an env file in a shared folder.
+- [ ] **Step 2: Run** `npx vitest run` in `apps/gateway`. Expected: the new cases FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `npx vitest run` and the typecheck in `apps/gateway`. Expected: PASS, `scrub.test.ts` and `ssrf.test.ts` unchanged.
+- [ ] **Step 5: Commit** `git commit -m "Env files: agents list keys, inject one entry, save a file and set entries through the signed write path"`
+
+### Task 27: Web — env files in the *From agents* inbox: entries, differences, *Replace the contents of*
+
+**Files:**
+- Modify: `apps/web/src/features/vault/AgentInbox.tsx`, `agentInbox.ts`, `RecordPanel.tsx`
+- Test: `apps/web/src/features/vault/AgentInbox.test.tsx`, `RecordPanel.test.tsx`
+
+**Interfaces:**
+- Consumes: Tasks 14, 24, 25 (`EnvEntries`, `downloadEnv`, `diffEnv`).
+- `agentInbox.ts`:
+  ```ts
+  /** The owner's own, live, Personal envFile records; first the one whose project, environment and fileName all equal the deposit's (the most recently changed when several do), or null. */
+  export function envReplaceTargets(deposit: RecordBody, records: VaultRecord[]): { targets: VaultRecord[]; match: VaultRecord | null };
+  /** Saves `target` through the normal edit path (PUT /records/:id at its revision) with only data.content replaced by the deposit's, then DELETE /me/agent-deposits/:id. A refused save (validator or 409) deletes nothing. */
+  export function useReplaceFromDeposit();
+  ```
+- `AgentInbox`: a deposit whose body is an `envFile` shows `<EnvEntries>` in place of the generic *Contents* row. With at least one target, the Keep sheet has two choices: **Keep as a new item** (Task 14, unchanged) and **Replace the contents of** with a select of the targets (`match` preselected; with no match the first choice is the default). Under the select: *Added: …*, *Changed: …*, *Removed: …* from `diffEnv(target content, deposit content)` (keys only; a group with no key is left out; all three empty → *"No differences."*), the line *"The current contents will be replaced."* and **Download current**. The deposit's `agentPolicy` is not applied on Replace; the sheet says *"The existing item keeps its own agent settings."* A deposit that failed verification offers neither choice (Task 14's refusal copy, F6's unpinned state).
+- `RecordPanel`: the *Changed by agent* banner of Task 14, on an `envFile`, adds the same three groups from `diffEnv(previous content, current content)` once `agent-overwrites` is loaded.
+
+- [ ] **Step 1: Write the failing tests** (real crypto as in Task 14; an existing record `{ type: "envFile", title: "Billing", data: { project: "billing", fileName: ".env", content: "A=1\nB=2\nD=4\n" }, agentPolicy: <injects env:A> }` and a deposit with the same project and file name and `content: "A=1\nB=3\nC=4\n"`):
+  - The deposit renders rows `A`, `B`, `C` and no value until **Show**.
+  - The Keep sheet preselects *Replace the contents of Billing* and shows *Added: C*, *Changed: B*, *Removed: D*. Confirming issues one `PUT /records/<existing id>` whose body decrypts to the existing title and notes, `data.content === "A=1\nB=3\nC=4\n"` and `JSON.stringify(agentPolicy)` equal to the existing one, then one `DELETE /me/agent-deposits/<id>`; no `keep` call.
+  - A deposit whose `content` lacks `A`: confirming shows the validator's message, and neither the `PUT` nor the `DELETE` is sent (Review Focus 7).
+  - A deposit with another project: *Keep as a new item* is the default, and Billing is still in the select.
+  - No env file in the vault: the sheet is Task 14's, with no second choice. A deposit that fails the signature check: no Keep and no Replace.
+  - `RecordPanel`: an `envFile` with `agentChange` shows *Changed: B* after the overwrites load; **Restore previous** saves a body whose `data.content` is the previous text exactly.
+- [ ] **Step 2: Run** `npx vitest run src/features/vault/AgentInbox.test.tsx src/features/vault/RecordPanel.test.tsx` in `apps/web`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `npx vitest run` and the typecheck in `apps/web`. Expected: PASS.
+- [ ] **Step 5: Commit** `git commit -m "Env files: the inbox shows entries and differences, and can replace an existing file's contents"`
+
+### Task 28: Phase E acceptance — e2e and docs
+
+**Files:**
+- Create: `e2e/agents/fixtures/sample.env` (CRLF endings; a comment; `export STRIPE_KEY='sk_test_ENV_CANARY_1' # live`; `PORT=3000`; `CERT=` with a double-quoted two-line value; `A=1` then `A=2`; one line `not a line`). The name is not `.env` because `.gitignore` ignores that. Add `e2e/agents/fixtures/*.env -text` to `.gitattributes` so git never rewrites its line endings.
+- Modify: `e2e/agents/personal.spec.ts`, `e2e/playwright.agents.config.ts` (gateway env `GATEWAY_CACHE_TTL_SECONDS: "0"`: the steps below read a record straight after its owner changed it, and the gateway otherwise serves its cached copy for up to 60 s)
+- Modify: `docs/record-types.md`, `docs/agents.md`, `SECURITY.md`, `CHANGELOG.md` (*Unreleased*)
+
+- [ ] **Step 1: Extend the test** (as the member, after the Phase B steps and before the revoke step):
+  1. **New → .env file**, title "Billing env"; give the file input the fixture's bytes under the name `.env` (`setInputFiles({ name: ".env", mimeType: "text/plain", buffer })`). *File name* reads `.env` and *Environment* stays empty. Save. The panel lists `STRIPE_KEY`, `PORT`, …; the page text has no `sk_test_ENV_CANARY_1` until **Show** on that row. **Download** → the downloaded file's bytes equal the fixture's (`Buffer.equals`). Searching `STRIPE_KEY` finds the item; searching `sk_test_ENV` finds nothing.
+  2. Edit: *Agent use* with the echo host, *Bearer token*, *Secret* `STRIPE_KEY`. Grant *Can use* to "My helper". MCP `list_secrets` → the item has `type: "envFile"`, `env_keys` including `STRIPE_KEY`, `env_injects: "STRIPE_KEY"`, and the whole result contains no canary. `http_request` to the echo upstream → it received `Bearer sk_test_ENV_CANARY_1`; the tool result does not contain it.
+  3. MCP `save_secret { type: "envFile", title: "Billing env (new)", fields: { data: { fileName: ".env", content: "STRIPE_KEY=sk_test_ENV_CANARY_2\nPORT=3000\nNEW=1\n" } } }`. **From agents** shows it with three rows. Keep → *Replace the contents of Billing env* is preselected with *Added: NEW*, *Changed: STRIPE_KEY* and *Removed: CERT, A*. Confirm → "Billing env" shows `NEW`, the inbox badge is gone, and `http_request` now sends `Bearer sk_test_ENV_CANARY_2`.
+  4. MCP `update_secret { item: "personal/billing-env", set: { env: { PORT: "8080" } } }` → `not_writable`. Tick *Agent can update this item*, call again → the banner *Changed by agent My helper* with *Changed: PORT*; **Restore previous** → **Show** on `PORT` reads `3000`.
+- [ ] **Step 2: Run** `npm run test:agents -w e2e`. Expected: PASS.
+- [ ] **Step 3: Write the docs.**
+  - `docs/record-types.md`: fifteen types; the *.env file* row (Project, Environment, File name, Contents (hidden multi-line); subtitle `project · environment`); a section *.env files* with the syntax table of spec §10.3, the limits and both refusal messages, that the stored text is the file and the download is byte-identical, what *Edit as text* does to line endings, Copy all / Download and *Use only*, search by key name, "make a folder such as *Env backups*; it is an ordinary folder", and the older-clients note.
+  - `docs/agents.md`: *.env files* — one entry per item through *Agent use* (`env:<KEY>`), that *Can use* lets the gateway open the whole file, `env_keys` in `list_secrets`, saving with `save_secret` (the model has then seen the values), `set.env`, `capture` with `entry`, *Replace the contents of*, that a value changed in the vault reaches an agent after at most `GATEWAY_CACHE_TTL_SECONDS`, and what is not there (no whole-file reveal, one usage policy per item).
+  - `SECURITY.md`: under the agent table, the two sentences of spec §10.6 on the record key and on key names.
+  - `CHANGELOG.md`: the feature, "no migration, no new setting", "update the web app and the extension together: an older app shows a .env file item as *Can't open this record*".
+- [ ] **Step 4: Run** `npm test`, `npm run typecheck`, and `npm run e2e` with agents off. Expected: PASS.
+- [ ] **Step 5: Commit** `git commit -m "Env files: Phase E acceptance (e2e) and docs"`
+
+---
+
 ## Self-review notes
 
 - **Spec coverage.**
@@ -967,9 +1191,10 @@
   - §6 → the docs steps of Tasks 9, 15, 21, 23. §7's KMS note → Task 9.
   - §8, line by line: no membership / pickers → Task 3; grant refusals → Task 4; swapped owner key → Tasks 4, 6; attestation with another owner key → Tasks 1, 7; the `s1.` guard → Task 8; deposit signatures and `/sync` → Tasks 10, 14; `not_writable`, restore, policy bytes → Tasks 11, 12, 14; `GATEWAY_REVEAL=off` → Task 18; changed `requestPublicKey`, approved fields only, no `totpSecret` → Tasks 16, 19; no plaintext in logs → Tasks 12, 13, 18, 22; suspension and admin log → Tasks 3, 4, 9; two tools for organisation agents → Tasks 6, 12, 18.
   - §9 → *Resolved decisions*.
-- **Out of scope, on purpose:** web push to a closed PWA (spec §5.3 calls it a follow-up); record-key rotation on removing a grant (the open follow-up in `docs/sharing.md`); a batch grant route (the multi-select calls the single route); any approval surface outside the web app (R6).
+  - §10.1–§10.3 → Task 24; §10.4 → Task 25; §10.5 → Tasks 24 (references), 26 (tools), 27 (inbox), and the Phase E lines in Tasks 16, 19 and 22 (reveal); §10.6 → Tasks 25 (the whole-file line), 26 (`ENV_HOLD_MIN`), 27 (*Replace* copy), 28 (docs); §10.7 → Tasks 24–28 and Task 16.
+- **Out of scope, on purpose:** web push to a closed PWA (spec §5.3 calls it a follow-up); record-key rotation on removing a grant (the open follow-up in `docs/sharing.md`); a batch grant route (the multi-select calls the single route); any approval surface outside the web app (R6); for env files (spec §10.6): more than one usage policy per item, capture into an entry of an existing item, variable expansion, bulk import, a per-entry view on one-time links, anything in the extension.
 - **Names used across tasks.**
-  - Crypto: `PersonalIds`, `personalAgentKeyMessage`, `personalAgentPrivateKeyAad`, `personalAgentRecordAad`, `signGatewayMessage` / `verifyGatewayMessage`, `signPersonalAgentKey` / `verifyPersonalAgentAttestation`, `sealPersonalAgentRecordKey` / `openPersonalAgentRecordKey`, `sha256B64`, `agentDepositMessage`, `agentUpdateMessage`, `agentDepositOwnerAad`, `sealDepositKeyToOwner` / `openDepositKey`, `REVEAL_REF`, `validateRevealFields`, `revealFieldsOf`, `RevealStub`, `sealRevealStub` / `openRevealStub`, `agentRevealRequestMessage`, `agentRevealAad`, `sealReveal` / `openReveal`, `AgentReveal`, `validateAgentReveal`.
+  - Crypto: `PersonalIds`, `personalAgentKeyMessage`, `personalAgentPrivateKeyAad`, `personalAgentRecordAad`, `signGatewayMessage` / `verifyGatewayMessage`, `signPersonalAgentKey` / `verifyPersonalAgentAttestation`, `sealPersonalAgentRecordKey` / `openPersonalAgentRecordKey`, `sha256B64`, `agentDepositMessage`, `agentUpdateMessage`, `agentDepositOwnerAad`, `sealDepositKeyToOwner` / `openDepositKey`, `REVEAL_REF`, `validateRevealFields`, `revealFieldsOf`, `RevealStub`, `sealRevealStub` / `openRevealStub`, `agentRevealRequestMessage`, `agentRevealAad`, `sealReveal` / `openReveal`, `AgentReveal`, `validateAgentReveal`; Phase E: `parseEnv`, `EnvLine`, `envEntries`, `envKeys`, `envValue`, `quoteEnvValue`, `setEnvEntry`, `diffEnv`, `checkEnvContent`, `envFileName`, `MAX_ENV_BYTES`, `MAX_ENV_ENTRIES`, `ENV_KEY`.
   - API: `personalAgentRules`, `strictest`, `PersonalAgentRules`, `RevealMode`, `assertPersonalAgentSlot`, `logLifecycle`, `gatewaySigned`, `createPersonalAgentKey`, `personalAgentSync`, `revokePersonalAgent`, `revokePersonalAgentsOf`, `PersonalRotation`, `connectedApp`, `sweepAgentWrites`, `agentRevealEmail`, `revealMode`, `createTestPersonalAgent`.
-  - Gateway: `wrapPersonalAgentKey` / `unwrapPersonalAgentKey`, `Identity.signPersonal` / `signMessage`, `PersonalAgentSync`, `isPersonal`, `OwnerKeyChanged`, `buildDeposit`, `buildUpdate`, `SaveInput`, `pointerValue`, `WriteRefused`, `PendingReveals`, `requestReveal`, `resumeReveal`, `RevealResult`.
-  - Web: `PERSONAL_SLOT`, `allGatewayPins`, `personalGatewayPinStatus`, `verifyPersonalAgentKey`, `MyAgent`, `grantAgent`, `revokeAgentGrant`, `openDeposit`, `OpenedDeposit`, `checkRequest`, `RevealRequest`.
+  - Gateway: `wrapPersonalAgentKey` / `unwrapPersonalAgentKey`, `Identity.signPersonal` / `signMessage`, `PersonalAgentSync`, `isPersonal`, `OwnerKeyChanged`, `buildDeposit`, `buildUpdate`, `SaveInput`, `pointerValue`, `WriteRefused`, `PendingReveals`, `requestReveal`, `resumeReveal`, `RevealResult`; Phase E: `ENV_HOLD_MIN`, `ItemSummary.env_keys` / `env_injects`.
+  - Web: `PERSONAL_SLOT`, `allGatewayPins`, `personalGatewayPinStatus`, `verifyPersonalAgentKey`, `MyAgent`, `grantAgent`, `revokeAgentGrant`, `openDeposit`, `OpenedDeposit`, `checkRequest`, `RevealRequest`; Phase E: `readEnvFile`, `environmentOf`, `keepEol`, `downloadEnv`, `EnvEntries`, `EnvFileField`, `envReplaceTargets`, `useReplaceFromDeposit`.

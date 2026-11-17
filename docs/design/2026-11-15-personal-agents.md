@@ -18,7 +18,7 @@ The request, in the owner's words: every user, not just admins, should be able t
 | 8 | Hosted: personal agents do not count against the organisation's agent bundle (Team 3, Business 10). They have a per-person allowance (§3.3). |
 | 9 | An organisation can switch personal agents off for its members, cap how many each may have, and forbid write or reveal (§3.4). This is the first server-enforced organisation policy that reaches the Personal space, and the docs must say so. |
 
-Build order: **A** personal agents with Use (§3) → **B** writes (§4) → **C** reveal with approval (§5) → **D** standing reveal (§5.6). Each phase is shippable alone.
+Build order: **A** personal agents with Use (§3) → **B** writes (§4) → **C** reveal with approval (§5) → **D** standing reveal (§5.6). Each phase is shippable alone. Added later at the owner's request: **E** `.env` file items (§10), built after B and before C.
 
 ## 2. How the Personal space is keyed today (what the design has to fit)
 
@@ -347,3 +347,119 @@ Unchanged: SSRF rules, redirects, scrubbing of `http_request`, attestation, the 
 3. **Does the hosted service ever enable standing reveal?** Recommendation: **no at launch**: run `GATEWAY_REVEAL=approval` on vault.clane.ai, ship standing reveal for self-hosters only, and revisit after the enclave and the external audit.
 4. **Policy default for existing organisations: personal agents on or off?** Recommendation: **on** (`allowed: true`, `reveal: "approval"`), because the request was "every user" and no organisation data is reachable; say so prominently in the release notes so admins who disagree can switch it off before members find it. Note that hosted Team organisations cannot edit policies today, so they could not switch it off: either make this one policy editable on Team or default it to off there.
 5. **Is email acceptable as a reveal notification?** Recommendation: **yes, as a notification only** (no item, no reason, no approve link), on by default, with web push as the follow-up. Without it, a reveal requested while the user has no tab open just expires.
+
+## 10. `.env` file items (phase E)
+
+The request, in the owner's words: "can we have folder where we can save the project env files as backup as value is the most secure space", then "yes add the .env file type to the plan". Today a `.env` can be kept as an attachment on a Secure note. That backs the file up, but no single value in it can be shown, copied or given to an agent on its own. This section adds a record type for it. Build order: after phase B (it uses the save path), before phase C.
+
+### 10.1 Decisions
+
+| # | Decision |
+|---|---|
+| 1 | A fifteenth record type, **`envFile`**, label **.env file**, in the group *Logins & access*. The server still sees only `item`. |
+| 2 | **The file's text is stored verbatim** in one field, `data.content`. Entries are not stored separately: every client parses the text with one shared parser. So a download is byte-identical to what was dropped in, always, and there is no second copy of a value that could drift from the file. |
+| 3 | Every value is a secret: masked, with Show and Copy per entry. Keys are not secret: they are listed, searched and shown to agents. |
+| 4 | An agent uses **one entry** through the item's existing *Agent use* policy: `secret: "env:<KEY>"`. There is no default entry and the whole file can never be injected. One policy per item is the shipped shape, so one entry per `.env` item can be injected. |
+| 5 | `list_secrets` shows an env file's keys and never a value. No tool returns the file. |
+| 6 | Reveal (phases C and D) is per entry (`env:<KEY>`), each ticked by the owner, none preselected. **There is no whole-file reveal in any mode.** |
+| 7 | Agents save an env file with the existing `save_secret` (a deposit, reviewed at Keep). `update_secret` gains `set.env` to set or rotate entries; it is signed and reversible like every agent update. No new tool. |
+| 8 | When an agent saves a newer copy, the inbox shows a per-entry difference against an existing env file and offers **Replace the contents of…** next to Keep. |
+| 9 | No "env folder" concept on the server. Env files live in any folder, private or shared. The *New* menu gets one entry, **.env file**; the docs suggest a folder called *Env backups*. |
+| 10 | No API route, no schema change, no migration, no new setting. Extension: nothing (it fills logins only). |
+
+### 10.2 Data model
+
+```ts
+// packages/crypto/src/recordTypes.ts
+{ id: "envFile", label: ".env file", group: "access", fields: [
+  { key: "project",     label: "Project",     kind: "text" },
+  { key: "environment", label: "Environment", kind: "text", placeholder: "production" },
+  { key: "fileName",    label: "File name",   kind: "text", mono: true, placeholder: ".env" },
+  { key: "content",     label: "Contents",    kind: "hiddenMultiline", mono: true, placeholder: "KEY=value" },
+] }
+```
+
+The item's name is the record title. `project`, `environment` and `fileName` are free text. Notes, custom fields, attachments, sharing, one-time links, trash and the offline copy work as for any record, with no extra code: the type is a template like the other fourteen.
+
+Why the text and not a list of `{ key, value, comment }`: the owner asked for a backup. A structured list has to be turned back into a file, and every difference between the two forms (quoting style, spacing, a comment's position, CRLF, a line the parser did not understand) is a place where the restored file is not the saved one. With the text as the only stored form, the restore cannot be wrong. Only the per-entry view depends on the parser, and the text view is always there to check it against.
+
+Limits, checked by `normalizeRecordBody` wherever a body is written (editor, gateway): `content` at most **32 768 bytes** of UTF-8, at most **500 entries**, no NUL character, keys at most 128 characters. The record's 49 000-byte body limit still applies on top. A larger or non-text file is refused with *"This file is too large for a .env item (32 KB). Attach it to a Secure note instead."* or *"This file isn't UTF-8 text. Attach it to a Secure note instead."* Attachments take 100 MB.
+
+Older clients: a client from before this type shows such a record as "Can't open this record" and cannot save it, as with every type added after v1. Update the web app and the extension together.
+
+### 10.3 Syntax
+
+One parser, `parseEnv` in `packages/crypto/src/envFile.ts`, used by the web app and the gateway. It is lossless: the lines it returns, joined, are the input, for every input. Rules (the common subset of dotenv, Docker Compose and python-dotenv):
+
+| Input | Result |
+|---|---|
+| `KEY=value`, `KEY = value`, leading spaces | entry; an unquoted value is trimmed |
+| `export KEY=value` | entry `KEY`; the prefix is kept in the file |
+| Key | `[A-Za-z0-9_.-]`, 1 to 128 characters |
+| `KEY=` | entry with an empty value (it cannot be injected or revealed) |
+| `KEY=abc # note` | value `abc`: in an unquoted value, a `#` after whitespace starts a comment |
+| `KEY=abc#123` | value `abc#123` (no whitespace before `#`). Node's dotenv would read `abc`; passwords with `#` are the reason for this choice |
+| `KEY="a\nb"` | double quotes: `\n`, `\r`, `\t`, `\"`, `\\` are decoded, any other backslash pair is kept; may span lines |
+| `KEY='a\nb'`, a value in backticks | literal, no escapes; may span lines |
+| After a closing quote | only spaces and an optional `# comment`; anything else makes the line invalid |
+| `${OTHER}`, `$OTHER` | kept literally. Nothing is expanded |
+| `# comment`, blank line | kept, not an entry |
+| A line that is none of the above (`KEY`, `=x`, `KEY: value`, an unterminated quote) | **kept verbatim as an invalid line**, shown in the text view and counted (*"2 lines aren't KEY=value. They are kept as they are."*). Parsing continues on the next line |
+| The same key twice | both kept; **the last one is the value**, as loaders do. The entry list marks the earlier one *Overridden below* |
+| `\n`, `\r\n`, a UTF-8 byte-order mark | kept exactly |
+
+Changing one value (`setEnvEntry`) rewrites only that entry's value, in the last line that sets the key: the `export`, the spacing, a trailing comment and the line ending stay. A new key is appended as its own line with the file's line ending. A written value is bare when it is only `[A-Za-z0-9_@%+=:,./-]`, single-quoted when it has no `'` and no line break, double-quoted with escapes otherwise.
+
+### 10.4 In the web app
+
+- **Record panel.** *Project*, *Environment* and *File name* as normal rows. Then one row per entry: the key (monospace), the value masked, **Show**, **Copy**. Above the list: **Copy all** and **Download** (a file named after *File name* when that is a plain name, else `.env`, containing exactly the stored bytes). A person with *Use only* gets Copy and Copy all but no Show and no Download, as for every secret field.
+- **Editor.** A drop zone and **Choose file** read a file as bytes (strict UTF-8, the byte-order mark kept). Dropping a file fills *File name* and, from `.env.<name>` or `<name>.env`, *Environment*, when those are empty. Below it the entries as masked inputs (changing one calls `setEnvEntry`) and **Add entry**. **Edit as text** shows the whole file in a masked text area for everything else (comments, removing or renaming a key). A browser text area turns `\r\n` into `\n`; when the stored text used `\r\n` the editor puts it back. Text that was not touched is saved byte for byte. Pasted text arrives with the line endings the browser gives it.
+- **New → .env file** opens the New record dialog with the type chosen. Nothing else is special: the location list is the normal one, so an env file can go in a private folder or a shared one. There is no auto-created folder.
+- **Search** finds an env file by title, project, environment, file name and **key names**; never by a value.
+- Password health ignores the type (no core password). A one-time link shows the file as one hidden text field.
+
+### 10.5 Agents
+
+**Use.** In *Agent use*, the *Secret* list of an env file is its keys. The policy stores `secret: "env:STRIPE_KEY"`. `validateAgentPolicy` requires the key to exist in `content`, refuses a policy with no `secret` (there is no default entry) and refuses `data.content`. `agentSecretOf` returns that entry's value. Removing the policy's key from the file is refused on save with the validator's message, by the editor and by the gateway alike, so a policy never silently points at another entry. This works for organisation agents on an env file in a shared folder too: it is the shipped Use path with one more kind of reference.
+
+**Listing.** `list_secrets` adds to an env file's item `env_keys: string[]` (unique, in file order) and, with a policy, `env_injects: "<KEY>"`.
+
+**Saving.** `save_secret { type: "envFile", title, fields: { data: { project?, environment?, fileName?, content } }, agent_use? }` makes a deposit like any other. With `save_secret` the model supplied the file, so it has seen every value (§4.4 c). `capture` with `type: "envFile"` needs `entry: "<KEY>"` and saves a one-line file holding the captured value, which the model does not see.
+
+**Updating.** `update_secret { item, set: { env: { "<KEY>": "<value>", … } } }` (1 to 50 keys) sets or adds entries with `setEnvEntry`. `set.data.content` replaces the whole file. Giving both is `invalid`, as is `set.env` on any other type. All of §4.4 applies unchanged: the agent's own unkept deposit, or a record with *Agent can update*; signed; the previous body kept and restorable; `agentPolicy` and `agentReveal` copied byte for byte. An agent cannot remove a single entry except by replacing the file, and cannot delete the item.
+
+**What the owner sees.** A deposit of an env file is shown as its entry list (keys, masked values). When the owner already has env files in their Personal space, Keep offers a second choice, **Replace the contents of** *<item>*, preselected when project, environment and file name all match. It shows *Added*, *Changed* and *Removed* keys against that item. On confirm the browser saves the existing record with the new text through the normal edit path (title, notes, policy and grants of the existing item stay; the deposit's own policy is dropped) and deletes the deposit. The *Changed by agent* banner of §4.4 lists the same three groups for an env file.
+
+**Reveal (phases C and D).** The field reference `env:<KEY>` joins those of §5.2. `data.content` of an env file is not a valid reveal field, in a stub or in `agentReveal`. The picker lists the keys, none ticked. In approval mode the browser seals only the approved entries, so the gateway still never holds the file.
+
+**Limits.** Phase B's apply as they are: 20 writes an hour, 100 unkept deposits per owner, no attachments, the body limit; plus §10.2's.
+
+### 10.6 Zero-knowledge and threat notes
+
+Nothing new is visible to the server in this phase: the type, the keys and the text are inside the encrypted body, and the row says `item`. From phase C, turning on reveal for an entry stores its reference (`env:STRIPE_KEY`) in clear, as §5 already does for every field name. That tells the server the item is an env file and names that key.
+
+| Point | What it means |
+|---|---|
+| *Can use* on an env file gives the gateway the record key | The gateway can decrypt **every** entry while the grant lives, though the policy lets it inject one. For a credential an agent uses all the time, a separate *API key* item exposes less. The Agents section says so for this type: *"The gateway can open this whole file. It will only send the entry you chose."* |
+| Key names reach the model | `STRIPE_LIVE_KEY`, `DATABASE_URL` describe a project's stack. Same class as titles and hosts, which the model already sees |
+| An agent's save put the file in the model's context | Stated in the tool description and the docs. Prefer `capture` for a value an API returns |
+| A hijacked agent deposits a changed copy and hopes for *Replace* | The deposit is gateway-signed, the difference is shown by key, values can be shown before confirming. A person's own save keeps no previous version, so the dialog says *"The current contents will be replaced."* and offers **Download current** first |
+| A parser difference | A loader that reads a line differently from §10.3 gets a different value than Copy or an injection gives. The stored file is never altered by parsing, so the download is right regardless |
+| Log scrubbing with hundreds of values | During a write the gateway holds the whole text and every entry value of 8 or more characters in the log scrubber. Shorter values (`true`, `3000`) are not held: scrubbing them would blank ordinary log text, and nothing logs tool input in the first place |
+| An older client | Cannot open the record, so it cannot damage it |
+
+Not in scope: several usage policies on one env file (one entry per item can be injected); capture into an entry of an existing item; merging two files; variable expansion; a per-entry view on one-time links; importing env files in bulk; anything in the extension.
+
+### 10.7 Acceptance tests
+
+- For every test file (CRLF endings, a byte-order mark, comments, `export`, all three quote kinds, a multi-line value, duplicate keys, an invalid line): the parsed lines joined equal the input, and Download returns the dropped bytes.
+- Changing one entry changes only that line; an editor opened and saved untouched writes the same `content` string.
+- A 32 769-byte file, a file with 501 entries, a UTF-16 file and a file with a NUL are refused with the attach hint and nothing is saved.
+- A value is never in search results, the list subtitle or `list_secrets`; keys are.
+- `http_request` on an env file with `secret: "env:STRIPE_KEY"` sends that entry's value and no other; the response is scrubbed of it. A policy with no `secret`, with `data.content`, or naming a missing key does not validate.
+- Saving text, or an agent update, that removes the policy's key is refused (`invalid` for the agent) and the stored record is unchanged.
+- `save_secret` of an env file lands in the inbox with its entries; *Replace the contents of* shows the right Added / Changed / Removed keys and leaves the existing item's policy bytes as they were.
+- `update_secret` with `set.env` on a record without *Agent can update* → `not_writable`; with it, only the named entries differ, and *Restore previous* brings the old file back byte for byte.
+- The "no plaintext in logs" test runs an env-file save and an entry update with known values of 8 or more characters.
+- Phase C: `validateRevealFields(["data.content"])` on an env file throws; an approved reveal of `env:A` contains `A`'s value and nothing else from the file.
+- The API stores `type: "item"` for an env file; no request in this phase carries the type, a key or a value in clear.
