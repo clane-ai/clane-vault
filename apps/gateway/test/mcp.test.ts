@@ -28,7 +28,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); })
 
 const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> = {}): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, ...over,
+  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, ...over,
 });
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
@@ -292,9 +292,10 @@ describe("agentTools", () => {
     const log = createLogger(held, (l) => lines.push(l));
     const keys = new AgentKeyCache({ ttlMs: ttlSeconds * 1000, kek });
     const syncs = new SyncCache({ ttlMs: ttlSeconds * 1000, api: client });
-    const tools = agentTools({ cfg, keys, syncs, events: new EventQueue(client, log), log, held, resolve });
+    const identity = await loadOrCreateIdentity(join(tempDir(), "identity.json"), kek);
+    const tools = agentTools({ cfg, api: client, keys, syncs, events: new EventQueue(client, log), log, held, resolve, identity });
     const p = (await bearerAuth(cfg, client)(`Bearer ${api.staticToken}`))!;
-    return { api, keys, syncs, tools, p, lines };
+    return { api, keys, syncs, tools, p, lines, identity };
   }
 
   it("list_secrets gives handles and summary fields, never a secret or a record id", async () => {
@@ -332,23 +333,23 @@ describe("agentTools", () => {
   });
 
   it("an item that won't decrypt is not_found", async () => {
-    const { api, keys, p } = await setup();
+    const { api, keys, p, identity } = await setup();
     const id = await api.addFolderRecord("Payments", apiKey("Stripe", ["api.test"]));
     const client = apiClient({ apiUrl: api.url, apiToken: api.token });
     const good = await client.sync(p.accessToken);
     const bad = { ...good, records: good.records.map((r) => ({ ...r, encBody: r.encBody.slice(0, -8) + "AAAAAAAA" })) };
     const syncs = { get: async () => bad, drop: () => {} } as unknown as SyncCache;
-    const tools = agentTools({ cfg: cfgFor(api.url, api.token), keys, syncs, events: new EventQueue(client, quiet), log: quiet, held: new HeldSecrets(), resolve });
+    const tools = agentTools({ cfg: cfgFor(api.url, api.token), api: client, identity, keys, syncs, events: new EventQueue(client, quiet), log: quiet, held: new HeldSecrets(), resolve });
     expect(await tools.httpRequest(p, { item: id, method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "not_found" });
   });
 
   it("an unexpected error before the item opens is upstream_error, logged by class only", async () => {
-    const { api, keys, syncs, p, lines } = await setup();
+    const { api, keys, syncs, p, lines, identity } = await setup();
     await api.addFolderRecord("Payments", apiKey("Stripe", ["api.test"]));
     const client = apiClient({ apiUrl: api.url, apiToken: api.token });
     const held = { hold: () => { throw new TypeError(`odd ${SECRET}`); }, redact: (s: string) => s } as unknown as HeldSecrets;
     const log = createLogger(new HeldSecrets(), (l) => lines.push(l));
-    const tools = agentTools({ cfg: cfgFor(api.url, api.token), keys, syncs, events: new EventQueue(client, quiet), log, held, resolve });
+    const tools = agentTools({ cfg: cfgFor(api.url, api.token), api: client, identity, keys, syncs, events: new EventQueue(client, quiet), log, held, resolve });
     expect(await tools.httpRequest(p, { item: "payments/stripe", method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "upstream_error" });
     expect(lines.some((l) => l.includes('"class":"TypeError"'))).toBe(true);
     expect(lines.join("\n")).not.toContain(SECRET);
@@ -491,6 +492,16 @@ describe("MCP route gate", () => {
     expect((await post(url, call("list_secrets"), api.staticToken)).status).toBe(429);
   });
 
+  it("the 21st write in an hour is 429 with Retry-After; save_secret and update_secret share the window", async () => {
+    const { api, url } = await start();
+    const t = await api.personal.token();
+    for (let i = 0; i < 20; i++) expect((await post(url, call(i % 2 ? "save_secret" : "update_secret", i), t)).status).not.toBe(429);
+    const r = await post(url, call("save_secret"), t);
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(60); // the window is an hour
+    expect((await post(url, call("list_secrets"), t)).status).not.toBe(429);
+  });
+
   it("DELETE /internal/agents/:id drops the agent's key and sync caches", async () => {
     const { api, gw, int } = await start();
     const k = vi.spyOn(gw.keys, "drop"), s = vi.spyOn(gw.syncs, "drop");
@@ -531,7 +542,7 @@ describe("MCP endpoint", () => {
     const port = (echo.address() as AddressInfo).port;
     const id = await api.personal.addRecord(apiKey("Echo", [`api.test:${port}`]));
     const { client } = await connect(url, await api.personal.token());
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets"]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets", "save_secret", "update_secret"]);
     expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "personal/echo", hosts: [`api.test:${port}`] })] });
     const args = { item: "personal/echo", method: "GET", url: `http://api.test:${port}/v1` };
     const r = result(await client.callTool({ name: "http_request", arguments: args }));
@@ -548,6 +559,15 @@ describe("MCP endpoint", () => {
     expect(seen).toHaveLength(1);
     expect(api.events).toEqual([{ at: expect.any(String), action: "refused", host: "api.test", method: "GET", reason: "owner_key_changed" }]);
     expect(gw.keys.has(api.personal.agentId)).toBe(false);
+  });
+
+  it("an organisation agent has no write tools: save_secret is an unknown tool", async () => {
+    const { api, url } = await start();
+    const { client } = await connect(url, api.staticToken);
+    const r = await client.callTool({ name: "save_secret", arguments: { title: "x", type: "note" } }).catch((e: unknown) => ({ isError: true, thrown: String(e) }));
+    expect(r.isError).toBe(true);
+    expect(JSON.stringify(r)).toMatch(/not found/i);
+    expect(api.personal.writes).toEqual([]);
   });
 
   it("two connects with one static token make one exchange", async () => {
@@ -704,5 +724,77 @@ describe("MCP endpoint", () => {
     expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(await r.json()).toEqual({ error: "rate_limited" });
     await connect(url, api.staticToken); // a cache hit still works
+  });
+});
+
+describe("MCP endpoint, personal writes", () => {
+  const login = (title: string, password: string): RecordBody => ({ v: 2, type: "login", title, username: "bot", password,
+    agentPolicy: { v: 1, hosts: ["api.test"], inject: { kind: "basic" } } });
+  async function personal(over: Partial<GatewayConfig> = {}) {
+    const s = await start(over);
+    const { client } = await connect(s.url, await s.api.personal.token());
+    const tool = async (name: string, args: Record<string, unknown>) => result(await client.callTool({ name, arguments: args }));
+    return { ...s, client, tool };
+  }
+
+  it("save_secret makes a deposit the owner opens; list_secrets shows it as a deposit; http_request on it is not_kept", async () => {
+    const { api, tool } = await personal();
+    const r = await tool("save_secret", { title: "New Key", type: "apiKey", fields: { data: { secret: "sk_new_1" } }, agent_use: { hosts: ["api.test"], inject: { kind: "bearer" } } });
+    expect(r).toEqual({ item: "personal/new-key" });
+    const [d] = api.personal.deposits;
+    expect(await api.personal.open(d!.id)).toMatchObject({ title: "New Key", data: { secret: "sk_new_1" } });
+    expect(await tool("list_secrets", {})).toEqual({ secrets: [expect.objectContaining({ handle: "personal/new-key", deposit: true, can_update: true })] });
+    expect(await tool("http_request", { item: "personal/new-key", method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "not_kept" });
+  });
+
+  it("update_secret on its own deposit bumps the revision at the API; a stale revision is conflict without a call", async () => {
+    const { api, tool } = await personal();
+    await tool("save_secret", { title: "Dep", type: "login", fields: { password: "p1" } });
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p2" } })).toEqual({ item: "personal/dep", revision: 2 });
+    expect(api.personal.deposits[0]!.revision).toBe(2);
+    expect((await api.personal.open(api.personal.deposits[0]!.id)).password).toBe("p2");
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p3" }, revision: 1 })).toEqual({ error: "refused", reason: "conflict" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret on a record: without write it is not_writable with no PUT; with write the stored body has the new password", async () => {
+    const { api, tool } = await personal();
+    await api.personal.addRecord(login("Locked", "old_1"));
+    const id = await api.personal.addRecord(login("Open", "old_2"), undefined, true);
+    expect(await tool("update_secret", { item: "personal/locked", set: { password: "x" } })).toEqual({ error: "refused", reason: "not_writable" });
+    expect(api.personal.writes).toEqual([]);
+    expect(await tool("update_secret", { item: "personal/open", set: { password: "new_2" } })).toEqual({ item: "personal/open", revision: 2 });
+    expect(api.personal.writes.map((w) => `${w.method} ${w.path}`)).toEqual([`PUT /agent/records/${id}`]);
+    expect((await api.personal.open(id)).password).toBe("new_2");
+    expect(await tool("list_secrets", {})).toEqual({ secrets: expect.arrayContaining([expect.objectContaining({ handle: "personal/open", can_update: true })]) });
+    expect(await tool("update_secret", { item: "personal/nope", set: { password: "x" } })).toEqual({ error: "refused", reason: "not_found" });
+    expect(await tool("update_secret", { item: "personal/open", set: { data: { nope: "x" } } })).toEqual({ error: "refused", reason: "invalid" });
+  });
+
+  it("refusals: policy write off and an empty inbox without a call; the API's 409 inbox_full; an invalid body", async () => {
+    const { api, tool } = await personal({ cacheTtlSeconds: 0 });
+    api.personal.setPolicyWrite(false);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "not_writable" });
+    api.personal.setPolicyWrite(true);
+    api.personal.setInboxFree(0);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "inbox_full" });
+    expect(api.personal.writes).toEqual([]);
+    api.personal.setInboxFree(null);
+    api.personal.refuseWrites("inbox_full");
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "inbox_full" });
+    api.personal.refuseWrites(null);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "x".repeat(60 * 1024) } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(1);
+  });
+
+  it("a swapped owner key: save_secret and update_secret answer owner_key_changed and the API receives no write", async () => {
+    const { api, gw, tool } = await personal();
+    await api.personal.addRecord(login("Open", "old"), undefined, true);
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(await tool("save_secret", { title: "A", type: "login", fields: { password: "p" } })).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(await tool("update_secret", { item: "personal/open", set: { password: "p" } })).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(api.personal.writes).toEqual([]);
   });
 });

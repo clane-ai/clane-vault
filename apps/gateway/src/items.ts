@@ -8,18 +8,25 @@ import type { HeldSecrets, Logger } from "./log.js";
 export interface ItemSummary {
   handle: string; recordId: string; title: string; type: RecordType; hosts: string[]; inject: AgentInject | { kind: "none" }; approval: boolean;
   methods?: AgentMethod[]; paths?: string[];
+  /** A personal agent's: an unkept deposit of its own; one it may change with update_secret. */
+  revision: number; deposit?: true; can_update?: true;
 }
-type SyncRecord = AgentSync["records"][number];
+/** A personal agent's unkept deposits are listed with its records: the same handles, opened with agentSealedKey. */
+type SyncRecord = (AgentSync["records"][number] | PersonalAgentSync["records"][number]) & { deposit?: true };
 type OrgRecord = OrgAgentSync["records"][number];
 
 /** An item, or every item, would not open (no folder key, no folder, a dead agent key); a CryptoError is the other kind. */
 export class ItemUnopenable extends Error { override name = "ItemUnopenable"; }
-type Refusal = { error: "refused"; reason: "not_found" | "no_policy" };
+type Refusal = { error: "refused"; reason: "not_found" | "no_policy" | "not_kept" };
 
 /** Lower-case, runs outside [a-z0-9] → "-", trimmed, at most 60 characters. */
 export const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60).replace(/-$/, "");
 
-const live = (sync: AgentSync) => (sync.records as SyncRecord[]).filter((r) => !r.deletedAt);
+const live = (sync: AgentSync): SyncRecord[] => [
+  ...(sync.records as SyncRecord[]).filter((r) => !r.deletedAt),
+  ...(isPersonal(sync) ? sync.deposits.map((d) => ({ id: d.id, encBody: d.encBody, revision: d.revision, wrappedRecordKey: d.agentSealedKey,
+    write: sync.policy.write, deletedAt: null, deposit: true as const })) : []),
+];
 
 /** A personal agent's records are each sealed to it, under the one prefix "personal". */
 function personalOpener(sync: PersonalAgentSync, keys: MembershipKeys) {
@@ -104,12 +111,14 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
       used.add(handle);
       const p = body.agentPolicy; // only summary fields are kept; the body is dropped here
       out.push({ handle, recordId: r.id, title: body.title, type: body.type, hosts: p?.hosts ?? [], inject: p?.inject ?? { kind: "none" }, approval: p?.approval ?? false,
-        ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}) });
+        ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}),
+        revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), ...("write" in r && r.write ? { can_update: true as const } : {}) });
     }
   } finally {
     o.close();
   }
-  if (failed > 0 && opened === 0) throw new ItemUnopenable("none of the agent's items could be opened");
+  // A personal agent's key is proven by its k2 envelope: a record it can't open (sealed to another agent) is only skipped.
+  if (failed > 0 && opened === 0 && !isPersonal(sync)) throw new ItemUnopenable("none of the agent's items could be opened");
   return out;
 }
 
@@ -118,16 +127,29 @@ export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Log
   return summarize(sync, keys, log);
 }
 
-/** `item` is a handle or a record id. The secret is held in `held` (scrubbed from logs) only while `f` runs. */
-export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, item: string, held: HeldSecrets,
-  f: (x: { recordId: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>, log?: Logger): Promise<T | Refusal> {
+/** `item` is a handle or a record id (a deposit's too). */
+export async function findItem(sync: AgentSync, keys: MembershipKeys, item: string, log?: Logger): Promise<{ id: string; revision: number; deposit?: true; write: boolean } | undefined> {
   let r = live(sync).find((x) => x.id === item);
   const slash = item.indexOf("/");
   if (!r && slash > 0) {
     const hit = (await summarize(sync, keys, log, item.slice(0, slash))).find((s) => s.handle === item);
     r = hit && live(sync).find((x) => x.id === hit.recordId);
   }
+  return r && { id: r.id, revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), write: "write" in r && r.write };
+}
+
+/** The handle of the item with this id, or undefined. */
+export async function handleOf(sync: AgentSync, keys: MembershipKeys, id: string, log?: Logger): Promise<string | undefined> {
+  return (await summarize(sync, keys, log, isPersonal(sync) ? "personal" : undefined)).find((s) => s.recordId === id)?.handle;
+}
+
+/** `item` is a handle or a record id. The secret is held in `held` (scrubbed from logs) only while `f` runs. A deposit is not_kept. */
+export async function withItem<T>(sync: AgentSync, keys: MembershipKeys, item: string, held: HeldSecrets,
+  f: (x: { recordId: string; policy: AgentPolicy; secret: string; username: string }) => Promise<T>, log?: Logger): Promise<T | Refusal> {
+  const hit = await findItem(sync, keys, item, log);
+  const r = hit && live(sync).find((x) => x.id === hit.id);
   if (!r) return { error: "refused", reason: "not_found" };
+  if (r.deposit) return { error: "refused", reason: "not_kept" };
   const o = opener(sync, keys);
   let body: RecordBody;
   try { body = await o.body(r); } finally { o.close(); }

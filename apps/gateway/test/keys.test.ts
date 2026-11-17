@@ -126,6 +126,24 @@ describe("AgentKeyCache, personal agent", () => {
     expect(cache.has(api.personal.agentId)).toBe(false);
   });
 
+  it("after a hit, a sync naming another owner userId is refused, never the cached key", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const sync = await personalSync();
+    cache.release(api.personal.agentId, await cache.open(api.personal.agentId, sync));
+    await expect(cache.open(api.personal.agentId, { ...sync, owner: { ...sync.owner, userId: crypto.randomUUID() } })).rejects.toBeInstanceOf(OwnerKeyChanged);
+    expect(cache.has(api.personal.agentId)).toBe(false);
+  });
+
+  it("a personal sync for another agent id is ApiRefused(401), on a hit too", async () => {
+    const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
+    const sync = await personalSync();
+    cache.release(api.personal.agentId, await cache.open(api.personal.agentId, sync));
+    const e = await cache.open(api.agent2.id, sync).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ApiRefused);
+    expect((e as ApiRefused).status).toBe(401);
+    await expect(cache.open(api.personal.agentId, { ...sync, agentId: api.agent2.id })).rejects.toBeInstanceOf(ApiRefused);
+  });
+
   it("a null wrappedPrivateKey (revoked) is ApiRefused(401) and drops the entry", async () => {
     const cache = new AgentKeyCache({ ttlMs: 60_000, kek });
     const sync = await personalSync();

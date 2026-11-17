@@ -113,6 +113,21 @@ describe("listItems, personal agent", () => {
   });
 });
 
+describe("listItems, personal agent, nothing it can open", () => {
+  it("records sealed to another agent are skipped: the listing is empty, not an error", async () => {
+    const kek = await fileKek();
+    const papi = await startFakeApi({ kek });
+    try {
+      await papi.personal.addRecord(apiKey("Other", "ghp_p3"), papi.agent2.id);
+      const psync = await apiClient({ apiUrl: papi.url, apiToken: papi.token }).sync(await papi.personal.token());
+      const pcache = new AgentKeyCache({ ttlMs: 0, kek });
+      expect(await pcache.use(papi.personal.agentId, psync, (k) => listItems(psync, k))).toEqual([]);
+    } finally {
+      await papi.close();
+    }
+  });
+});
+
 describe("withItem", () => {
   it("hands f the secret, held while f runs and released after", async () => {
     const held = new HeldSecrets();

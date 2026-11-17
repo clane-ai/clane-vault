@@ -4,13 +4,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { AGENT_METHODS, CryptoError, type AgentMethod, type MembershipKeys } from "@clane-vault/crypto";
-import { ApiRefused, type AgentSync, type ApiClient, type UseEvent } from "./apiClient.js";
+import { AGENT_METHODS, CryptoError, FIELD_KINDS, MAX_FIELD_VALUE, RECORD_TYPES, type AgentMethod, type MembershipKeys } from "@clane-vault/crypto";
+import { ApiRefused, isPersonal, type AgentSync, type ApiClient, type PersonalAgentSync, type UseEvent } from "./apiClient.js";
 import { challenge, type AgentPrincipal, type BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
-import { ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
+import { buildDeposit, buildUpdate, InvalidInput, type SaveInput } from "./deposits.js";
+import type { Identity } from "./identity.js";
+import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
 import type { HeldSecrets, Logger } from "./log.js";
 import { performRequest, type OutboundInput } from "./outbound/request.js";
@@ -19,18 +21,18 @@ import type { RateLimiter } from "./rateLimit.js";
 
 export interface McpDeps {
   cfg: GatewayConfig; api: ApiClient; auth: BearerAuth; keys: AgentKeyCache; syncs: SyncCache; events: EventQueue;
-  limiter: RateLimiter; log: Logger; held: HeldSecrets; resolve: Resolver;
+  limiter: RateLimiter; log: Logger; held: HeldSecrets; resolve: Resolver; identity: Identity;
   /** Test hook: a session idle this long is closed (default 30 min). */
   sessionIdleMs?: number;
 }
 
 const MAX_BODY = 1024 * 1024 + 64 * 1024;
-const MINUTE = 60_000;
+const MINUTE = 60_000, HOUR = 60 * MINUTE;
 export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER_MINUTE = 10, SESSIONS_PER_AGENT = 20;
 const IDLE_MS = 30 * MINUTE;
 const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
 
-export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths">;
+export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update">;
 export type HttpRequestInput = OutboundInput & { item: string };
 export type Refusal = { error: "refused"; reason: string };
 export type HttpRequestResult = { status: number; headers: Record<string, string>; body: string; truncated?: true } | Refusal;
@@ -42,7 +44,8 @@ export function clientAddress(req: IncomingMessage, hops: number): string {
   return chain[Math.min(hops, chain.length - 1)]!;
 }
 
-const OWNER_KEY_CHANGED: Refusal = { error: "refused", reason: "owner_key_changed" };
+const refused = (reason: string): Refusal => ({ error: "refused", reason });
+const OWNER_KEY_CHANGED: Refusal = refused("owner_key_changed");
 /** A personal agent whose owner key the API now reports differently: refused before anything is opened or sent. */
 const ownerKeyChanged = (e: unknown): Refusal => { if (e instanceof OwnerKeyChanged) return OWNER_KEY_CHANGED; throw e; };
 
@@ -50,7 +53,7 @@ const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { 
 const classOf = (e: unknown) => (e instanceof Error ? e.name : typeof e);
 
 /** The tools' work, outside MCP. Every call runs as the verified principal's agent only. */
-export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" | "log" | "held" | "resolve">) {
+export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "events" | "log" | "held" | "resolve" | "identity">) {
   const allow = parseCidrs(d.cfg.allowPrivateCidrs);
 
   /** Sync and key for this agent; an API refusal (revoked, expired) drops both caches at once and is rethrown. */
@@ -64,6 +67,16 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
     }
   }
 
+  /** A write tool: personal agents only (organisation sessions never register one). The key opens before anything else (F1). */
+  const asPersonal = <T>(p: AgentPrincipal, f: (sync: PersonalAgentSync, keys: MembershipKeys) => Promise<T>) =>
+    asAgent(p, (sync, keys) => { if (!isPersonal(sync)) throw new Error("not a personal agent"); return f(sync, keys); });
+  /** InvalidInput is `invalid`; an item that won't decrypt is `not_found`, as for http_request. */
+  const writeRefusal = (e: unknown): Refusal => {
+    if (e instanceof InvalidInput) return refused("invalid");
+    if (e instanceof CryptoError || e instanceof ItemUnopenable) return refused("not_found");
+    throw e;
+  };
+
   const event = (action: UseEvent["action"], method: AgentMethod, host: string, extra: Pick<UseEvent, "recordId" | "reason" | "truncated"> = {}): UseEvent =>
     ({ at: new Date().toISOString(), action, host, method, ...extra });
 
@@ -72,7 +85,38 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "keys" | "syncs" | "events" 
       const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log)).catch(ownerKeyChanged);
       if (!Array.isArray(items)) return items;
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
-        ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}) }));
+        ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}),
+        ...(i.deposit ? { deposit: i.deposit } : {}), ...(i.can_update ? { can_update: i.can_update } : {}) }));
+    },
+
+    /** A deposit in the owner's inbox. Policy and inbox are checked on the sync before anything is built or sent. */
+    async saveSecret(p: AgentPrincipal, input: SaveInput): Promise<{ item: string } | Refusal> {
+      return asPersonal(p, async (sync, keys) => {
+        if (!sync.policy.write) return refused("not_writable");
+        if (sync.inboxFree <= 0) return refused("inbox_full");
+        const built = await buildDeposit(sync, keys, d.identity, input, d.held).catch(writeRefusal);
+        if ("error" in built) return built;
+        const r = await d.api.deposit(p.accessToken, built);
+        d.syncs.drop(p.agentId);
+        if ("refused" in r) return refused(r.refused);
+        const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey }];
+        return { item: (await handleOf({ ...sync, deposits }, keys, built.id, d.log)) ?? built.id };
+      }).catch(ownerKeyChanged);
+    },
+
+    /** The agent's own unkept deposit, or a record with write. A given revision must be the current one. */
+    async updateSecret(p: AgentPrincipal, input: { item: string; set: NonNullable<SaveInput["fields"]>; revision?: number }): Promise<{ item: string; revision: number } | Refusal> {
+      return asPersonal(p, async (sync, keys) => {
+        const t = await findItem(sync, keys, input.item, d.log);
+        if (!t) return refused("not_found");
+        if (!t.write) return refused("not_writable");
+        if (input.revision !== undefined && input.revision !== t.revision) return refused("conflict");
+        const u = await buildUpdate(sync, keys, d.identity, { kind: t.deposit ? "deposit" : "record", id: t.id, revision: t.revision }, input.set, d.held).catch(writeRefusal);
+        if ("error" in u) return u;
+        const r = t.deposit ? await d.api.updateDeposit(p.accessToken, t.id, u) : await d.api.updateRecord(p.accessToken, t.id, u);
+        d.syncs.drop(p.agentId);
+        return "refused" in r ? refused(r.refused) : { item: input.item, revision: r.revision };
+      }).catch(ownerKeyChanged);
     },
 
     async httpRequest(p: AgentPrincipal, input: HttpRequestInput): Promise<HttpRequestResult> {
@@ -124,14 +168,31 @@ const httpRequestInput = {
   body: z.string().optional(),
 };
 
+const value = z.string().max(MAX_FIELD_VALUE);
+const fieldsInput = z.strictObject({ username: value.optional(), password: value.optional(), url: value.optional(), notes: value.optional(),
+  data: z.record(z.string().max(64), value).refine((x) => Object.keys(x).length <= 64, "at most 64 data keys").optional() });
+// The record validator (normalizeRecordBody, validateAgentPolicy) has the last word; these bound the input's size.
+const saveSecretInput = {
+  title: z.string().min(1).max(200),
+  type: z.enum(RECORD_TYPES),
+  fields: fieldsInput.optional(),
+  custom_fields: z.array(z.strictObject({ label: z.string().max(100), kind: z.enum(FIELD_KINDS), value })).max(64).optional(),
+  agent_use: z.strictObject({
+    hosts: z.array(z.string().max(255)).min(1).max(32),
+    inject: z.strictObject({ kind: z.enum(["bearer", "basic", "header", "query"]), name: z.string().max(64).optional(), prefix: z.string().max(64).optional() }),
+    secret: z.string().max(128).optional(),
+  }).optional(),
+};
+const updateSecretInput = { item: z.string().max(200), set: fieldsInput, revision: z.number().int().min(1).optional() };
+
 interface Session { agentId: string; transport: WebStandardStreamableHTTPServerTransport; busy: boolean; timer?: NodeJS.Timeout }
 /** One per HTTP request, handed to the tools through the transport's authInfo. */
 interface Call { principal: AgentPrincipal; refused: boolean }
 
 const asResult = (x: object) => ({ content: [{ type: "text" as const, text: JSON.stringify(x) }], structuredContent: x as Record<string, unknown> });
 
-/** One McpServer per session with exactly the two tools; a session runs one tool call at a time. */
-function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentTools>, log: Logger) {
+/** One McpServer per session: the two tools, and for a personal agent the two write tools; a session runs one tool call at a time. */
+function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentTools>, log: Logger, personal: boolean) {
   const server = new McpServer({ name: "clane-vault-gateway", version: "0.1.0" }, { instructions: INSTRUCTIONS });
   const run = async (extra: { authInfo?: { extra?: Record<string, unknown> } }, f: (p: AgentPrincipal) => Promise<object>,
     busy: (p: AgentPrincipal) => Promise<object> = async () => ({ error: "refused", reason: "busy" })) => {
@@ -155,6 +216,15 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
     description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id).",
     inputSchema: httpRequestInput,
   }, (input, extra) => run(extra, (p) => tools.httpRequest(p, input), (p) => tools.busy(p, input)));
+  if (!personal) return server;
+  server.registerTool("save_secret", {
+    description: "Saves a credential already in the conversation as a new item in the owner's inbox (they keep or delete it). Returns its handle.",
+    inputSchema: saveSecretInput,
+  }, (input, extra) => run(extra, (p) => tools.saveSecret(p, input as SaveInput)));
+  server.registerTool("update_secret", {
+    description: "Changes fields of your own unkept item, or of an item the owner lets you update. `revision`, if given, must be the current one.",
+    inputSchema: updateSecretInput,
+  }, (input, extra) => run(extra, (p) => tools.updateSecret(p, input)));
   return server;
 }
 
@@ -170,8 +240,8 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
   /** agentId → its live sessions, least recently touched first. */
   const byAgent = new Map<string, Set<Session>>();
   const close = (s: Session) => { s.transport.close().catch(() => {}); };
-  const limited = (res: ServerResponse, key: string, limit: number) => {
-    const r = limiter.take(key, limit, MINUTE);
+  const limited = (res: ServerResponse, key: string, limit: number, windowMs = MINUTE) => {
+    const r = limiter.take(key, limit, windowMs);
     if (r.ok) return false;
     send(res, 429, { error: "rate_limited" }, { "retry-after": String(r.retryAfterSeconds) });
     return true;
@@ -188,7 +258,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
     for (const s of [...(byAgent.get(agentId) ?? [])]) close(s);
   };
 
-  async function open(agentId: string): Promise<Session> {
+  async function open(agentId: string, personal: boolean): Promise<Session> {
     const s = { agentId, busy: false } as Session;
     s.transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
@@ -208,7 +278,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       mine?.delete(s);
       if (mine?.size === 0) byAgent.delete(agentId);
     };
-    await sessionServer(s, tools, deps.log).connect(s.transport);
+    await sessionServer(s, tools, deps.log, personal).connect(s.transport);
     return s;
   }
 
@@ -229,6 +299,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       if (msg?.method !== "tools/call") continue;
       if (msg.params?.name === "http_request" && limited(res, `http:${p.agentId}`, cfg.agentRatePerMinute)) return;
       if (msg.params?.name === "list_secrets" && limited(res, `list:${p.agentId}`, LIST_PER_MINUTE)) return;
+      if ((msg.params?.name === "save_secret" || msg.params?.name === "update_secret") && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
     }
 
     const sid = req.headers["mcp-session-id"];
@@ -239,7 +310,7 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       if (s.agentId !== p.agentId) return send(res, 403, { error: "forbidden" });
       touch(s);
     } else if (req.method === "POST" && msgs.some((m) => isInitializeRequest(m))) {
-      s = await open(p.agentId);
+      s = await open(p.agentId, p.ownerUserId !== null);
     } else {
       return send(res, 400, { error: "invalid_request" });
     }

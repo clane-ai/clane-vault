@@ -5,14 +5,17 @@ import { httpsOrLoopback, type GatewayConfig } from "./config.js";
 export interface OrgAgentSync {
   orgId: string; wrappedPrivateKey: string; kekId: string; membershipKeys: { publicKey: string }[]; expiresAt: string | null;
   folders: { id: string; kind: "team" | "private"; encName: string; wrappedFolderKey?: string; sealedTo?: string | null }[];
-  records: { id: string; folderId: string | null; encBody: string; holderType: "user" | "folder"; keyFolderId: string | null; wrappedRecordKey: string; deletedAt: string | null }[];
+  records: { id: string; folderId: string | null; encBody: string; revision: number; holderType: "user" | "folder"; keyFolderId: string | null; wrappedRecordKey: string; deletedAt: string | null }[];
   entitlements: { approvals: boolean };
 }
-/** GET /agent/sync for a personal agent: its owner (and the owner key the API reports now), its own grants. `wrappedPrivateKey` null: revoked. */
+/**
+ * GET /agent/sync for a personal agent: its owner (and the owner key the API reports now), its own grants. `wrappedPrivateKey` null: revoked.
+ * `records[].write`: Agent can update and the owner's policies allow writes. `deposits`: this agent's unkept ones. `inboxFree`: the owner's, across agents.
+ */
 export interface PersonalAgentSync {
   owner: { userId: string; publicKey: string }; agentId: string; publicKey: string; wrappedPrivateKey: string | null; kekId: string; expiresAt: string | null;
   records: { id: string; encBody: string; revision: number; wrappedRecordKey: string; write: boolean; deletedAt: string | null }[];
-  reveal: unknown[]; deposits: unknown[];
+  reveal: unknown[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string }[]; inboxFree: number;
   policy: { write: boolean; reveal: "off" | "approval" | "standing" };
 }
 export type AgentSync = OrgAgentSync | PersonalAgentSync;
@@ -26,10 +29,18 @@ export class ApiRefused extends Error {
   }
 }
 
+/** A write the API refused with 409 (a business refusal); 401/403 still throw ApiRefused. */
+export type WriteRefused = { refused: "not_writable" | "conflict" | "inbox_full" };
+const WRITE_REFUSALS: readonly unknown[] = ["not_writable", "conflict", "inbox_full"] satisfies WriteRefused["refused"][];
+type Written = Promise<{ revision: number } | WriteRefused>;
+
 export interface ApiClient {
   sync(accessToken: string): Promise<AgentSync>;
   events(accessToken: string, events: UseEvent[]): Promise<void>;
   exchangeStatic(cvat: string): Promise<{ accessToken: string; expiresIn: number }>;
+  deposit(token: string, d: { id: string; type: "login" | "item"; encBody: string; ownerSealedKey: string; agentSealedKey: string; signature: string }): Written;
+  updateDeposit(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
+  updateRecord(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
   /** The public issuer from `${API_URL}/.well-known/oauth-authorization-server`: cached once fetched; a failure is retried next call. */
   issuer(): Promise<string>;
   jwksUrl: URL;
@@ -45,14 +56,25 @@ const codeOf = (j: unknown) => {
 export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetchImpl: typeof fetch = fetch): ApiClient {
   const base = `${cfg.apiUrl.replace(/\/+$/, "")}/api/v1`;
   /** `grantRefusals`: a 400 (OAuth invalid_grant and friends) means the token is no good, as a 401 does. */
-  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false): Promise<Response> {
+  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false, conflicts = false): Promise<Response> {
     const r = await fetchImpl(`${base}${path}`, { ...init, headers: { "x-gateway-token": cfg.apiToken, ...init.headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (r.ok) return r;
+    if (r.ok || (conflicts && r.status === 409)) return r;
     if (r.status === 401 || r.status === 403 || (grantRefusals && r.status === 400))
       throw new ApiRefused(r.status === 403 ? 403 : 401, codeOf(await r.json().catch(() => null)));
     throw new Error(`API ${path} failed (${r.status})`);
   }
   const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
+  /** A 409 with a known reason is a refusal; any other 409 body is an error like a 500. */
+  async function write(token: string, method: "POST" | "PUT", path: string, body: object): Written {
+    const r = await call(path, { method, headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(body) }, false, true);
+    const j = await r.json().catch(() => null) as { revision?: unknown; error?: unknown } | null;
+    if (r.status === 409) {
+      if (WRITE_REFUSALS.includes(j?.error)) return { refused: j!.error as WriteRefused["refused"] };
+      throw new Error(`API ${method} write failed (409)`);
+    }
+    if (typeof j?.revision !== "number") throw new Error("API write answered without a revision");
+    return { revision: j.revision };
+  }
   let issuer: Promise<string> | undefined;
   // API_URL is origin + base path, and the API serves its metadata at `${basePath}/.well-known/...` (plan Task 12).
   async function fetchIssuer(): Promise<string> {
@@ -76,6 +98,9 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
     async events(accessToken, events) {
       await call("/agent/events", { method: "POST", headers: { ...bearer(accessToken), "content-type": "application/json" }, body: JSON.stringify({ events }) });
     },
+    deposit: (token, d) => write(token, "POST", "/agent/deposits", d),
+    updateDeposit: (token, id, d) => write(token, "PUT", `/agent/deposits/${encodeURIComponent(id)}`, d),
+    updateRecord: (token, id, d) => write(token, "PUT", `/agent/records/${encodeURIComponent(id)}`, d),
     async exchangeStatic(cvat) {
       const r = await call("/oauth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "urn:clane:agent-token", token: cvat }).toString() }, true);

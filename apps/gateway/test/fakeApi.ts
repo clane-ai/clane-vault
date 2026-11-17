@@ -3,8 +3,8 @@ import type { AddressInfo } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
-  b64url, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, sealOrgFolderKey, sealOrgRecordShare, sealPersonalAgentRecordKey,
-  serverRecordType, wrapKey, type RecordBody,
+  b64url, decryptRecordBody, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, openDepositKey, sealOrgFolderKey, sealOrgRecordShare,
+  sealPersonalAgentRecordKey, serverRecordType, wrapKey, type RecordBody,
 } from "@clane-vault/crypto";
 import type { Kek } from "../src/kek.js";
 import { wrapAgentKey, wrapPersonalAgentKey } from "../src/envelope.js";
@@ -29,7 +29,12 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   let ownerPublicKey = b64url.encode(ownerKeys.publicKey);
   const personalWrapped = await wrapPersonalAgentKey(o.kek, { ownerUserId: personalOwnerId, ownerPublicKey, agentId: personalId, publicKey: personalPublicKey }, pkp.privateKey);
   pkp.privateKey.fill(0);
-  const personalRecords: Record<string, unknown>[] = [];
+  type PersonalRecord = { id: string; encBody: string; revision: number; write: boolean; deletedAt: string | null; wrappedRecordKey: string };
+  type Deposit = { id: string; type: string; encBody: string; revision: number; ownerSealedKey: string; agentSealedKey: string; signature: string };
+  const personalRecords: PersonalRecord[] = [], recordKeys = new Map<string, Uint8Array>(), deposits: Deposit[] = [];
+  /** Every write call the API received: method, path and parsed body. */
+  const writes: { method: string; path: string; body: Record<string, unknown> }[] = [];
+  let policyWrite = true, inboxFree: number | null = null, refuseWrites: string | null = null;
   const signing = await generateKeyPair("ES256", { extractable: true });
   const jwk = { ...(await exportJWK(signing.publicKey)), alg: "ES256", use: "sig" };
   jwk.kid = await calculateJwkThumbprint(jwk);
@@ -90,17 +95,39 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   });
 
   /** `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). */
-  async function addPersonalRecord(body: RecordBody, sealFor = personalId): Promise<string> {
+  async function addPersonalRecord(body: RecordBody, sealFor = personalId, write = false): Promise<string> {
     const id = randomUUID(), recordKey = new Uint8Array(randomBytes(32));
-    personalRecords.push({ id, encBody: await encryptRecordBody(id, body, recordKey), revision: 1, write: false, deletedAt: null,
+    recordKeys.set(id, recordKey);
+    personalRecords.push({ id, encBody: await encryptRecordBody(id, body, recordKey), revision: 1, write, deletedAt: null,
       wrappedRecordKey: await sealPersonalAgentRecordKey(recordKey, { ownerUserId: personalOwnerId, agentId: sealFor, recordId: id }, pkp.publicKey) });
     return id;
   }
 
   const personalSyncBody = () => ({
     owner: { userId: personalOwnerId, publicKey: ownerPublicKey }, agentId: personalId, publicKey: personalPublicKey, wrappedPrivateKey: personalWrapped,
-    kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: [], deposits: [], policy: { write: true, reveal: "off" },
+    kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: [],
+    deposits: deposits.map(({ id, encBody, revision, agentSealedKey }) => ({ id, encBody, revision, agentSealedKey })),
+    inboxFree: inboxFree ?? 100 - deposits.length, policy: { write: policyWrite, reveal: "off" },
   });
+
+  /** The API's /agent/deposits and /agent/records/:id: every business refusal is 409 { error }. */
+  async function agentWrite(req: IncomingMessage, res: ServerResponse, path: string, sub: unknown) {
+    const b = JSON.parse(await read(req)) as Record<string, unknown>;
+    writes.push({ method: req.method ?? "", path, body: b });
+    const refuse = (error: string) => send(res, 409, { error });
+    if (refuseWrites) return refuse(refuseWrites);
+    if (sub !== personalId || !policyWrite) return refuse("not_writable");
+    if (req.method === "POST" && path === "/agent/deposits") {
+      deposits.push({ ...(b as Deposit), revision: 1 });
+      return send(res, 201, { id: b.id, revision: 1 });
+    }
+    const m = /^\/agent\/(deposits|records)\/([^/]+)$/.exec(path);
+    const row = m && (m[1] === "deposits" ? deposits : personalRecords).find((x) => x.id === m[2]);
+    if (req.method !== "PUT" || !row || (m[1] === "records" && !(row as PersonalRecord).write)) return refuse("not_writable");
+    if (row.revision !== b.revision) return refuse("conflict");
+    Object.assign(row, { encBody: b.encBody, revision: row.revision + 1 }, m[1] === "deposits" ? { signature: b.signature } : {});
+    return send(res, 200, { id: row.id, revision: row.revision });
+  }
 
   const send = (res: ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, { "content-type": "application/json" }).end(body === undefined ? undefined : JSON.stringify(body));
@@ -128,6 +155,11 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       if (f.get("token") !== staticToken || revoked) return send(res, 400, { error: "invalid_grant" });
       return send(res, 200, { access_token: await issueToken({ grant: tokenId }), token_type: "Bearer", expires_in: 900 });
     }
+    if (path === "/agent/deposits" || path.startsWith("/agent/deposits/") || path.startsWith("/agent/records/")) {
+      const a = await agentAuth(req);
+      if (typeof a === "number") return send(res, a, { error: a === 401 ? "unauthorized" : "agent_expired" });
+      return agentWrite(req, res, path, a.sub);
+    }
     if (path === "/agent/sync" || path === "/agent/events") {
       const a = await agentAuth(req);
       if (typeof a === "number") return send(res, a, { error: a === 401 ? "unauthorized" : "agent_expired" });
@@ -147,6 +179,18 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       agentId: personalId, ownerId: personalOwnerId, ownerKeys, publicKey: personalPublicKey,
       token: (over: Record<string, unknown> = {}) => issueToken({ sub: personalId, org: undefined, owner: personalOwnerId, ...over }),
       addRecord: addPersonalRecord,
+      records: personalRecords, deposits, writes,
+      /** A stored body as its owner reads it: a deposit through ownerSealedKey and the owner's key, a record with its record key. */
+      async open(id: string): Promise<RecordBody> {
+        const d = deposits.find((x) => x.id === id);
+        if (d) return decryptRecordBody(id, d.encBody, await openDepositKey(d.ownerSealedKey, { ownerUserId: personalOwnerId, id }, ownerKeys));
+        const r = personalRecords.find((x) => x.id === id)!;
+        return decryptRecordBody(id, r.encBody, recordKeys.get(id)!);
+      },
+      /** The owner's policies (write), the inbox space the API reports (null: 100 minus this agent's deposits), a 409 for every write. */
+      setPolicyWrite(v: boolean) { policyWrite = v; },
+      setInboxFree(n: number | null) { inboxFree = n; },
+      refuseWrites(error: string | null) { refuseWrites = error; },
       /** What the API reports as the owner's key from now on (the wrapped key stays bound to the first). */
       setOwnerPublicKey(b64: string) { ownerPublicKey = b64; },
     },

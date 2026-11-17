@@ -11,7 +11,7 @@ export class OwnerKeyChanged extends Error { override name = "OwnerKeyChanged"; 
  * a key is zeroed at its last release once it is no longer the live cached entry (TTL 0, replaced, dropped or expired).
  */
 export class AgentKeyCache {
-  /** `owner`: the owner public key a personal agent's key was opened with; null for an organisation agent. */
+  /** `owner`: "<userId>:<publicKey>" of the owner a personal agent's key was opened for; null for an organisation agent. */
   private entries = new Map<string, { keys: MembershipKeys; wrapped: string; owner: string | null; until: number }>();
   private refs = new Map<MembershipKeys, number>();
   private ttlMs: number; private kek: Kek; private now: () => number;
@@ -27,9 +27,10 @@ export class AgentKeyCache {
   async open(agentId: string, sync: AgentSync): Promise<MembershipKeys> {
     this.sweep();
     const wrapped = sync.wrappedPrivateKey;
-    if (wrapped === null) { this.drop(agentId); throw new ApiRefused(401, "unauthorized"); }
+    // A personal sync names its agent: one for another agent is never opened as this one's.
+    if (wrapped === null || (isPersonal(sync) && sync.agentId !== agentId)) { this.drop(agentId); throw new ApiRefused(401, "unauthorized"); }
     const orgId = isPersonal(sync) ? "" : sync.orgId; // "" is never used as an AAD
-    const owner = isPersonal(sync) ? sync.owner.publicKey : null;
+    const owner = isPersonal(sync) ? `${sync.owner.userId}:${sync.owner.publicKey}` : null;
     const e = this.entries.get(agentId);
     if (e && e.wrapped === wrapped && e.keys.orgId === orgId && e.owner === owner) return this.ref(e.keys);
     this.drop(agentId); // re-keyed, moved or the owner key changed: the old key must not linger
@@ -91,7 +92,7 @@ export class AgentKeyCache {
 }
 
 export class SyncCache {
-  /** agentId â†’ token â†’ entry, so an agent's concurrent sessions don't evict each other. */
+  /** agentId → token → entry, so an agent's concurrent sessions don't evict each other. */
   private entries = new Map<string, Map<string, { sync: AgentSync; until: number }>>();
   private drops = new Map<string, number>();
   private ttlMs: number; private api: ApiClient; private now: () => number;

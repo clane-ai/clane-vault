@@ -15,7 +15,7 @@ const TOKEN = "t".repeat(40);
 const cfg: GatewayConfig = {
   apiUrl: "http://localhost:3001", apiToken: TOKEN, publicUrl: "http://localhost:3002/mcp", kek: "file:x", identityKeyFile: "x",
   cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [],
-  port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0,
+  port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20,
 };
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); });
@@ -33,6 +33,9 @@ async function start() {
   return { gw, kek, identity, lines, pub: await listen(gw.publicServer), int: await listen(gw.internalServer) };
 }
 const auth = { "x-gateway-token": TOKEN, "content-type": "application/json" };
+const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+/** The same 32 bytes with a nonzero padding bit in the last character: it decodes, but re-encodes to another string. */
+const nonCanonical = (k: string) => k.slice(0, -1) + B64URL[B64URL.indexOf(k.at(-1)!) | 1];
 
 describe("internal routes", () => {
   it("POST /internal/agents needs the token", async () => {
@@ -76,7 +79,7 @@ describe("internal routes", () => {
     const agentId = randomUUID(), ownerUserId = randomUUID();
     for (const body of [{ agentId, orgId: randomUUID(), ownerUserId, ownerPublicKey: opk }, { agentId, orgId: randomUUID(), ownerUserId },
       { agentId, ownerUserId, ownerPublicKey: opk, extra: 1 }, { agentId, ownerUserId }, { agentId, ownerUserId, ownerPublicKey: "short" },
-      { agentId, ownerUserId, ownerPublicKey: `${opk}AAAA` }]) {
+      { agentId, ownerUserId, ownerPublicKey: `${opk}AAAA` }, { agentId, ownerUserId, ownerPublicKey: nonCanonical(opk) }]) {
       const res = await fetch(`${int}/internal/agents`, { method: "POST", body: JSON.stringify(body), headers: auth });
       expect(res.status, JSON.stringify(body)).toBe(400);
     }

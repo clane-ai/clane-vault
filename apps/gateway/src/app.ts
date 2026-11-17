@@ -22,7 +22,8 @@ const MAX_BODY = 16 * 1024;
 // Exactly one shape: an organisation agent, or a personal agent bound to its owner's 32-byte X25519 key (43 base64url characters).
 const enrolBody = z.union([
   z.strictObject({ agentId: z.string().uuid(), orgId: z.string().uuid() }),
-  z.strictObject({ agentId: z.string().uuid(), ownerUserId: z.string().uuid(), ownerPublicKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
+  z.strictObject({ agentId: z.string().uuid(), ownerUserId: z.string().uuid(), ownerPublicKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+    .refine((k) => { try { return b64url.encode(b64url.decode(k)) === k; } catch { return false; } }) }), // canonical: one spelling for the key bound into k2 and g1
 ]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -35,7 +36,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const auth = bearerAuth(cfg, api, deps.now);
   const limiter = new RateLimiter(deps.now);
   const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter,
-    log, held, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
+    log, held, identity, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
   const mcpPath = new URL(cfg.publicUrl).pathname;
   // RFC 9728: under PUBLIC_URL's path, and by path insertion at the root (`/.well-known/oauth-protected-resource/mcp`).
   const base = mcpPath.replace(/\/+$/, "");
