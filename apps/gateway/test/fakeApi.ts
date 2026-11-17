@@ -3,8 +3,8 @@ import type { AddressInfo } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
-  b64url, decryptRecordBody, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, openDepositKey, sealOrgFolderKey, sealOrgRecordShare,
-  sealPersonalAgentRecordKey, serverRecordType, wrapKey, type RecordBody,
+  aeadEncrypt, b64url, decryptRecordBody, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, openDepositKey, sealOrgFolderKey, sealOrgRecordShare,
+  sealPersonalAgentRecordKey, serverRecordType, utf8, wrapKey, type RecordBody,
 } from "@clane-vault/crypto";
 import type { Kek } from "../src/kek.js";
 import { wrapAgentKey, wrapPersonalAgentKey } from "../src/envelope.js";
@@ -94,11 +94,12 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
     records, wrappedPrivateKey, kekId: o.kek.id, expiresAt: null, entitlements: { approvals: false },
   });
 
-  /** `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). */
-  async function addPersonalRecord(body: RecordBody, sealFor = personalId, write = false): Promise<string> {
+  /** `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). `raw`: encrypted as given, not normalised. */
+  async function addPersonalRecord(body: RecordBody, sealFor = personalId, write = false, raw = false): Promise<string> {
     const id = randomUUID(), recordKey = new Uint8Array(randomBytes(32));
     recordKeys.set(id, recordKey);
-    personalRecords.push({ id, encBody: await encryptRecordBody(id, body, recordKey), revision: 1, write, deletedAt: null,
+    const encBody = raw ? await aeadEncrypt(recordKey, utf8.encode(JSON.stringify(body)), `record-body:${id}`) : await encryptRecordBody(id, body, recordKey);
+    personalRecords.push({ id, encBody, revision: 1, write, deletedAt: null,
       wrappedRecordKey: await sealPersonalAgentRecordKey(recordKey, { ownerUserId: personalOwnerId, agentId: sealFor, recordId: id }, pkp.publicKey) });
     return id;
   }

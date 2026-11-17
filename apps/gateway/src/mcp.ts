@@ -70,11 +70,12 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
   /** A write tool: personal agents only (organisation sessions never register one). The key opens before anything else (F1). */
   const asPersonal = <T>(p: AgentPrincipal, f: (sync: PersonalAgentSync, keys: MembershipKeys) => Promise<T>) =>
     asAgent(p, (sync, keys) => { if (!isPersonal(sync)) throw new Error("not a personal agent"); return f(sync, keys); });
-  /** InvalidInput is `invalid`; an item that won't decrypt is `not_found`, as for http_request. */
-  const writeRefusal = (e: unknown): Refusal => {
-    if (e instanceof InvalidInput) return refused("invalid");
+  /** InvalidInput is `invalid`; anything else (a seal failure among it) is the gateway's fault: internal_error. */
+  const invalid = (e: unknown): Refusal => { if (e instanceof InvalidInput) return refused("invalid"); throw e; };
+  /** For an update also: an item that won't decrypt is `not_found`, as for http_request. */
+  const updateRefusal = (e: unknown): Refusal => {
     if (e instanceof CryptoError || e instanceof ItemUnopenable) return refused("not_found");
-    throw e;
+    return invalid(e);
   };
 
   const event = (action: UseEvent["action"], method: AgentMethod, host: string, extra: Pick<UseEvent, "recordId" | "reason" | "truncated"> = {}): UseEvent =>
@@ -94,11 +95,15 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
       return asPersonal(p, async (sync, keys) => {
         if (!sync.policy.write) return refused("not_writable");
         if (sync.inboxFree <= 0) return refused("inbox_full");
-        const built = await buildDeposit(sync, keys, d.identity, input, d.held).catch(writeRefusal);
+        const built = await buildDeposit(sync, keys, d.identity, input, d.held).catch(invalid);
         if ("error" in built) return built;
         const r = await d.api.deposit(p.accessToken, built);
         d.syncs.drop(p.agentId);
-        if ("refused" in r) return refused(r.refused);
+        if ("refused" in r) {
+          // conflict on a new id means a broken API or a colliding id: not a reason save_secret has.
+          if (r.refused === "conflict") throw new Error("deposit refused: conflict");
+          return refused(r.refused);
+        }
         const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey }];
         return { item: (await handleOf({ ...sync, deposits }, keys, built.id, d.log)) ?? built.id };
       }).catch(ownerKeyChanged);
@@ -107,11 +112,13 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
     /** The agent's own unkept deposit, or a record with write. A given revision must be the current one. */
     async updateSecret(p: AgentPrincipal, input: { item: string; set: NonNullable<SaveInput["fields"]>; revision?: number }): Promise<{ item: string; revision: number } | Refusal> {
       return asPersonal(p, async (sync, keys) => {
+        // Nothing to set would write a no-op revision.
+        if (Object.values(input.set).every((v) => v === undefined || (typeof v === "object" && Object.keys(v).length === 0))) return refused("invalid");
         const t = await findItem(sync, keys, input.item, d.log);
         if (!t) return refused("not_found");
         if (!t.write) return refused("not_writable");
         if (input.revision !== undefined && input.revision !== t.revision) return refused("conflict");
-        const u = await buildUpdate(sync, keys, d.identity, { kind: t.deposit ? "deposit" : "record", id: t.id, revision: t.revision }, input.set, d.held).catch(writeRefusal);
+        const u = await buildUpdate(sync, keys, d.identity, { kind: t.deposit ? "deposit" : "record", id: t.id, revision: t.revision }, input.set, d.held).catch(updateRefusal);
         if ("error" in u) return u;
         const r = t.deposit ? await d.api.updateDeposit(p.accessToken, t.id, u) : await d.api.updateRecord(p.accessToken, t.id, u);
         d.syncs.drop(p.agentId);

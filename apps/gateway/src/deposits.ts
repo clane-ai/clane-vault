@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-  agentDepositMessage, agentUpdateMessage, b64url, decryptRecordBody, encryptRecordBody, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
-  sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64,
+  aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
+  sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8,
   type AgentInject, type FieldKind, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { PersonalAgentSync } from "./apiClient.js";
@@ -27,6 +27,24 @@ function holdValues(held: HeldSecrets, b: Pick<RecordBody, "password" | "data" |
 }
 
 const normalized = (body: RecordBody): RecordBody => { try { return normalizeRecordBody(body); } catch { throw new InvalidInput(); } };
+
+/**
+ * The stored body, read strictly: decryptRecordBody's lenient read drops an invalid agentPolicy and any field this gateway
+ * doesn't know (one a newer web app wrote), and writing that copy back would delete them. Anything the strict read would
+ * change or drop is InvalidInput, before any write. A v1 body (no `v`) only gains `v: 2`.
+ */
+async function readForUpdate(id: string, encBody: string, recordKey: Uint8Array): Promise<RecordBody> {
+  let raw: Record<string, unknown>;
+  try { raw = JSON.parse(utf8.decode(await aeadDecrypt(recordKey, encBody, `record-body:${id}`))) as Record<string, unknown>; } catch (e) {
+    throw e instanceof CryptoError ? e : new CryptoError("bad_envelope");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new CryptoError("bad_envelope");
+  const clean = normalized(raw as unknown as RecordBody) as unknown as Record<string, unknown>;
+  // Blank values are dropped by every editor too; anything else missing or changed is a loss.
+  const lost = Object.keys(raw).some((k) => k !== "v" && raw[k] !== "" && raw[k] !== undefined && JSON.stringify(raw[k]) !== JSON.stringify(clean[k]));
+  if (lost) throw new InvalidInput();
+  return clean as unknown as RecordBody;
+}
 
 /**
  * normalizeRecordBody (a throw → InvalidInput), a random id and record key, both seals, the d1 signature at revision 1.
@@ -73,7 +91,7 @@ export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys,
   let releaseOld = () => {};
   const recordKey = await openPersonalAgentRecordKey(row.sealed, { ownerUserId, agentId, recordId: id }, keys);
   try {
-    const before = await decryptRecordBody(id, row.encBody, recordKey);
+    const before = await readForUpdate(id, row.encBody, recordKey);
     releaseOld = holdValues(held, before);
     const { data, ...top } = set;
     const after = normalized({ ...before, ...top, ...(data ? { data: { ...before.data, ...data } } : {}) });

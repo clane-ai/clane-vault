@@ -772,6 +772,28 @@ describe("MCP endpoint, personal writes", () => {
     expect(await tool("update_secret", { item: "personal/open", set: { data: { nope: "x" } } })).toEqual({ error: "refused", reason: "invalid" });
   });
 
+  it("a stored body the strict read would change is invalid with no PUT: an invalid policy, an unknown field; a v1 body updates", async () => {
+    const { api, tool } = await personal();
+    const bad = { ...login("Bad Policy", "p"), agentPolicy: { v: 1, hosts: [], inject: { kind: "bearer" } } } as unknown as RecordBody;
+    await api.personal.addRecord(bad, undefined, true, true);
+    await api.personal.addRecord({ ...login("Newer", "p"), agentReveal: { fields: ["password"] } } as unknown as RecordBody, undefined, true, true);
+    const v1 = await api.personal.addRecord({ type: "login", title: "Old", username: "bot", password: "p" }, undefined, true, true);
+    expect(await tool("update_secret", { item: "personal/bad-policy", set: { password: "x" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/newer", set: { password: "x" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toEqual([]);
+    expect(await tool("update_secret", { item: "personal/old", set: { password: "x" } })).toEqual({ item: "personal/old", revision: 2 });
+    expect(await api.personal.open(v1)).toMatchObject({ v: 2, title: "Old", username: "bot", password: "x" });
+  });
+
+  it("update_secret with nothing to set is invalid with no call; save_secret never answers conflict", async () => {
+    const { api, tool } = await personal();
+    await api.personal.addRecord(login("Open", "p"), undefined, true);
+    for (const set of [{}, { data: {} }]) expect(await tool("update_secret", { item: "personal/open", set })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toEqual([]);
+    api.personal.refuseWrites("conflict");
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "internal_error" });
+  });
+
   it("refusals: policy write off and an empty inbox without a call; the API's 409 inbox_full; an invalid body", async () => {
     const { api, tool } = await personal({ cacheTtlSeconds: 0 });
     api.personal.setPolicyWrite(false);
