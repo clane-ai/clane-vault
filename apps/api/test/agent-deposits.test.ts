@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomBytes, randomUUID } from "node:crypto";
 import { exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
 import {
@@ -10,7 +10,7 @@ import { createTestAgent, createTestPersonalAgent } from "./agentHelpers.js";
 import { startFakeGateway } from "./fakeGateway.js";
 import { hashToken, signAgentAccess } from "../src/lib/tokens.js";
 import { depositMessage, sha256B64 as apiSha256B64 } from "../src/lib/agents.js";
-import { sweepAgentWrites } from "../src/lib/personalAgents.js";
+import { revokePersonalAgent, sweepAgentWrites } from "../src/lib/personalAgents.js";
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
@@ -18,6 +18,7 @@ const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.tes
 const t = await makeTestApp({ agents });
 afterAll(async () => { await t.app.close(); await fake.close(); });
 beforeEach(async () => { await resetDb(t.prisma); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 type U = Awaited<ReturnType<typeof createActiveUser>>;
 type PA = Awaited<ReturnType<typeof createTestPersonalAgent>>;
@@ -261,5 +262,72 @@ describe("lifetime", () => {
     expect((await call(owner, "DELETE", `/me/agents/${agent.id}`)).statusCode).toBe(200);
     expect(await t.prisma.agentDeposit.count()).toBe(0);
     expect(await t.prisma.record.findUniqueOrThrow({ where: { id: kept.body.id } })).toMatchObject({ createdByAgentId: agent.id });
+  });
+});
+
+describe("writes against revocation (fix round 1)", () => {
+  /** The next $transaction first commits a revoke of `agentId`: the window after requireAgent, before the write. */
+  function revokeBeforeNextTransaction(agentId: string, ownerId: string) {
+    const orig = t.prisma.$transaction.bind(t.prisma) as (fn: unknown) => Promise<unknown>;
+    vi.spyOn(t.prisma, "$transaction").mockImplementationOnce((async (fn: unknown) => {
+      await orig((tx: Parameters<typeof revokePersonalAgent>[0]) => revokePersonalAgent(tx, agentId, ownerId));
+      return orig(fn);
+    }) as never);
+  }
+
+  it("a revoke that commits after requireAgent leaves no deposit, and refuses the update (409 not_writable)", async () => {
+    const { owner, agent, access } = await setup();
+    const d = await deposit(owner, agent, access); // pins the gateway identity
+    expect(d.body.id).toBeTruthy();
+    const next = await build(owner, agent);
+    revokeBeforeNextTransaction(agent.id, owner.id);
+    const r = await agentCall(access, "POST", "/agent/deposits", next.body);
+    expect([r.statusCode, r.json()]).toEqual([409, { error: "not_writable" }]);
+    expect(await t.prisma.agentDeposit.count()).toBe(0);
+
+    const second = await setup(owner);
+    const e = await deposit(owner, second.agent, second.access);
+    revokeBeforeNextTransaction(second.agent.id, owner.id);
+    const p = await agentCall(second.access, "PUT", `/agent/deposits/${e.body.id}`, await update(owner, second.agent, e, 1));
+    expect([p.statusCode, p.json()]).toEqual([409, { error: "not_writable" }]);
+  });
+
+  it("Keep concurrent with revoke: one wins cleanly, never a 500", async () => {
+    for (let i = 0; i < 3; i++) {
+      const { owner, agent, access } = await setup();
+      const d = await deposit(owner, agent, access);
+      const [k, rv] = await Promise.all([
+        call(owner, "POST", `/me/agent-deposits/${d.body.id}/keep`, await keepBody(d, 1, { owner, agent })),
+        call(owner, "DELETE", `/me/agents/${agent.id}`),
+      ]);
+      expect(rv.statusCode).toBe(200);
+      expect([201, 409]).toContain(k.statusCode);
+      expect(await t.prisma.record.count({ where: { id: d.body.id } })).toBe(k.statusCode === 201 ? 1 : 0);
+      expect(await t.prisma.agentDeposit.count({ where: { id: d.body.id } })).toBe(0);
+      expect(await t.prisma.recordAccess.count({ where: { holderId: agent.id } })).toBe(0);
+    }
+  });
+
+  it("Keep on an id a record already has is 409 conflict and keeps the deposit", async () => {
+    const { owner, agent, access } = await setup();
+    const d = await deposit(owner, agent, access);
+    await t.prisma.record.create({ data: { id: d.body.id, folderId: null, ownerId: owner.id, type: "login", encBody: "v1.x" } });
+    const k = await call(owner, "POST", `/me/agent-deposits/${d.body.id}/keep`, await keepBody(d, 1, { owner }));
+    expect([k.statusCode, k.json()]).toEqual([409, { error: "conflict" }]);
+    expect(await t.prisma.agentDeposit.count({ where: { id: d.body.id } })).toBe(1);
+  });
+
+  it("an organisation agent's PUT is not_writable; Keep for an expired agent keeps without its row", async () => {
+    const { owner, agent, access } = await setup();
+    const d = await deposit(owner, agent, access);
+    const oa = await createTestAgent(t, { orgId: owner.orgId!, createdById: owner.id, verified: true });
+    const orgAccess = await token(oa.id, owner.id, { orgId: owner.orgId! });
+    const p = await agentCall(orgAccess, "PUT", `/agent/deposits/${d.body.id}`, await update(owner, agent, d, 1));
+    expect([p.statusCode, p.json()]).toEqual([409, { error: "not_writable" }]);
+
+    await t.prisma.agent.update({ where: { userId: agent.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    const k = await call(owner, "POST", `/me/agent-deposits/${d.body.id}/keep`, await keepBody(d, 1, { owner, agent }));
+    expect([k.statusCode, k.json()]).toEqual([201, { id: d.body.id, revision: 1, agentRow: false }]);
+    expect(await t.prisma.recordAccess.count({ where: { recordId: d.body.id, holderId: agent.id } })).toBe(0);
   });
 });

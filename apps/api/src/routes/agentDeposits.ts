@@ -4,6 +4,7 @@ import { depositMessage, gatewaySigned, sha256B64 } from "../lib/agents.js";
 import { ensureIdentity, reqMeta } from "../lib/agentAdmin.js";
 import { logEvent } from "../lib/events.js";
 import { lockUser } from "../lib/orgs.js";
+import { isUniqueViolation, type Db } from "../lib/access.js";
 import { isPrivateLocked } from "../lib/privateLock.js";
 import { agentRateKey } from "../plugins/agent.js";
 import { AGENT_ITEM_LIMIT, DEPOSIT_INBOX_LIMIT, DEPOSIT_TTL_MS, connectedApp, personalAgentRules } from "../lib/personalAgents.js";
@@ -31,6 +32,14 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
     return gatewaySigned(b.signature, "d1", depositMessage({ ownerUserId: a.ownerUserId!, ownerPublicKey: owner.publicKey, agentId: a.userId, id: b.id, revision,
       encBodyHash: sha256B64(b.encBody) }), identity);
   }
+  /**
+   * Inside the write's transaction: the agent's lock first (the lock revocation takes, so none commits mid-write), then
+   * whether it is still live. requireAgent checked before the transaction; a revoke may have committed since.
+   */
+  async function stillWritable(tx: Db, agentId: string): Promise<boolean> {
+    await lockUser(tx, agentId);
+    return !!(await tx.agent.findFirst({ where: { userId: agentId, revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, select: { userId: true } }));
+  }
   /** An organisation agent, or the owner's policies forbid writes. */
   const writable = async (a: FastifyRequest["agent"]) => !!a.ownerUserId && (await personalAgentRules(app.prisma, app.config, a.ownerUserId)).write;
 
@@ -41,7 +50,8 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
     if (!(await signedByGateway(a, b, 1))) return refuse(reply, "conflict");
     const via = await connectedApp(app.prisma, a);
     const r = await app.prisma.$transaction(async (tx) => {
-      await lockUser(tx, a.ownerUserId!); // serialises the owner's inbox count
+      if (!(await stillWritable(tx, a.userId))) return "not_writable" as const;
+      await lockUser(tx, a.ownerUserId!); // serialises the owner's inbox count (after the agent's lock: one order everywhere)
       if (await tx.agentDeposit.count({ where: { ownerUserId: a.ownerUserId! } }) >= DEPOSIT_INBOX_LIMIT) return "inbox_full" as const;
       if (await tx.record.findUnique({ where: { id: b.id }, select: { id: true } }) || await tx.agentDeposit.findUnique({ where: { id: b.id }, select: { id: true } })) return "conflict" as const;
       await tx.agentDeposit.create({ data: { ...b, ownerUserId: a.ownerUserId!, agentId: a.userId, connectedApp: via } });
@@ -60,9 +70,13 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
     const d = await app.prisma.agentDeposit.findFirst({ where: { id, agentId: a.userId }, select: { revision: true } });
     if (!d) return refuse(reply, "not_writable");
     if (d.revision !== b.revision || !(await signedByGateway(a, { id, ...b }, b.revision + 1))) return refuse(reply, "conflict");
-    const n = await app.prisma.agentDeposit.updateMany({ where: { id, agentId: a.userId, revision: b.revision },
-      data: { encBody: b.encBody, signature: b.signature, revision: b.revision + 1 } });
-    return n.count ? { id, revision: b.revision + 1 } : refuse(reply, "conflict");
+    const r = await app.prisma.$transaction(async (tx) => {
+      if (!(await stillWritable(tx, a.userId))) return "not_writable" as const;
+      const n = await tx.agentDeposit.updateMany({ where: { id, agentId: a.userId, revision: b.revision },
+        data: { encBody: b.encBody, signature: b.signature, revision: b.revision + 1 } });
+      return n.count ? null : "conflict" as const;
+    });
+    return r ? refuse(reply, r) : { id, revision: b.revision + 1 };
   });
 
   app.get("/me/agent-deposits", ownerOpts, async (req) => {
@@ -82,6 +96,8 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
     const r = await app.prisma.$transaction(async (tx) => {
       const d = await tx.agentDeposit.findFirst({ where: { id, ownerUserId: me } });
       if (!d) return { code: 404, error: "not_found" } as const;
+      // Before the claim's row lock, as revocation (agent lock, then its deposits): the other order deadlocks.
+      await lockUser(tx, d.agentId);
       if (d.revision !== b.revision) return { code: 409, error: "conflict" } as const;
       if (b.folderId && !(await tx.folder.findFirst({ where: { id: b.folderId, ownerId: me, kind: "private", deletedAt: null }, select: { id: true } })))
         return { code: 404, error: "folder_not_found" } as const;
@@ -91,7 +107,6 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
         access: { create: { holderType: "user", holderId: me, permission: "owner", wrappedRecordKey: b.wrappedRecordKey } } } });
       let agentRow: boolean | undefined;
       if (b.agentWrappedRecordKey) {
-        await lockUser(tx, d.agentId); // as a grant: serialised with revocation and the item limit
         const a = await tx.agent.findFirst({ where: { userId: d.agentId, ownerUserId: me, revokedAt: null, verifiedAt: { not: null },
           OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }], user: { status: "active" } }, select: { publicKey: true } });
         agentRow = !!a && await tx.recordAccess.count({ where: { holderType: "user", holderId: d.agentId } }) < AGENT_ITEM_LIMIT;
@@ -100,6 +115,9 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
       }
       await logEvent(tx, { actorId: me, action: "agent.deposit_keep", recordId: id, targetUserId: d.agentId, ...reqMeta(req) });
       return { code: 201, agentRow } as const;
+    }).catch((e: unknown) => {
+      if (isUniqueViolation(e)) return { code: 409, error: "conflict" } as const; // a record already has this id
+      throw e;
     });
     if (r.code !== 201) return reply.code(r.code).send({ error: r.error });
     return reply.code(201).send({ id, revision: 1, ...(r.agentRow === false ? { agentRow: false } : {}) });
