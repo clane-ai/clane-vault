@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import {
-  b64url, decryptRecordBody, encryptNewRecord, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openPersonalAgentRecordKey, randomBytes, signPersonalAgentKey,
+  agentUpdateMessage, b64url, decryptRecordBody, encryptNewRecord, encryptRecordBody, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openPersonalAgentRecordKey, randomBytes,
+  sha256B64, signGatewayMessage, signPersonalAgentKey,
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
@@ -25,7 +26,8 @@ const agentPub = b64url.encode(agentKeys.publicKey);
 const ORG = { id: "o1", name: "Acme", slug: "acme", role: "member", isDefault: true };
 vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: null, orgs: [ORG], applyOrgs: vi.fn(), user: { id: ME, name: "Sara", role: "member" }, generation: () => 0, lock: vi.fn(), signOut: vi.fn(), keys: me } as never);
 
-let gw: { identity: GatewayIdentity; attest: (publicKey: string) => Promise<string> };
+let gw: { identity: GatewayIdentity; attest: (publicKey: string) => Promise<string>; sign: (message: string) => Promise<string> };
+let writeAllowed: boolean;
 let agents: MyAgent[];
 const row = (o: Partial<MyAgent> = {}): MyAgent => ({ id: AGENT_ID, name: "My bot", status: "active", publicKey: agentPub, attestation: "", expiresAt: null, lastUsedAt: null,
   createdAt: "2026-11-15T00:00:00Z", verifiedAt: "2026-11-15T00:00:00Z", items: 0, owner: { userId: ME, publicKey: ownerPublicKey }, tokens: [], grants: [], ...o });
@@ -34,23 +36,36 @@ beforeEach(async () => {
   try { localStorage.clear(); } catch { /* none */ }
   const kp = await generateIdentityKeyPair();
   const identity = { keyId: await gatewayKeyId(kp.publicKey), publicKey: b64url.encode(kp.publicKey) };
-  gw = { identity, attest: (publicKey) => signPersonalAgentKey(kp.privateKey, identity.keyId, { ownerUserId: ME, ownerPublicKey, agentId: AGENT_ID, publicKey }) };
+  gw = { identity, attest: (publicKey) => signPersonalAgentKey(kp.privateKey, identity.keyId, { ownerUserId: ME, ownerPublicKey, agentId: AGENT_ID, publicKey }),
+    sign: (message) => signGatewayMessage(kp.privateKey, identity.keyId, "u1", message) };
+  writeAllowed = false;
   await pinGateway(ME, PERSONAL_SLOT, identity);
   agents = [row({ attestation: await gw.attest(agentPub) })];
   server.use(
-    http.get("/api/v1/me/agents", () => HttpResponse.json({ agents, allowance: { used: 1, allowed: 2 }, rules: { allowed: true, blockedByOrgId: null, write: false, reveal: "off" }, gateway: null, revealEmail: true })),
+    http.get("/api/v1/me/agents", () => HttpResponse.json({ agents, allowance: { used: 1, allowed: 2 }, rules: { allowed: true, blockedByOrgId: null, write: writeAllowed, reveal: "off" }, gateway: null, revealEmail: true })),
     http.get("/api/v1/records/:id/activity", () => HttpResponse.json({ events: [] })),
     http.get("/api/v1/users", () => HttpResponse.json({ users: [] })),
   );
 });
 
-async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean } = {}) {
+async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean } = {}) {
   const id = crypto.randomUUID();
   const body = { type: "login" as const, title: "Stripe", password: "pw", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
+  const revision = o.agentChange ? 2 : 1;
+  // "unsigned": signed for another revision, so the signature doesn't cover the current body.
+  const signature = o.agentChange ? await gw.sign(agentUpdateMessage({ ownerUserId: ME, agentId: AGENT_ID, id, revision: o.agentChange === "signed" ? revision : revision + 1, encBodyHash: await sha256B64(enc.encBody) })) : "";
   server.use(http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [{ id, folderId: null, type: "login", encBody: enc.encBody, wrappedRecordKey: enc.wrappedRecordKey,
-    revision: 1, updatedAt: "2026-11-15T10:00:00Z", deletedAt: null, permission: "owner", holderType: "user", ownerId: ME, ownerName: "Sara", sharedWith: [], agentGrants: o.agentGrants ?? [] }] })));
-  return { id, enc };
+    revision, updatedAt: "2026-11-15T10:00:00Z", deletedAt: null, permission: "owner", holderType: "user", ownerId: ME, ownerName: "Sara", sharedWith: [], agentGrants: o.agentGrants ?? [],
+    ...(o.createdByAgent ? { createdByAgent: { id: AGENT_ID, name: "My bot", at: "2026-11-15T10:00:00Z" } } : {}),
+    ...(o.agentChange ? { agentChange: { agentId: AGENT_ID, agentName: "My bot", at: "2026-11-16T10:00:00Z", signature } } : {}) }] })));
+  return { id, enc, revision };
+}
+async function openRecord() {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
+  await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+  return screen.findByRole("complementary", { name: "Record details" });
 }
 async function openShare() {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
@@ -113,7 +128,7 @@ describe("giving an item to a personal agent", () => {
   });
 
   it("is absent for a record in a team folder and for a record shared with me", async () => {
-    const base = { id: "r1", folderId: null, type: "login", body: { type: "login", title: "Stripe" }, revision: 1, updatedAt: "", deleted: false, permission: "owner", recordKey: null, ownerId: ME, sharedWith: [] } as unknown as VaultRecord;
+    const base = { id: "r1", folderId: null, type: "login", body: { type: "login", title: "Stripe" }, revision: 1, updatedAt: "", deleted: false, permission: "owner", recordKey: randomBytes(32), ownerId: ME, sharedWith: [] } as unknown as VaultRecord;
     const team = { id: "f1", name: "Payments", kind: "team", deleted: false, members: [] } as unknown as VaultFolder;
     const sheet = (record: VaultRecord, teamFolder: VaultFolder | null) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
       <ShareSheet record={record} teamFolder={teamFolder} open onClose={() => undefined} onShare={vi.fn()} onUpdate={vi.fn()} onRemove={vi.fn()} onGrantAgent={vi.fn()} onRevokeAgent={vi.fn()} />
@@ -125,7 +140,12 @@ describe("giving an item to a personal agent", () => {
     await screen.findByRole("dialog");
     expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
     inTeam.unmount();
-    sheet({ ...base, sharedBy: "Bob", ownerId: "u2" }, null);
+    const shared = sheet({ ...base, sharedBy: "Bob", ownerId: "u2" }, null);
+    await screen.findByRole("dialog");
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
+    shared.unmount();
+    // A record whose key doesn't open (cannot_open) can't be sealed to anyone.
+    sheet({ ...base, recordKey: null }, null);
     await screen.findByRole("dialog");
     expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
   });
@@ -152,5 +172,87 @@ describe("giving an item to a personal agent", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Give" }));
     expect(await within(dialog).findByRole("status")).toHaveTextContent("1 given, 1 skipped");
     expect(posts).toEqual([id2]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    // The selection is cleared once it's done.
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select Stripe" })).not.toBeChecked());
+    expect(screen.getByRole("checkbox", { name: "Select GitHub" })).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "Give to agent…" })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Select Stripe" }).parentElement).toHaveClass("size-6"); // a 24px hit area
+  });
+
+  it("the first grant on this device pins the gateway and shows its fingerprint", async () => {
+    await serveRecord();
+    localStorage.clear();
+    server.use(
+      http.get("/api/v1/me/agents/gateway", () => HttpResponse.json({ identityKeyId: gw.identity.keyId, identityPublicKey: gw.identity.publicKey })),
+      http.post("/api/v1/records/:id/agent-grants", () => HttpResponse.json({ ok: true }, { status: 201 })),
+    );
+    const section = await openShare();
+    expect(within(section).queryByLabelText("Gateway identity")).toBeNull();
+    await choose(section, "Can use");
+    expect(await within(section).findByLabelText("Gateway identity")).toBeInTheDocument();
+  });
+
+  it("Agent can update: shown for an agent with Can use when writes are allowed, and sends PATCH { write }", async () => {
+    writeAllowed = true;
+    const { id } = await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    let patched: { path: string; body: unknown } | null = null;
+    server.use(http.patch("/api/v1/records/:id/agent-grants/:agentId", async ({ params, request }) => { patched = { path: `${params.id}/${params.agentId}`, body: await request.json() }; return HttpResponse.json({ ok: true }); }));
+    const section = await openShare();
+    await userEvent.click(await within(section).findByRole("checkbox", { name: "Agent can update this item" }));
+    await waitFor(() => expect(patched).toEqual({ path: `${id}/${AGENT_ID}`, body: { write: true } }));
+  });
+
+  it("Agent can update is hidden when the rules forbid writes", async () => {
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const section = await openShare();
+    await within(section).findByRole("combobox", { name: "Access for My bot" });
+    expect(within(section).queryByRole("checkbox", { name: "Agent can update this item" })).toBeNull();
+  });
+});
+
+describe("provenance and Changed by agent", () => {
+  it("a kept deposit says which agent created it", async () => {
+    await serveRecord({ createdByAgent: true });
+    const panel = await openRecord();
+    expect(panel).toHaveTextContent(`Created by agent My bot on ${new Date("2026-11-15T10:00:00Z").toLocaleDateString()}`);
+  });
+
+  it("a signed change shows the banner, opening it acks, and Restore previous saves the previous body through the normal edit path", async () => {
+    const { id, enc, revision } = await serveRecord({ agentChange: "signed" });
+    const prev = { type: "login" as const, title: "Stripe", password: "old-password" };
+    let acked = false, put: { encBody: string; revision: number } | null = null;
+    server.use(
+      http.post("/api/v1/records/:id/agent-overwrites/ack", () => { acked = true; return HttpResponse.json({ ok: true }); }),
+      http.get("/api/v1/records/:id/agent-overwrites", async () => HttpResponse.json({ overwrites: [{ id: "ow1", agentId: AGENT_ID, agentName: "My bot",
+        prevEncBody: await encryptRecordBody(id, prev, enc.recordKey), newRevision: revision, signature: "", createdAt: "2026-11-16T10:00:00Z" }] })),
+      http.put("/api/v1/records/:id", async ({ request }) => { put = (await request.json()) as never; return HttpResponse.json({ ok: true }); }),
+    );
+    const panel = await openRecord();
+    const banner = within(panel).getByRole("note", { name: "Changed by agent" });
+    expect(banner).toHaveTextContent("Changed by agent My bot");
+    await waitFor(() => expect(acked).toBe(true));
+    await userEvent.click(within(banner).getByRole("button", { name: "Restore previous" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    expect(put!.revision).toBe(revision);
+    expect((await decryptRecordBody(id, put!.encBody, enc.recordKey)).password).toBe("old-password");
+  });
+
+  it("a change the gateway didn't sign over the current body says so", async () => {
+    await serveRecord({ agentChange: "unsigned" });
+    const panel = await openRecord();
+    expect(within(panel).getByRole("note", { name: "Changed by agent" })).toHaveTextContent("Changed, but not signed by the gateway");
+  });
+
+  it("a previous version whose key no longer opens (the record key was rotated since) says so", async () => {
+    const { id, revision } = await serveRecord({ agentChange: "signed" });
+    server.use(
+      http.post("/api/v1/records/:id/agent-overwrites/ack", () => HttpResponse.json({ ok: true })),
+      http.get("/api/v1/records/:id/agent-overwrites", async () => HttpResponse.json({ overwrites: [{ id: "ow1", agentId: AGENT_ID, agentName: "My bot",
+        prevEncBody: await encryptRecordBody(id, { type: "login", title: "x" }, randomBytes(32)), newRevision: revision, signature: "", createdAt: "2026-11-16T10:00:00Z" }] })),
+    );
+    const panel = await openRecord();
+    await userEvent.click(within(panel).getByRole("button", { name: "Restore previous" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("The previous version can't be opened any more: this item's key changed after the agent's change.");
   });
 });

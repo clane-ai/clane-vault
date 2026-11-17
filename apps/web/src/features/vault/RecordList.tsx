@@ -61,7 +61,8 @@ function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb, pick 
         inset ? cn(INSET, GUIDE) : "pl-3",
         selected ? "bg-blue-tint" : "hover:bg-app has-[[data-row-main]:focus-visible]:bg-app")}>
       {selected && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-blue-500" />}
-      {pick && <input type="checkbox" aria-label={`Select ${b?.title ?? "this record"}`} checked={pick.checked} onChange={pick.onChange} className="mr-2 size-4 shrink-0 accent-blue-500" />}
+      {/* The label gives the 16px box a 24px hit area. */}
+      {pick && <label className="mr-1 grid size-6 shrink-0 cursor-pointer place-items-center"><input type="checkbox" aria-label={`Select ${b?.title ?? "this record"}`} checked={pick.checked} onChange={pick.onChange} className="size-4 accent-blue-500" /></label>}
       <button type="button" data-row-main onClick={() => onSelect(r.id)} aria-current={selected ? "true" : undefined}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 text-left focus-visible:outline-none">
         <RecordAvatar title={b?.title} kind={b?.type} size={22} />
@@ -120,7 +121,7 @@ export function EmptyState({ icon: Icon, title, line, action }: { icon: LucideIc
 /** Renders a folder row's Options menu around `trigger` (the row's … button); `open` is controlled so a right-click opens it too. */
 export type FolderMenu = (f: VaultFolder, trigger: React.ReactNode, open: boolean, onOpenChange: (o: boolean) => void) => React.ReactNode;
 
-export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMenu, currentFolderId, onOpenFolder, onCreate, onNewRecord, empty: empty_, reasons, view = "vault", folderOf, noFolderLabel = "No folder", onGiveToAgent }: {
+export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMenu, currentFolderId, onOpenFolder, onCreate, onNewRecord, empty: empty_, reasons, view = "vault", folderOf, noFolderLabel = "No folder", onGiveToAgent, pickReset }: {
   groups: { folder: VaultFolder | null; records: VaultRecord[] }[]; flat: VaultRecord[]; mode: "folders" | "flat"; selectedId: string | null; onSelect: (id: string) => void;
   /** Each folder row's Options menu (none offline). */ folderMenu?: FolderMenu;
   /** The folder the Options in the list header act on: highlighted. */ currentFolderId?: string | null;
@@ -133,9 +134,12 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
   /** A record's folder, for the crumb in flat lists. */ folderOf?: (id: string | null) => VaultFolder | null;
   /** The group of records outside any folder here: "No folder" (Personal), "Shared directly" (an organisation). */ noFolderLabel?: string;
   /** Personal space with personal agents: rows can be picked, and the picked records given to an agent. */ onGiveToAgent?: (records: VaultRecord[]) => void;
+  /** Changes when the picked records were given: the selection is cleared. */ pickReset?: number;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // A selection belongs to the list it was made in: switching view or folder, or giving it (pickReset), clears it.
+  useEffect(() => { setPicked(new Set()); }, [view, currentFolderId, pickReset]);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const empty = mode === "flat" ? flat.length === 0 : groups.every((g) => g.records.length === 0) && groups.length === 0;
   if (empty) return (

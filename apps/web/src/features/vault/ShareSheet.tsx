@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { RecordAvatar } from "./RecordAvatar";
-import { RecordAgentsSection } from "./RecordAgentsSection";
+import { RecordAgentsSection, type GrantResult } from "./RecordAgentsSection";
 import type { MyAgent } from "@/features/settings/myAgents";
 import { AgentChip, Chip, Fingerprint, PermissionSelect, PersonAvatar } from "./people";
 import { PERMISSION_LABEL, type Grant, type Person, type Permission, type VaultFolder, type VaultRecord } from "./types";
@@ -96,14 +96,15 @@ function PersonalSharing({ record, onShareIn }: { record: VaultRecord; onShareIn
   );
 }
 
-export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent }: {
+export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent, onSetAgentWrite }: {
   record: VaultRecord; teamFolder: VaultFolder | null; open: boolean; onClose: () => void;
   onShare: (p: Person, permission: Grant) => Promise<unknown>;
   /** Personal space: share inside one of my organisations. */ onShareIn?: (inOrg: Org, p: Person, permission: Grant) => Promise<unknown>;
   onUpdate: (userId: string, permission: Grant) => Promise<unknown>;
   onRemove: (userId: string) => Promise<unknown>;
   /** Personal space: give this record to one of my personal agents, or take it away. */
-  onGrantAgent?: (agent: MyAgent) => Promise<unknown>; onRevokeAgent?: (agentId: string) => Promise<unknown>;
+  onGrantAgent?: (agent: MyAgent) => Promise<GrantResult>; onRevokeAgent?: (agentId: string) => Promise<unknown>;
+  onSetAgentWrite?: (agentId: string, write: boolean) => Promise<unknown>;
 }) {
   const { user, org } = useSession();
   const people = usePeople();
@@ -149,7 +150,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
               <SheetBody className="gap-6 pt-5">
                 {!org ? <>
                   <PersonalSharing record={record} onShareIn={onShareIn} />
-                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} />}
+                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} onSetWrite={onSetAgentWrite} />}
                 </> : <>
                 <section aria-label="Add people" className="flex flex-col gap-2.5">
                   <h3 className="text-[13px] font-medium text-text-primary">Add people</h3>

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { AlertTriangle, ChevronsLeft, ChevronsRight, ChevronsUpDown, Download, HeartPulse, Link2, Lock, LockKeyhole, LogOut, Puzzle, Settings, ShieldCheck, Trash2, Users, type LucideIcon } from "lucide-react";
+import { AlertTriangle, ChevronsLeft, ChevronsRight, ChevronsUpDown, Download, HeartPulse, Inbox, Link2, Lock, LockKeyhole, LogOut, Puzzle, Settings, ShieldCheck, Trash2, Users, type LucideIcon } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { VendorCredit } from "@/components/brand/VendorCredit";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -127,7 +127,7 @@ function SidebarBrand({ org }: { org?: { id: string; name: string; logoVersion?:
 }
 
 export function Sidebar({ view, newButton, counts, badges, user, adminHref, paths, org, orgSwitcher, onLock, onSignOut, drawer, collapsed = false, onToggleCollapsed }: {
-  view: SidebarView; newButton: React.ReactNode; counts: Record<VaultView, number | null>;
+  view: SidebarView; newButton: React.ReactNode; counts: Record<Exclude<VaultView, "agents">, number | null> & { agents?: number | null };
   /** Amber markers on Settings and Admin in the account menu. */ badges?: SidebarBadges;
   user: { name: string; email: string };
   /** Owners and admins (of the active org, or of some org from Personal), and instance admins: where Admin goes. */ adminHref?: string | null;
@@ -181,6 +181,8 @@ export function Sidebar({ view, newButton, counts, badges, user, adminHref, path
             {item("vault", "Vault", LockKeyhole)}
             {paths.views.includes("shared") && item("shared", "Shared with me", Users)}
             {item("attention", "Needs attention", AlertTriangle, "amber")}
+            {/* Personal only: the count comes from /sync (absent in an organisation, with personal agents off, or private-locked). */}
+            {counts.agents != null && item("agents", "From agents", Inbox, "amber")}
             {item("links", "Share links", Link2)}
             {item("trash", "Trash", Trash2)}
           </div>

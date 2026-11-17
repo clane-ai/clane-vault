@@ -75,10 +75,11 @@ describe("OAuth consent page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Agent access isn't turned on for this server.");
   });
 
-  it("a member gets the ask-an-admin line and no Allow", async () => {
+  it("a member with no agents is pointed at My agents (not told only admins can connect) and gets no Allow", async () => {
     server.use(http.get(INFO, () => HttpResponse.json({ client: { name: "Claude" }, agents: [] })));
     renderPage({ state: "unlocked", orgs: [{ id: "o1", role: "member" }] });
-    expect(await screen.findByText(/Only owners and admins can connect agents/)).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("You have no verified agents yet. Add one in Settings → My agents, then start again from your AI app.");
+    expect(screen.queryByText(/Only owners and admins/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Allow" })).not.toBeInTheDocument();
   });
 

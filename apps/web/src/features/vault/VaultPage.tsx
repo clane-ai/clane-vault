@@ -28,6 +28,7 @@ import { FolderPeopleSheet } from "./FolderPeopleSheet";
 import { RecordActivity, WhoCanOpen } from "./RecordSharing";
 import { ShareSheet } from "./ShareSheet";
 import { GrantToAgentDialog } from "./GrantToAgentDialog";
+import { AgentInbox } from "./AgentInbox";
 import { liveAgents } from "./RecordAgentsSection";
 import { useMyAgents } from "@/features/settings/myAgents";
 import { HealthView } from "@/features/health/HealthPage";
@@ -80,6 +81,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   // Personal space only, and not before the sync said it isn't private-locked (a 403 there raises the app-wide step-up).
   const myAgents = liveAgents(useMyAgents(!org && !offline && !v.isLoading && !v.privateLocked).data?.agents);
   const [giving, setGiving] = useState<VaultRecord[] | null>(null);
+  const [given, setGiven] = useState(0);
   // Every page and section has its own URL (lib/paths): the view, the open folder and the selected record come from it.
   const location = useLocation();
   const navigate = useNavigate();
@@ -207,14 +209,20 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
     <FolderOptionsMenu folder={folder} record={selected} folders={v.folders} team={!!org} trigger={trigger} open={open} onOpenChange={onOpenChange}
       onNew={onNew} onMove={moveTo} onDelete={setDeleting} onRename={setRenaming} onManage={(f) => setManagingId(f.id)} />
   ) : null;
+  // Lists that aren't records: Share links and From agents (no type filter, sort or search results heading).
+  const pageView = listView === "links" || listView === "agents";
   const showFlat = mode === "flat" || query !== "" || listView !== "vault" || typeFilter !== null;
   useEffect(() => { setSharing(false); }, [selectedId]);
+  // Opening a record the agent changed acknowledges it: the server stops listing the change; this panel keeps showing it.
+  const changedAt = selected?.agentChange?.at;
+  useEffect(() => { if (selected && changedAt && !offline) void v.ackAgentChange(selected.id).catch(() => undefined); }, [selectedId, changedAt]); // eslint-disable-line react-hooks/exhaustive-deps
   const spaceName = org ? org.name : "Personal";
   const HEAD: Record<typeof listView, [string, string]> = {
     vault: [org ? "Vault" : "Personal vault", org ? `${org.name}: its shared folders and records shared with you here.` : "Your private records. Nobody else sees them."],
     shared: ["Shared with me", `Records people shared with you directly in ${spaceName}.`],
     attention: ["Needs attention", "Weak, reused or old passwords. Change them on the website, then here."],
-    links: ["Share links", "One-time links you created. Revoke any you no longer need."], trash: ["Trash", "Restore records you deleted by mistake."],
+    links: ["Share links", "One-time links you created. Revoke any you no longer need."],
+    agents: ["From agents", "Items your agents saved. Keep them to add them to your vault, or delete them."], trash: ["Trash", "Restore records you deleted by mistake."],
   };
 
   const plusButton = (compact: boolean) => (typeof newButton === "function" ? newButton(compact) : newButton)
@@ -226,7 +234,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
       orgSwitcher={<OrgSwitcher compact={rail && !drawer} onSettings={() => navigate(isAdmin ? paths.admin("org/general") : "/settings/account")} />}
       badges={{ admin: isAdmin ? pendingReady + recoveryPending : 0, settings: noKit ? 1 : 0 }} onLock={lock} onSignOut={signOut}
       counts={{ vault: v.records.filter((r) => !r.deleted).length, shared: v.records.filter((r) => !r.deleted && isSharedWithMe(r)).length, attention: reasons.size, links: null,
-        trash: v.records.filter((r) => r.deleted && r.permission === "owner").length }}
+        trash: v.records.filter((r) => r.deleted && r.permission === "owner").length, agents: org ? null : v.agentInbox ?? null }}
       newButton={plusButton(rail && !drawer)} />
   );
   const healthPage = <HealthView health={health} records={v.records} loading={v.isLoading} onOpen={(id) => navigate(paths.record("vault", id))} />;
@@ -264,7 +272,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
         {!offline && <GroupAccessBanner folders={v.folders} />}
         <AdminRecoveryNotice />
         {loc.area === "redirect" ? <Navigate to={loc.to} replace />
-          : offline && (pageless || listView === "links") ? <OfflineOnlyPanel what={area === "settings" ? "Settings" : area === "admin" ? "Admin" : "Share links"} />
+          : offline && (pageless || pageView) ? <OfflineOnlyPanel what={area === "settings" ? "Settings" : area === "admin" ? "Admin" : listView === "agents" ? "From agents" : "Share links"} />
           : stepUpRequired && !pageless ? <TotpStepUpPanel /> : blocked && !pageless ? <SsoRequiredPanel org={org} />
           : loc.area === "settings" ? <SettingsArea section={loc.section} mobile={mobile} health={healthPage} records={v.records} privateLocked={v.privateLocked} />
           : loc.area === "admin" ? <AdminArea section={loc.section} detailId={loc.detailId} mobile={mobile} isAdmin={isAdmin} isInstanceAdmin={isInstanceAdmin} loading={orgsInfo.isPending && !offline}
@@ -280,10 +288,10 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
             </header>
             <div className="flex items-center gap-4 px-6 pt-4 pb-3 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-3 max-[760px]:px-3 max-[760px]:pt-4 max-[760px]:pb-3">
               <div className="min-w-0 flex-1">
-                <h1 className="truncate text-[20px] leading-tight text-text-primary">{query && listView !== "links" ? `Results for "${query}"` : HEAD[listView][0]}</h1>
+                <h1 className="truncate text-[20px] leading-tight text-text-primary">{query && !pageView ? `Results for "${query}"` : HEAD[listView][0]}</h1>
                 <p className="mt-0.5 text-[12.5px] text-text-secondary">{HEAD[listView][1]}</p>
               </div>
-              {listView !== "links" && (
+              {!pageView && (
                 <div className="flex shrink-0 items-center gap-2 max-[760px]:w-full">
                   <Select value={typeFilter ?? "all"} onValueChange={(x) => setTypeFilter(x === "all" ? null : x as RecordType)}>
                     <SelectTrigger aria-label="Record type" className={cn("h-8 min-w-[148px] max-[760px]:min-w-0 max-[760px]:flex-1 data-[size=default]:h-8 data-[size=default]:rounded-[9px] text-[13px]", typeFilter && "border-blue-500/50 bg-blue-tint")}>
@@ -345,13 +353,15 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                   <span className="text-[13px] font-medium text-blue-ink">Verify</span>
                 </button>
               )}
-              {listView === "links" ? <LinksView records={v.records} /> : v.isLoading ? <p className="py-16 text-center text-[14px] text-text-secondary">Decrypting your vault…</p>
+              {listView === "links" ? <LinksView records={v.records} />
+                : listView === "agents" ? <AgentInbox folders={v.folders} enabled={!offline && !v.isLoading && !v.privateLocked} />
+                : v.isLoading ? <p className="py-16 text-center text-[14px] text-text-secondary">Decrypting your vault…</p>
                 : v.error && v.records.length === 0 && v.folders.length === 0 ? null
                 : <RecordList groups={groups} flat={visible} mode={showFlat ? "flat" : "folders"} selectedId={selectedId} onSelect={select}
                     currentFolderId={currentFolder?.id ?? null} onOpenFolder={openFolder} folderMenu={options ?? undefined}
                     onCreate={listView === "vault" && !query && !offline ? onCreate : undefined} reasons={reasons} view={listView} folderOf={folderOf} noFolderLabel={org ? "Shared directly" : "No folder"}
                     onNewRecord={onNew && !offline ? (id) => onNew("record", id) : undefined}
-                    onGiveToAgent={!org && !offline && listView === "vault" && myAgents.length > 0 ? setGiving : undefined}
+                    onGiveToAgent={!org && !offline && listView === "vault" && myAgents.length > 0 ? setGiving : undefined} pickReset={given}
                     empty={listView === "trash" && !query ? <EmptyState icon={Trash2} title="Trash is empty" line="Records you move to the trash stay here until you delete them forever." />
                       : listView === "shared" && !query ? <EmptyState icon={Users} title="Nothing shared with you yet" line="When someone shares a record with you, it shows up here." />
                       : listView === "attention" && !query ? <EmptyState icon={ShieldCheck} title="Nothing needs attention" line="No weak, reused or old passwords. Nice work." /> : undefined} />}
@@ -361,7 +371,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
             <div className="relative min-h-0 border-l border-border-default max-[1099px]:border-l-0" {...drop.handlers}>
               {drop.overlay}
               <RecordPanel record={selected} files={selected.body ? <FilesSection record={selected} /> : undefined} folderName={folderName(selected.folderId)} teamFolder={folderOf(selected.folderId)?.kind === "team"} onClose={closeRecord} scoreOf={scores.scoreOf}
-                onShare={() => setSharing(true)}
+                onShare={() => setSharing(true)} onRestorePrevious={offline ? undefined : () => v.restorePrevious(selected)}
                 onEdit={() => onEdit?.(selected.id)} reasons={reasons.get(selected.id)} onNewPassword={onEdit && !offline ? () => onEdit(selected.id, { newPassword: true }) : undefined}
                 onTrash={() => act("Moved to trash", "move it to the trash", () => v.trashRecord(selected.id))}
                 onRestore={() => act("Restored", "restore it", () => v.restoreRecord(selected.id))}
@@ -371,14 +381,16 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
               {selected.permission === "owner" && (
                 <ShareSheet record={selected} teamFolder={folderOf(selected.folderId)?.kind === "team" ? folderOf(selected.folderId) : null} open={sharing} onClose={() => setSharing(false)}
                   onShare={(p, perm) => v.shareRecord(selected, p, perm)} onShareIn={(o, p, perm) => v.shareRecordIn(selected, o, p, perm)} onUpdate={(uid, perm) => v.updateShare(selected.id, uid, perm)} onRemove={(uid) => v.unshare(selected.id, uid)}
-                  onGrantAgent={(a) => v.grantAgent(selected, a)} onRevokeAgent={(id) => v.revokeAgentGrant(selected.id, id)} />
+                  onGrantAgent={(a) => v.grantAgent(selected, a)} onRevokeAgent={(id) => v.revokeAgentGrant(selected.id, id)}
+                  onSetAgentWrite={(id, write) => v.setAgentWrite(selected.id, id, write)} />
               )}
             </div>
           )}
         </div>}
         <StatusBar syncedAt={v.isLoading ? null : offline ? (v.savedAt ? new Date(v.savedAt) : null) : new Date()} offline={offline} />
       </main>
-      {giving && user && <GrantToAgentDialog records={giving} agents={myAgents} me={user.id} onGrant={(r, a) => v.grantAgent(r, a)} onClose={() => setGiving(null)} />}
+      {giving && user && <GrantToAgentDialog records={giving} agents={myAgents} me={user.id} onGrant={(r, a) => v.grantAgent(r, a)} onClose={() => setGiving(null)}
+        onDone={() => { setGiving(null); setGiven((n) => n + 1); }} />}
       <FolderPeopleSheet folder={managing} onClose={() => setManagingId(null)} onAdd={(f, p, perm) => v.addMember(f, p, perm)} onGiveAccess={(f, m) => v.giveAccessAgain(f, m)}
         onUpdate={(fid, uid, perm) => v.updateMember(fid, uid, perm)} onRemove={(fid, uid) => v.removeMember(fid, uid)} />
       {renaming && (

@@ -39,6 +39,7 @@ export async function decryptSync(sync: SyncResponse, keys: UnlockedKeys, myId?:
     const records = await Promise.all(sync.records.map(async (r): Promise<VaultRecord> => {
       const base = { id: r.id, folderId: r.folderId, type: r.type, revision: r.revision, updatedAt: r.updatedAt, deleted: r.deletedAt !== null, permission: r.permission,
         ownerId: r.ownerId, ownerName: r.ownerName, sharedWith: r.sharedWith, sharedBy: r.sharedBy, ...(r.sharedIn ? { sharedIn: r.sharedIn } : {}), ...(r.agentGrants ? { agentGrants: r.agentGrants } : {}),
+        ...(r.createdByAgent ? { createdByAgent: r.createdByAgent } : {}),
         attachments: r.attachments ?? [] };
       try {
         // My own records are always wrapped under my user key (v1.). A sealed box there would be one the server

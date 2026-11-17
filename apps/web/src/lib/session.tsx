@@ -124,14 +124,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [stepUpRequired, setStepUpRequired] = useState(false);
   useEffect(() => api.onStepUpRequired(() => setStepUpRequired(true)), []);
 
-  /** Zeroes the record and folder keys held in the vault cache and drops it. */
+  /** Zeroes the record and folder keys held in the vault cache (and in From agents' opened deposits) and drops them. */
   const wipeVaultCache = useCallback(() => {
     for (const q of qc.getQueryCache().findAll({ queryKey: ["vault"] })) {
       const d = q.state.data as { records?: { recordKey: Uint8Array | null }[]; folders?: { folderKey?: Uint8Array | null }[] } | undefined;
       d?.records?.forEach((r) => r.recordKey?.fill(0));
       d?.folders?.forEach((f) => f.folderKey?.fill(0));
     }
+    for (const q of qc.getQueryCache().findAll({ queryKey: ["agent-inbox"] })) (q.state.data as { recordKey?: Uint8Array }[] | undefined)?.forEach((d) => d.recordKey?.fill(0));
     qc.removeQueries({ queryKey: ["vault"] });
+    qc.removeQueries({ queryKey: ["agent-inbox"] });
   }, [qc]);
   const lock = useCallback(() => {
     genRef.current++;

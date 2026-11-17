@@ -100,7 +100,7 @@ export default function OAuthAuthorize() {
         <>
           <p role="status" className="text-[14px] text-text-primary">
             {isAdmin ? "You have no verified agents yet. Create and verify one on the Agents page, then start again from your AI app."
-              : "Only owners and admins can connect agents. Ask an admin of your organisation to connect it."}
+              : "You have no verified agents yet. Add one in Settings → My agents, then start again from your AI app."}
           </p>
           <Button variant="outline" onClick={deny}>Cancel</Button>
         </>

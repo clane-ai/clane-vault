@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  b64url, CryptoError, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, serverRecordType, wrapKey,
+  agentUpdateMessage, b64url, CryptoError, decryptRecordBody, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, serverRecordType,
+  sha256B64, verifyGatewayMessage, wrapKey,
   type RecordBody, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import { ApiError, forOrg } from "@/lib/api";
@@ -8,13 +9,23 @@ import { useSession, type Org } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
 import { dropSync, loadSync, orgKey, saveSync } from "@/lib/offline";
 import {
-  assertPinned, ensureGatewayPinned, isAgent, KeyChangedError, myMembershipKey, PERSONAL_SLOT, pinKey, pinStatus, sealFolderKeyTo, sealShareTo, verifyPersonalAgentKey,
+  assertPinned, ensureGatewayPinned, isAgent, KeyChangedError, myMembershipKey, PERSONAL_SLOT, pinKey, pinnedGateway, pinStatus, sealFolderKeyTo, sealShareTo, verifyPersonalAgentKey,
 } from "@/lib/orgKeys";
 import type { MyAgent } from "@/features/settings/myAgents";
 import { decryptSync } from "./decrypt";
 import type { FolderMember, Grant, Permission, Person, SyncResponse, VaultFolder, VaultRecord } from "./types";
 
 export class ConflictError extends Error { constructor() { super("Someone else changed this record. We loaded their version."); } }
+/** Restore previous: the overwrite's body is under a record key that was rotated since (overwrites outlive a rotation). */
+export class OverwriteKeyError extends Error { constructor() { super("The previous version can't be opened any more: this item's key changed after the agent's change."); } }
+
+/** *Changed by agent*: whether the pinned personal gateway signed `agent-update:<me>:<agent>:<id>:<revision>:<sha256(encBody)>` for the current body. */
+async function agentChangeSigned(me: string, r: SyncResponse["records"][number]): Promise<boolean | null> {
+  const gw = pinnedGateway(me, PERSONAL_SLOT);
+  if (!gw || !r.agentChange) return null;
+  const message = agentUpdateMessage({ ownerUserId: me, agentId: r.agentChange.agentId, id: r.id, revision: r.revision, encBodyHash: await sha256B64(r.encBody) });
+  return verifyGatewayMessage(r.agentChange.signature, "u1", message, gw);
+}
 
 const isZero = (k: Uint8Array) => k.every((b) => b === 0);
 /** Offline the vault is read-only: nothing offers editing, sharing or trashing ("use only" stays "use only"). */
@@ -63,7 +74,13 @@ export function useVault() {
         if (user) void (org?.policies?.offlineAllowed === false ? dropSync(user.id, orgKey(org.id)) : saveSync(user.id, orgKey(org?.id), sync));
       }
       // Membership keys are bound to the org this client asked for, never the server's word.
-      const out = { ...(await decryptSync(sync, k, user?.id, org?.id ?? null)), privateLocked: !!sync.privateLocked, savedAt };
+      const out = { ...(await decryptSync(sync, k, user?.id, org?.id ?? null)), privateLocked: !!sync.privateLocked, savedAt, agentInbox: sync.agentInbox };
+      // Changed by agent (Personal, records I own): checked against this device's gateway pin, never taken on the server's word.
+      if (!org && user) for (const sr of sync.records) {
+        if (!sr.agentChange || sr.ownerId !== user.id) continue;
+        const rec = out.records.find((x) => x.id === sr.id);
+        if (rec) rec.agentChange = { ...sr.agentChange, signed: await agentChangeSigned(user.id, sr) };
+      }
       if (offline) {
         out.records = out.records.map((r) => ({ ...r, permission: readOnly(r.permission) }));
         out.folders = out.folders.map((f) => ({ ...f, myPermission: readOnly(f.myPermission ?? "view") }));
@@ -271,7 +288,7 @@ export function useVault() {
     if (!user) throw new Error("Not signed in");
     const a = v.agent;
     if (pinStatus(user.id, PERSONAL_SLOT, a.id, a.publicKey).status === "changed") throw new KeyChangedError(a.id);
-    await ensureGatewayPinned(oapi, user.id, PERSONAL_SLOT, "/me/agents/gateway");
+    const pinned = await ensureGatewayPinned(oapi, user.id, PERSONAL_SLOT, "/me/agents/gateway");
     const wrappedRecordKey = await withKey((k) => withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
       await verifyPersonalAgentKey(user.id, a, a.owner, k.privateKey);
       const sealed = await sealPersonalAgentRecordKey(rk, { ownerUserId: user.id, agentId: a.id, recordId: v.r.id }, b64url.decode(a.publicKey));
@@ -280,8 +297,18 @@ export function useVault() {
     }));
     await oapi.post(`/records/${v.r.id}/agent-grants`, { agentId: a.id, wrappedRecordKey });
     pinKey(user.id, PERSONAL_SLOT, a.id, a.publicKey);
+    return pinned; // pinnedNow: the caller shows the gateway's fingerprint (trust on first use)
   }, ...after });
   const revokeAgentGrant = useSimple((v: { recordId: string; agentId: string }) => oapi.del(`/records/${v.recordId}/agent-grants/${v.agentId}`));
+  const setAgentWrite = useSimple((v: { recordId: string; agentId: string; write: boolean }) => oapi.patch(`/records/${v.recordId}/agent-grants/${v.agentId}`, { write: v.write }));
+  /** Restore previous: the body before the agent's change, opened with the record key and saved as any edit (a stale revision is a ConflictError). */
+  async function restorePrevious(r: VaultRecord) {
+    const { overwrites } = await oapi.get<{ overwrites: { prevEncBody: string; newRevision: number }[] }>(`/records/${r.id}/agent-overwrites`);
+    const o = overwrites.find((x) => x.newRevision === r.revision);
+    if (!o) throw new ConflictError();
+    const body = await withSecret(r.recordKey, "record", (rk) => decryptRecordBody(r.id, o.prevEncBody, rk)).catch((e: unknown) => { throw e instanceof CryptoError ? new OverwriteKeyError() : e; });
+    await updateRecord.mutateAsync({ r, body });
+  }
 
   return {
     folders: q.data?.folders ?? [], records: q.data?.records ?? [], isLoading: q.isLoading, error: q.error,
@@ -306,6 +333,11 @@ export function useVault() {
     unshare: (recordId: string, userId: string) => unshare.mutateAsync({ recordId, userId }),
     grantAgent: (record: VaultRecord, agent: MyAgent) => grantAgent.mutateAsync({ r: record, agent }),
     revokeAgentGrant: (recordId: string, agentId: string) => revokeAgentGrant.mutateAsync({ recordId, agentId }),
+    setAgentWrite: (recordId: string, agentId: string, write: boolean) => setAgentWrite.mutateAsync({ recordId, agentId, write }),
+    restorePrevious,
+    /** The owner has seen the agent's change (opening the record): the server stops listing it, the open panel keeps it. */
+    ackAgentChange: (recordId: string) => oapi.post(`/records/${recordId}/agent-overwrites/ack`),
+    /** Personal space: deposits waiting in From agents (absent with personal agents off, or private-locked). */ agentInbox: q.data?.agentInbox,
   };
 }
 

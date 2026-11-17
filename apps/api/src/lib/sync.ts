@@ -143,7 +143,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         ...(isOwner && !orgId ? { agentGrants: shares.filter((s) => s.recordId === r.id && personalAgentIds.has(s.holderId)).map((s) => ({ agentId: s.holderId, use: true as const, write: s.agentWrite })) } : {}),
         ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
-        ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "" } } : {}),
+        ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "", at: r.createdAt.toISOString() } } : {}),
         ...(agentChange.has(r.id) ? { agentChange: agentChange.get(r.id)! } : {}),
         ...(!isOwner && own ? { sharedBy: r.owner.name } : {}),
         attachments: (files.rows.get(r.id) ?? []).map((a) => attachmentView(a, files.names, permission!)),

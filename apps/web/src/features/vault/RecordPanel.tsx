@@ -12,6 +12,30 @@ import { RecordAvatar } from "./RecordAvatar";
 import { displayValue, isSecretField, last4, lowerFirst, shownFields, TYPE_ICON, type ShownField } from "./recordKinds";
 import { StrengthMeter } from "./StrengthMeter";
 import type { VaultRecord } from "./types";
+import { ConflictError, OverwriteKeyError } from "./useVault";
+
+/** *Changed by agent*: the agent's newest change nobody saved over yet, with Restore previous (the body before it). */
+function AgentChangeBanner({ change, onRestore }: { change: NonNullable<VaultRecord["agentChange"]>; onRestore?: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const restore = async () => {
+    setBusy(true); setError(null);
+    try { await onRestore!(); }
+    catch (e) { setError(e instanceof OverwriteKeyError || e instanceof ConflictError ? e.message : "Couldn't restore the previous version. Try again."); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div role="note" aria-label="Changed by agent" className="flex flex-col gap-2 rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+      <p className="flex items-start gap-2 text-[13.5px] text-text-primary">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+        <span>{change.signed === false ? "Changed, but not signed by the gateway" : `Changed by agent ${change.agentName}`} <span className="text-text-secondary" title={new Date(change.at).toLocaleString()}>{relativeTime(change.at)}</span>
+          {change.signed === null && <span className="block text-[12.5px] text-text-secondary">This device hasn't verified your gateway, so the change wasn't checked.</span>}</span>
+      </p>
+      {onRestore && <Button variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => void restore()}><RotateCcw className="size-3.5" />Restore previous</Button>}
+      {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
+    </div>
+  );
+}
 
 /** One row of the fields card: label (104px) · value · actions. */
 function Row({ label, children, actions }: { label: string; children: React.ReactNode; actions?: React.ReactNode }) {
@@ -57,7 +81,7 @@ function FieldValue({ f, shown }: { f: ShownField; shown: boolean }) {
   return <span aria-label={f.label} className={f.mono || f.format ? MONO : "text-[14px] break-words text-text-primary"}>{text}</span>;
 }
 
-export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf }: {
+export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious }: {
   record: VaultRecord; folderName: string | null; teamFolder?: boolean; onClose: () => void; onEdit: () => void; onTrash: () => void; onRestore?: () => void; onPurge?: () => void;
   /** Opens the share sheet (record owners only; its "One-time link" tab makes links). */ onShare?: () => void;
   /** Needs-attention reasons for this record, if any. */ reasons?: AttentionReason[];
@@ -65,6 +89,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   /** Extra sections under the fields (who can open it, activity). */ children?: React.ReactNode;
   /** The Files section (features/attachments), right under the fields and notes, for every record type. */ files?: React.ReactNode;
   /** Scores the vault already worked out (usePasswordScores): opening a record then scores nothing. */ scoreOf?: (pw: string) => StrengthScore | undefined;
+  /** *Changed by agent* → Restore previous (owners). */ onRestorePrevious?: () => Promise<unknown>;
 }) {
   // Revealed secret fields (by field id); every record opens with all of them hidden.
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
@@ -141,6 +166,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
               </div>
             )}
 
+            {!record.deleted && record.agentChange && <AgentChangeBanner change={record.agentChange} onRestore={record.permission === "owner" ? onRestorePrevious : undefined} />}
+
             {!record.deleted && reasons && reasons.length > 0 && (
               <div role="note" aria-label="Needs attention" className="flex flex-col gap-2.5 rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3">
                 <p className="flex items-start gap-2 text-[13.5px] text-text-primary"><AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />{reasonLine(reasons)}</p>
@@ -187,6 +214,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
 
             <p className="border-t border-border-default pt-4 font-mono text-[11.5px] text-text-tertiary">
               <span title={new Date(record.updatedAt).toLocaleString()}>Changed {relativeTime(record.updatedAt) || "—"}</span>
+              {record.createdByAgent && <span className="block">Created by agent {record.createdByAgent.name}{record.createdByAgent.at && ` on ${new Date(record.createdByAgent.at).toLocaleDateString()}`}</span>}
             </p>
           </>
         )}

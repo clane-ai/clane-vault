@@ -2,7 +2,8 @@ import type { RecordType } from "@clane-vault/crypto";
 import { searchableText } from "./recordKinds";
 import type { VaultFolder, VaultRecord } from "./types";
 
-export type VaultView = "vault" | "shared" | "attention" | "links" | "trash";
+/** "agents": From agents, the Personal space's inbox of agent deposits (not records yet). */
+export type VaultView = "vault" | "shared" | "attention" | "links" | "trash" | "agents";
 /** Records shared with me directly by someone else (not via a team folder). */
 export const isSharedWithMe = (r: VaultRecord) => !!r.sharedBy;
 const title = (r: VaultRecord) => r.body?.title ?? "";

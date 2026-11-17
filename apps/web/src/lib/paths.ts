@@ -34,7 +34,7 @@ export const PERSONAL_VIEWS: readonly VaultView[] = ["vault", "attention", "link
 export const ORG_VIEWS: readonly VaultView[] = ["vault", "shared", "attention", "links", "trash"];
 
 export const listPath = (prefix: string, view: VaultView) => `${prefix}/${view}`;
-export const recordPath = (prefix: string, view: VaultView, id: string) => `${prefix}/${view === "links" ? "vault" : view}/record/${id}`;
+export const recordPath = (prefix: string, view: VaultView, id: string) => `${prefix}/${view === "links" || view === "agents" ? "vault" : view}/record/${id}`;
 export const folderPath = (prefix: string, id: string | null) => (id ? `${prefix}/vault/folder/${id}` : `${prefix}/vault`);
 
 export const SETTINGS_SECTIONS = ["account", "security", "device", "extension", "health", "agents"] as const;
@@ -79,6 +79,7 @@ function parseList(space: SpaceRef, prefix: string, rest: string[]): AppLocation
   const [a, b, c] = rest;
   const views = space.kind === "personal" ? PERSONAL_VIEWS : ORG_VIEWS;
   if (!a) return { area: "redirect", to: `${prefix}/vault` };
+  if (a === "agents" && space.kind === "personal") return rest.length === 1 ? { area: "list", space, view: "agents", folderId: null, recordId: null } : { area: "redirect", to: `${prefix}/agents` };
   if (a === "links") return rest.length === 1 ? { area: "list", space, view: "links", folderId: null, recordId: null } : { area: "redirect", to: `${prefix}/links` };
   if (LISTS.has(a) && views.includes(a as VaultView)) {
     const view = a as VaultView;
