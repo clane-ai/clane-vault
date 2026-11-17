@@ -2,6 +2,15 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## Unreleased
+
+Upgrading: migration `20261115000000_personal_agents` (`Agent.orgId` becomes nullable, a new `Agent.ownerUserId` column with a CHECK that exactly one of the two is set) runs on start. **Operators using AWS KMS must add `ownerUserId` to the allowed encryption-context keys before anyone enrols a personal agent** (`docs/agents.md`, *Keys at rest*). No `.env` change otherwise.
+
+- **Personal agents** (`docs/agents.md`, *Personal agents*): anyone, not only admins, can create an agent of their own under **Settings → My agents** and give it items from their Personal space one at a time (*Can use* in the share sheet, or **Give to agent…** on several). A personal agent is not an organisation member; enrolment binds it to its owner's key, which the owner's browser checks, and the gateway pin for personal agents is the owner's own (`personal`), trust-on-first-use in practice. My agents shows each agent's activity; Revoke lists the items to rotate. The OAuth consent page lists *Your agents*.
+- Organisations get a *Personal agents* policy block, editable on every plan (`docs/policies.md`): switching it off suspends members' personal agents without deleting them. Admins see lifecycle events only (`personal_agent.create|verify|revoke|connect|suspended`) and a count under **Admin → Agents**, never what an agent holds.
+- Hosted: Personal 1 personal agent per person, Team 2, Business 5, outside the organisation's agent bundle. Self-hosted: up to 20 per person.
+- **On by default** wherever agent access is on. Switch them off for the whole server with `PERSONAL_AGENTS=off` on the API, or for one organisation's members with its policy.
+
 ## 1.8.0 — 2026-10-18
 
 Upgrading: migrations `20261025000000_org_plans` (two enums, seven columns on `Organization`, nullable or with defaults) and `20261026000000_agent_access` (a `UserKind` enum, a `kind` column on `User` with the default `person`, and six new tables: `Agent`, `AgentToken`, `AgentOAuthClient`, `AgentOAuthCode`, `AgentGrant`, `GatewayIdentity`) run on start. No `.env` change unless you want hosted plans (`BILLING_MODE=hosted`, docs/plans.md) or agent access (below).

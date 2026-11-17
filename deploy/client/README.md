@@ -291,9 +291,11 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
    # Only under a base path:
    location = /.well-known/oauth-authorization-server/vault { proxy_pass http://127.0.0.1:8080; }
    ```
-5. **Publish the gateway fingerprint** to your admins (they compare it when they verify an agent):
+5. **Publish the gateway fingerprint** to your admins (they compare it when they verify an agent), and to everyone who may create a personal agent:
 
        docker compose exec gateway /nodejs/bin/node dist/cli.js identity
+
+**Personal agents** (people's own agents, for their Personal space; `docs/agents.md`, *Personal agents*) are on with agent access. To switch them off for the whole server, set `PERSONAL_AGENTS=off` in `.env` and restart; an organisation can also switch them off for its own members in its policies. With AWS KMS, add `ownerUserId` to the key policy's allowed encryption-context keys before anyone creates one.
 
 Rules the gateway checks at start:
 - `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.

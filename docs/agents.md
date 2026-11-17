@@ -18,6 +18,8 @@ The People page routes refuse agents (`409 is_agent`). An agent is ended only by
 
 Hosted plans: Personal 0 agents, Team 3 (also during the Business trial), Business 10. Revoked agents don't count. A downgrade blocks new agents only. Self-hosted (`BILLING_MODE=off`): unlimited.
 
+People who aren't admins can have agents of their own, for their Personal space: see [Personal agents](#personal-agents).
+
 ## Enrolment and the gateway fingerprint
 
 1. **New agent** → name and an optional expiry. The API asks the gateway for a key. The gateway generates the key pair, wraps the private key, and signs `agent-key:<orgId>:<agentId>:<publicKey>` with its own Ed25519 **identity key** (the attestation, `g1.<keyId>.<signature>`). Gateway down: `503 gateway_unavailable`, and nothing is created.
@@ -80,7 +82,7 @@ The gateway offers two MCP tools. There is no tool that returns a credential.
 - `list_secrets` → the items the agent may use: `handle`, title, type, hosts, how it is sent, and methods/paths if set. Never a secret field. A **handle** is `<folder>/<title>`, slugged. The folder part names the folder that **holds the record's key** (for a record in a subfolder, the team folder it belongs to), or `shared` for a record shared directly. Duplicates get `-2`, `-3`.
 - `http_request` `{ item, method, url, headers?, body? }` → `{ status, headers, body, truncated? }`, or `{ error: "refused", reason }`. The gateway drops any `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` and policy header the agent sent, injects the real one, and scrubs the secret (raw, base64, base64url, URL-encoded, hex, JSON-escaped and the `username:secret` form) from the response headers and decompressed body as `[clane:redacted]`.
 
-Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session).
+Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session), and for personal agents `owner_key_changed` (the owner key the server reports isn't the one the agent was enrolled with; see [Personal agents](#personal-agents)).
 
 ## Connecting a client
 
@@ -141,11 +143,39 @@ Revoke then lists **the folders and records the gateway could open for this agen
 
 Events: `agent.create`, `agent.verify`, `agent.update`, `agent.revoke`, `agent.token_create`, `agent.token_revoke`, `agent.grant`, `agent.grant_revoke`, `agent.sync` (at most hourly), `agent.expired`, and from the gateway `agent.use`, `agent.refused`, `agent.reflected` (record, host, method, reason; never paths, query strings, bodies or values). `agent.use` is reported by the gateway itself.
 
+## Personal agents
+
+A **personal agent** belongs to one person and reaches only items in that person's Personal space. It is on wherever agent access is on, unless the operator sets `PERSONAL_AGENTS=off` on the API or an organisation's policy switches it off (below).
+
+**Who can create one.** Anyone signed in with a full session, under **Settings → My agents**: owners, admins and members alike. A session confined to one organisation (single sign-on without the authenticator code) is asked for the code first (`403 totp_step_up_required`).
+
+**It is not a member.** A personal agent has no membership in any organisation. It appears in no picker, team folder, group or People page, nobody else can share with it, and leaving an organisation doesn't touch it. Organisation agents are unchanged: admins create them under **Admin → Agents**, as above.
+
+**Personal items only, one at a time.** In the share sheet of an item in your Personal space (one you own, outside any team folder), the **Agents** section lists your verified agents, each with *None* or *Can use*. The restricted-credential warning stands above it every time. To give several items at once, select them in the list and choose **Give to agent…**. There is no folder or whole-vault grant: each item is a decision you make. Items in team folders and items other people shared with you can't be given (`409 team_record`). An agent holds at most 200 items (`409 agent_item_limit`). The item still needs its *Agent use* settings (the record editor shows them in the Personal space while personal agents are on); without them the agent lists it but can't use it. Handles are `personal/<title>`, slugged.
+
+**Enrolment is bound to you.** **New agent** asks the gateway for a key, as for an organisation agent, but the gateway signs `personal-agent-key:<your user id>:<your public key>:<agentId>:<publicKey>` and builds your public key into the wrapping of the agent's private key (a `k2.` envelope). Before you confirm, the verify dialog checks that the gateway signed the agent key, that the account key in the signed message is the one your browser derives from your own unlocked private key, and shows the agent and gateway fingerprints (*Pinned*, *New* or *Changed*). If anyone later substitutes another owner key on the server, the envelope no longer opens and every call is refused with `owner_key_changed`: there is no trust-on-first-use window for your own key. After an account reset that gives you a new key pair, your agents show *Needs re-enrolment*: revoke each one and create it again. A master password change affects nothing.
+
+**The `personal` pin, and its cost.** The gateway pin for personal agents lives in a slot `personal` for you, in that browser. The dialog compares the gateway identity with **every** gateway pin this browser holds for you (any organisation, or `personal`). There is one gateway per server, so a difference from any of them shows *Changed*, not *New*. You may re-pin a changed identity for the `personal` slot yourself, after the dialog shows the old and new fingerprints and the link to the published one; your agents then show *Needs re-enrolment*, as organisation agents do.
+
+**This weakens the bar, and here is the cost.** Admins are told to compare the fingerprint with the published one and mostly will. Ordinary users mostly will not, so for personal agents the gateway pin is trust-on-first-use in practice. A malicious API server could present its own "gateway" to a first-time user and receive every record key that user then grants. It could not do this to a user whose browser already holds a pin from an organisation. Mitigations: the dialog shows the published-fingerprint link and a one-line reason; the published fingerprint comes through a channel the server does not control. Phase 5 (enclave attestation checked by the browser) removes the problem.
+
+**Allowances.** Personal agents don't count against an organisation's agent bundle. Hosted: Personal 1 per person, Team 2, Business 5; a person in several organisations gets the highest allowance among their active memberships (the Personal plan's with none). Self-hosted (`BILLING_MODE=off`): up to 20 per person, the hard ceiling whatever the plan or policy says. Over it: `402 agent_limit` (`used`, `allowed`); after a downgrade existing agents keep working and only new ones are blocked. My agents shows *n of m agents*.
+
+**The organisation's policy.** Each organisation has a *Personal agents* block in **Organisation settings → Policies** (`docs/policies.md`), editable on every plan: *Members may use personal agents* (default on), *At most n per member* (default no limit) and two switches for later phases (saving items, reading values). For a person in several organisations the strictest wins: allowed only if every one allows it, and the smallest cap. The server enforces it: `POST /me/agents` answers `403 personal_agents_disabled` with the `orgId` that blocks it, and My agents names that organisation.
+
+**Suspension.** When an organisation the owner belongs to switches personal agents off, the owner's agents are **suspended, not deleted**: every call is refused (the gateway answers 401 and drops its cache), My agents shows *Suspended by an organisation's policy*, and that organisation's event log gets `personal_agent.suspended`. Nothing the owner stored or granted is touched. The agents work again when the policy allows them again, or when the owner leaves that organisation. A disabled owner account stops them too (`403 owner_inactive`).
+
+**Revocation and what to rotate.** **Revoke** in My agents removes every item from the agent, ends its tokens and connected apps, deletes its wrapped key and drops the gateway's cache, at once. It then lists **the items the gateway could open for it: change the credentials in them**, for the same reason as for organisation agents. Taking one item away (*None* in its share sheet) deletes that grant at once but doesn't rotate the record key (`docs/sharing.md`), so change the credential if it matters. Moving an item into a team folder, trashing or purging it takes it away from the agent in the same step.
+
+**Connecting a client.** **Connect** in My agents opens the same sheet: the URL, the snippets and **Create API token**. OAuth flows end on the consent page, which lists *Your agents*: you may allow your own agent there without being an admin.
+
+**What admins see and don't see.** The owner sees everything their agent did under **My agents → Activity** (`agent.use`, `agent.refused`, `agent.reflected`, with the item, host and method); those rows belong to no organisation. An admin sees, in their organisation's event log, lifecycle only, for members of that organisation: `personal_agent.create`, `personal_agent.verify`, `personal_agent.revoke`, `personal_agent.connect` (a token or OAuth grant was created) and `personal_agent.suspended`, each with the member as actor and the agent's id in `meta`. No agent name, item, title, host, count or mode. **Admin → Agents** has one line, *Personal agents: n across m members*, which opens a per-member count. An admin can't tell whether a member's agent holds one test key or two hundred passwords, and can't read, list or revoke it: an organisation that needs that control switches personal agents off and uses organisation agents. A row goes to each organisation the member belongs to, so a person in two organisations discloses "has a personal agent" to both.
+
 ## Keys at rest: KMS or a file key
 
 Each agent's private key is encrypted under its own random key (DEK), and the DEK is wrapped by the gateway's KEK. The result (`k1.…`) is stored in the API database, useless without the KEK. `GATEWAY_KEK` chooses the KEK:
 
-**AWS KMS** (`aws-kms:<key ARN>`). A symmetric KMS key. The gateway uses the default AWS credential chain (instance or task role). Limit the key policy to the gateway's role, not to engineers, and require the encryption context the gateway sends: `orgId` and `agentId` for agent keys, `purpose` (`gateway-identity`) for its own identity key:
+**AWS KMS** (`aws-kms:<key ARN>`). A symmetric KMS key. The gateway uses the default AWS credential chain (instance or task role). Limit the key policy to the gateway's role, not to engineers, and require the encryption context the gateway sends: `orgId` and `agentId` for organisation agents' keys, `agentId` and `ownerUserId` for personal agents' keys (`k2.`), `purpose` (`gateway-identity`) for its own identity key:
 
 ```json
 {
@@ -154,13 +184,15 @@ Each agent's private key is encrypted under its own random key (DEK), and the DE
   "Principal": { "AWS": "arn:aws:iam::<account>:role/<gateway-role>" },
   "Action": ["kms:Encrypt", "kms:Decrypt"],
   "Resource": "*",
-  "Condition": { "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": ["orgId", "agentId", "purpose"] }, "Null": { "kms:EncryptionContextKeys": "false" } }
+  "Condition": { "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": ["orgId", "agentId", "ownerUserId", "purpose"] }, "Null": { "kms:EncryptionContextKeys": "false" } }
 }
 ```
 
-CloudTrail then logs every unwrap, with the org and agent: the operator-side audit trail.
+**Add `ownerUserId` to that list before anyone enrols a personal agent.** A key policy that still lists only `orgId`, `agentId` and `purpose` refuses the gateway's call, and creating a personal agent fails.
 
-**Google Cloud KMS** (`gcp-kms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`). The gateway calls the Cloud KMS REST API with credentials from the metadata server (the attached service account, on GCE, GKE or Cloud Run). Grant that service account `roles/cloudkms.cryptoKeyEncrypterDecrypter` on this key only. The org and agent ids go in as additional authenticated data; Cloud Audit Logs record each call when data-access logging is on for Cloud KMS.
+CloudTrail then logs every unwrap, with the org (or owner) and agent: the operator-side audit trail.
+
+**Google Cloud KMS** (`gcp-kms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`). The gateway calls the Cloud KMS REST API with credentials from the metadata server (the attached service account, on GCE, GKE or Cloud Run). Grant that service account `roles/cloudkms.cryptoKeyEncrypterDecrypter` on this key only. The org (or owner) and agent ids go in as additional authenticated data; Cloud Audit Logs record each call when data-access logging is on for Cloud KMS.
 
 **File key** (`file:<path to 32 random bytes>`, the compose default). Weaker: the key sits on the same host as the gateway, so anyone who can read the host's disk or the secret file can unwrap every agent key whose ciphertext they also get from the database. There's no external audit trail of unwraps.
 
@@ -179,6 +211,7 @@ On the **API** (`.env`). Agent access is off unless `GATEWAY_INTERNAL_URL` is se
 | `GATEWAY_API_TOKEN` | Shared secret with the gateway, 32+ characters. |
 | `AGENT_TOKEN_PRIVATE_KEY` | P-256 PKCS#8 PEM that signs agent access tokens (`\n` for newlines on one line). |
 | `GATEWAY_ACCEPT_NEW_IDENTITY` | `true` accepts and pins a changed gateway identity. Default `false`. |
+| `PERSONAL_AGENTS` | `on` (default) or `off`. Off: nobody on this server can have a personal agent, whatever organisations allow. `/me/agents*`, `/records/:id/agent-grants*` and the admin count answer 404, the web app shows no *My agents*, and existing personal agents stop working. |
 
 On the **gateway**:
 
@@ -208,18 +241,24 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 | Status | Code | Where |
 |---|---|---|
 | 400 | `agent_use_only` | Sharing more than *Use* with an agent. |
-| 400 | `user_not_active` | Sharing with an agent that isn't verified yet. |
+| 400 | `user_not_active` | Sharing with an agent that isn't verified yet, or giving an item to a personal agent that isn't yours, verified and live. |
 | 400 | `invalid_client` | OAuth: unknown client. |
 | 400 | `invalid_redirect_uri` | Consent page: the redirect URI isn't one the client registered. |
 | 400 | `invalid_request`, `invalid_grant`, `unsupported_grant_type`, `invalid_target` | OAuth (RFC 6749). |
 | 401 | `invalid_client` | OAuth: an API token exchange that didn't come from the gateway (no valid `X-Gateway-Token`). |
 | 401 | `unauthorized` | Bad or revoked token or grant; gateway: with `WWW-Authenticate` (`error="invalid_token"` when a token was sent). |
-| 402 | `agent_limit` (`used`, `allowed`) | Hosted: no free agent slot. |
+| 402 | `agent_limit` (`used`, `allowed`) | Hosted: no free agent slot. Personal agents: over the person's allowance or the policy's cap. |
 | 403 | `agent_expired`, `agent_unverified` | The agent expired, or isn't verified. |
+| 403 | `personal_agents_disabled` (`orgId`) | An organisation the person belongs to switched personal agents off: creating one, or any call of a suspended one. |
+| 403 | `owner_inactive` | A personal agent whose owner's account is disabled. |
+| 403 | `totp_step_up_required` | My agents from a session confined to one organisation: confirm the authenticator code first. |
 | 403 | `forbidden` | Gateway: an MCP session used with another agent's token. |
 | 409 | `stale_key` | Verify: the key isn't the agent's current key. |
 | 409 | `is_agent` | A People page action on an agent. |
 | 409 | `agent_revoked` | Changing a revoked agent. |
+| 409 | `agent_item_limit` | A personal agent already holds 200 items. |
+| 409 | `team_record` | Giving a personal agent an item in a team folder. |
+| 409 | `already_shared` | Giving a personal agent an item it already holds through another row. |
 | 429 | `rate_limited` | With `Retry-After`. |
 | 503 | `gateway_unavailable` | The API can't reach the gateway; nothing was created. |
 | 503 | `gateway_identity_changed` | The gateway identity changed; see above. |
@@ -230,5 +269,6 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 - **The gateway operator can read agent-scoped items.** Hosted, that's Clane; self-hosted, it's you. While an agent is live, the gateway holds its wrapped key and the KEK, so it could decrypt any item shared with the agent at any time, not only at use time. Items never shared with an agent stay end-to-end encrypted.
 - **A hijacked agent** (prompt injection) can't see a value, but can make legitimate-looking calls to an allowed host with bad intent. Narrow hosts, methods and paths, and give agents restricted credentials.
 - **A host that re-encodes the secret** in a form the scrubber doesn't know can get it into a response, and so to the model provider.
-- **Trust on first use** of the gateway identity, per user, as above.
+- **Trust on first use** of the gateway identity, per user, as above. For personal agents it is trust-on-first-use in practice: owners rarely compare the fingerprint (see [Personal agents](#personal-agents)).
+- **Admins can't see what personal agents hold.** By design; an organisation that needs to audit it switches personal agents off.
 - **JavaScript can't guarantee zeroing.** The gateway zeroes key and secret buffers after each call, but decrypted values also exist as JavaScript strings, which can't be zeroed, and the garbage collector may copy buffers. Core dumps, the inspector, heap snapshots and diagnostic reports are off. The real answer is running the gateway in an enclave (Phase 5), with an attestation your browser checks, so that not even the operator can read agent-scoped items.

@@ -52,12 +52,21 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 |---|---|---|---|
 | Records never shared to an agent | ciphertext only (unchanged) | nothing (no key reaches it) | nothing |
 | Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
+| Personal items with *Can use* (a person's own agent) | ciphertext only | **plaintext at use time**; could decrypt any time while the agent is live | names, hosts, policy; responses with the secret scrubbed |
 | Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
 | Who used what, where, when | metadata events | metadata log | its own calls |
 
 *Sharing with an agent makes those items readable by the gateway operator. Everything else stays end-to-end encrypted.*
 
 Residual risks, which no mitigation in this release removes:
+
+- **Non-admin users pin the gateway: trust-on-first-use in practice.** A person who creates a personal agent pins the
+  gateway identity themselves, and most won't compare its fingerprint with the published one. A malicious API server
+  could present its own "gateway" to a first-time user and receive every record key that user then gives their agent.
+  It can't do this to a user whose browser already holds a pin from an organisation. See
+  [docs/agents.md](docs/agents.md#personal-agents).
+- **Admins don't see what personal agents hold.** An organisation's event log shows only that a member created,
+  verified, connected or revoked a personal agent; an organisation that needs more control switches personal agents off.
 
 - **A hijacked agent** (prompt injection) can make legitimate-looking calls to an allowed host with bad intent (delete
   the repo, email the customer list). Per-path policy narrows it; nothing removes it.

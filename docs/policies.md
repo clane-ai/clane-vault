@@ -18,6 +18,8 @@ and missing fields take their defaults. Every change is logged as `org.policies_
 | `extensionAllowed`: the browser extension | on | Clients |
 | `breachCheckAllowed`: members may opt in to the Have I Been Pwned check (`docs/password-health.md`) | on | Web app |
 | `ipAllowlist`: IPv4 and IPv6 CIDRs that may reach the organisation (empty means anywhere) | `[]` | Server, on every org-scoped request |
+| `personalAgents.allowed`, `personalAgents.maxPerMember` (1–20, null for no limit): members may have personal agents, and how many (`docs/agents.md`) | on, null | Server (`/me/agents`, every call of a personal agent) |
+| `personalAgents.write`, `personalAgents.reveal` (`off`, `approval`, `standing`): for later releases | on, `approval` | Server |
 | `ownerBreakGlass`: the owner reaches the organisation from anywhere despite the allowlist | on | Server |
 
 ## How clients read them
@@ -65,11 +67,28 @@ links that carry files; links without files stay.
 ## File attachments
 
 The policy applies to records the organisation's access goes through: its team records, and records shared in it (a
-member's own private records follow no organisation's policy). With `attachments.allowed` off, new uploads answer `403
+member's own private records follow no organisation's policy, except `personalAgents`: see below). With `attachments.allowed` off, new uploads answer `403
 attachments_disabled`; files already attached stay listed and downloadable, and can be removed. `attachments.maxFileMb`
 lowers the per-file limit (`413 file_too_large` with `max`); the server's own limit (`ATTACHMENT_MAX_FILE_MB`) always
 applies. `attachments.previews` off makes every file download-only in the app (the server can't tell a preview from a
 download, so this one is a client policy). See `docs/attachments.md`.
+
+## Personal agents
+
+A member's own private records follow no organisation's policy, with **one exception: `personalAgents`**. It is the
+only policy that reaches members' Personal space, because a company may not want accounts it manages to send any secret
+to a gateway. It can switch personal agents off and cap how many each member has; it can't read, list or revoke an
+individual's agent, or show what it was given (`docs/agents.md`, *Personal agents*).
+
+- It is editable on **every plan**, Team included: it protects the members' accounts, so it isn't a Business feature.
+- It has its own form and route (`PUT /admin/settings/policies/personal-agents`). A full `PUT /admin/settings/policies`
+  without the `personalAgents` key keeps the stored block.
+- For a member of several organisations the strictest applies: allowed only if every organisation allows it, the
+  smallest `maxPerMember`.
+- Switching `allowed` off **suspends** the members' agents at once (`403 personal_agents_disabled` on every call;
+  `personal_agent.suspended` in the event log). They aren't deleted: they work again when it's switched back on, or when
+  the member leaves the organisation. A lower `maxPerMember` blocks new agents only.
+- The server operator's `PERSONAL_AGENTS=off` turns the feature off for everyone, whatever the policy says.
 
 ## IP allowlist
 
@@ -106,3 +125,4 @@ address allowed) rather than open.
 |---|---|---|
 | GET | `/admin/settings/policies` | `{ policies, changedAt, changedBy, yourIp }` (owners and admins) |
 | PUT | `/admin/settings/policies` | The full policy object (unknown keys are refused). `403 owner_only`, `409 would_lock_out` |
+| PUT | `/admin/settings/policies/personal-agents` | The `personalAgents` block only, on every plan (owners and admins) |

@@ -1,0 +1,219 @@
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { expect, test, type Browser, type Page } from "@playwright/test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, settingsPage, switchSpace, totp } from "../helpers";
+
+// Personal agents, Phase A end to end (docs/design/2026-11-15-personal-agents.md §3): a member (not an admin) enrols an
+// agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
+// by policy; a move into a team folder takes the item away; revoke ends it.
+test.describe.configure({ mode: "serial" });
+
+const PW = "an e2e master password";
+const CANARY = "sk_test_PERSONAL_CANARY";
+const AGENT_WARNING = "Give agents restricted credentials: a Stripe restricted key, a read-only database user, a scoped token. Never a root or owner credential. What you share here can be read by the gateway and used by whatever drives the agent.";
+const MCP_URL = `http://localhost:${process.env.E2E_GATEWAY_PORT ?? 3002}/mcp`;
+const id = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+const MEMBER = `Member ${id}`;
+
+async function register(page: Page, invitePath: string, name: string) {
+  await page.goto(invitePath);
+  await page.getByLabel("Your name").fill(name);
+  await page.getByLabel("Master password", { exact: true }).fill(PW);
+  await page.getByLabel("Repeat master password").fill(PW);
+  await page.getByRole("button", { name: "Create account" }).click();
+  const keyText = await page.getByText(/Enter this key:\s*[A-Z2-7]{16,}/).textContent({ timeout: 60_000 });
+  await page.getByLabel("6-digit code").fill(await totp(keyText!.split(":")[1]!.trim()));
+  await page.getByRole("button", { name: "Turn on and continue" }).click();
+  await saveRecoveryKit(page);
+  await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible({ timeout: 30_000 });
+}
+
+async function mcp(token: string): Promise<Client> {
+  const client = new Client({ name: "e2e-personal", version: "1.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(MCP_URL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  return client;
+}
+const listSecrets = async (token: string) => { const c = await mcp(token); try { return JSON.stringify(await c.callTool({ name: "list_secrets", arguments: {} })); } finally { await c.close().catch(() => {}); } };
+/**
+ * The HTTP status of a tool call on a fresh MCP session: 200 while the agent works, 401 once it is suspended or revoked.
+ * A suspension shows at the first call that reaches the API's agent routes, as an expiry does (initialize alone still works).
+ */
+const callStatus = (token: string) => listSecrets(token).then(() => 200, (e: { code?: number }) => e.code ?? 0);
+
+// Its own upstream on its own (OS-chosen) port, apart from agents.spec.ts's: echo.test maps to 127.0.0.1 in the gateway.
+let echo: Server;
+let echoPort = 0;
+const received: IncomingHttpHeaders[] = [];
+let admin: Page;
+let member: Page;
+let token = "";
+
+test.beforeAll(async ({ browser }: { browser: Browser }) => {
+  echo = createServer((req, res) => {
+    received.push(req.headers);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ path: req.url, headers: req.headers }));
+  });
+  await new Promise<void>((ok) => echo.listen(0, "127.0.0.1", ok));
+  echoPort = (echo.address() as AddressInfo).port;
+  const ctx = () => browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
+  admin = await (await ctx()).newPage();
+  member = await (await ctx()).newPage();
+  const org = newOrg(`Personal agents ${id}`);
+  await register(admin, newInvite(`e2e-pa-owner-${id}@clane.ai`, "owner", org), "PA Owner");
+  await register(member, newInvite(`e2e-pa-member-${id}@clane.ai`, "member", org), MEMBER);
+});
+// The member's page is the one most steps drive: keep what it showed when a step fails.
+test.afterEach(async ({}, info) => { if (info.status !== info.expectedStatus) await member?.screenshot({ path: info.outputPath("member.png") }).catch(() => {}); });
+test.afterAll(async () => {
+  await admin?.context().close();
+  await member?.context().close();
+  await new Promise<void>((ok) => echo.close(() => ok()));
+});
+
+const myAgentRow = (p: Page) => p.getByRole("list", { name: "My agents" }).getByRole("listitem", { name: "My helper" });
+
+test("1. the member creates and verifies a personal agent", async () => {
+  await settingsPage(member, "My agents");
+  await member.getByRole("button", { name: "New agent" }).click();
+  await member.getByLabel("Name").fill("My helper");
+  await member.getByRole("button", { name: "Create" }).click();
+  const verify = member.getByRole("dialog", { name: "Verify My helper" });
+  const fingerprints = verify.locator("dd");
+  await expect(fingerprints).toHaveCount(2, { timeout: 30_000 });
+  for (const fp of await fingerprints.all()) await expect(fp).toHaveText(/[0-9A-Za-z]{4}/);
+  await verify.getByRole("button", { name: "Matches" }).click();
+  await expect(verify).toHaveCount(0, { timeout: 30_000 });
+  await expect(myAgentRow(member).getByText("Active", { exact: true })).toBeVisible({ timeout: 30_000 });
+});
+
+test("2. a Personal API key item, given to the agent at Can use, under the warning", async () => {
+  await member.getByRole("link", { name: /^Vault/ }).click();
+  await expect(member).toHaveURL(/\/p\/vault$/);
+  await member.getByRole("button", { name: "New", exact: true }).click();
+  await member.getByRole("menuitem", { name: "Record", exact: true }).click();
+  const newDlg = member.getByRole("dialog");
+  await newDlg.getByRole("combobox", { name: "Record Type" }).click();
+  await member.getByRole("option", { name: "API key / secret" }).click();
+  await newDlg.getByLabel("Title").fill("Echo");
+  await newDlg.getByRole("button", { name: "Next" }).click();
+  await member.getByLabel("Secret", { exact: true }).and(member.locator("input")).fill(CANARY);
+  const agentUse = member.getByRole("region", { name: "Agent use" });
+  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
+  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
+  await member.getByRole("button", { name: "Save" }).click();
+  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await member.getByRole("button", { name: /^No folder/ }).click();
+  await member.getByRole("button", { name: /Echo/ }).click();
+  await expect(member.getByRole("heading", { name: "Echo" })).toBeVisible({ timeout: 30_000 });
+
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
+  await expect(agents.getByRole("note", { name: "Sharing with an agent" })).toContainText(AGENT_WARNING);
+  await agents.getByRole("combobox", { name: "Access for My helper" }).click();
+  await member.getByRole("option", { name: "Can use" }).click();
+  await expect(agents.getByRole("combobox", { name: "Access for My helper" })).toHaveText("Can use", { timeout: 30_000 });
+  await expect(agents.getByRole("alert")).toHaveCount(0);
+  await member.keyboard.press("Escape");
+});
+
+test("3. over MCP the agent lists personal/echo without its value and uses it, scrubbed", async () => {
+  await settingsPage(member, "My agents");
+  await myAgentRow(member).getByRole("button", { name: "Connect My helper" }).click();
+  const tokens = member.getByRole("region", { name: "API tokens" });
+  await tokens.getByRole("button", { name: "Create API token" }).click();
+  token = (await tokens.locator("code").filter({ hasText: /^cvat_/ }).textContent({ timeout: 30_000 }))!.trim();
+  expect(token).toMatch(/^cvat_[^_]+_[A-Za-z0-9_-]{43}$/);
+  await member.keyboard.press("Escape");
+
+  const client = await mcp(token);
+  const listed = JSON.stringify(await client.callTool({ name: "list_secrets", arguments: {} }));
+  expect(listed).toContain("personal/echo");
+  expect(listed).not.toContain(CANARY);
+  const used = JSON.stringify(await client.callTool({ name: "http_request",
+    arguments: { item: "personal/echo", method: "GET", url: `http://echo.test:${echoPort}/headers` } }));
+  expect(received.at(-1)?.authorization).toBe(`Bearer ${CANARY}`);
+  expect(used).toContain("[clane:redacted]");
+  expect(used).not.toContain(CANARY);
+  await client.close();
+});
+
+test("4. the owner sees the use; the admin sees only the lifecycle and a count", async () => {
+  await member.reload();
+  await member.getByLabel("Master password").fill(PW);
+  await member.getByRole("button", { name: "Unlock" }).click();
+  await myAgentRow(member).getByRole("button", { name: "Activity of My helper" }).click();
+  const activity = member.getByRole("dialog", { name: "My helper: activity" });
+  await expect(activity.getByRole("listitem").filter({ hasText: "agent.use" }).filter({ hasText: "Echo" })).toHaveCount(1, { timeout: 30_000 });
+  await member.keyboard.press("Escape");
+
+  await adminPage(admin, "Event log");
+  await expect(admin.getByRole("row").filter({ hasText: "personal_agent.create" }).filter({ hasText: MEMBER })).toHaveCount(1, { timeout: 30_000 });
+  await expect(admin.getByRole("row").filter({ hasText: /Echo|echo\.test/ })).toHaveCount(0);
+  await adminPage(admin, "Agents");
+  await expect(admin.getByRole("button", { name: "Personal agents: 1 across 1 member" })).toBeVisible({ timeout: 30_000 });
+});
+
+async function setPersonalAgents(allowed: boolean) {
+  await adminPage(admin, "Policies");
+  const block = admin.getByRole("region", { name: "Personal agents" });
+  const sw = block.getByRole("switch", { name: "Members may use personal agents" });
+  await expect(sw).toBeVisible({ timeout: 30_000 });
+  if ((await sw.getAttribute("aria-checked")) !== String(allowed)) await sw.click();
+  await block.getByRole("button", { name: "Save personal agents" }).click();
+  await expect(admin.getByText("Personal agents policy saved")).toBeVisible({ timeout: 30_000 });
+}
+
+test("5. the organisation's policy suspends the agent, and lifts the suspension", async () => {
+  await setPersonalAgents(false);
+  expect(await callStatus(token)).toBe(401);
+  await member.reload();
+  await member.getByLabel("Master password").fill(PW);
+  await member.getByRole("button", { name: "Unlock" }).click();
+  await expect(myAgentRow(member).getByText(/^Suspended/)).toBeVisible({ timeout: 30_000 });
+
+  await setPersonalAgents(true);
+  expect(await callStatus(token)).toBe(200);
+  expect(await listSecrets(token)).toContain("personal/echo");
+});
+
+test("6. moved into a team folder the item leaves the agent; revoke ends it", async () => {
+  // A personal record reaches the organisation's space only while it is shared there: share it with the admin, then move it.
+  await member.getByRole("link", { name: /^Vault/ }).click();
+  await switchSpace(member, { firstOrg: true });
+  const folderDlg = await newSharedFolder(member);
+  await folderDlg.getByLabel("Folder name").fill("Ops");
+  await folderDlg.getByRole("button", { name: "Create" }).click();
+  await expect(member.getByRole("button", { name: /^Ops/ })).toBeVisible({ timeout: 30_000 });
+  await switchSpace(member, "Personal");
+  await member.getByRole("button", { name: /^No folder/ }).click();
+  await member.getByRole("button", { name: /Echo/ }).click();
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const share = member.getByRole("dialog");
+  await share.getByRole("combobox", { name: "Person", exact: true }).click();
+  await member.getByRole("option", { name: /PA Owner/ }).click();
+  await share.getByRole("combobox", { name: "Permission for new person" }).click();
+  await member.getByRole("option", { name: "Can view" }).click();
+  await share.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(share.getByRole("link", { name: /^Manage in / })).toBeVisible({ timeout: 30_000 });
+  await member.keyboard.press("Escape");
+
+  await switchSpace(member, { firstOrg: true });
+  await member.getByRole("button", { name: /^Shared directly/ }).click();
+  await member.getByRole("button", { name: /Echo/ }).click();
+  await member.getByRole("button", { name: "Options", exact: true }).click();
+  await member.getByRole("menuitem", { name: "Move To" }).click();
+  await member.getByRole("menuitem", { name: "Ops" }).click();
+  await expect(member.getByRole("button", { name: /^Ops/ })).toContainText("1 record", { timeout: 30_000 });
+  const listed = await listSecrets(token);
+  expect(listed).not.toContain("personal/echo");
+  expect(listed).not.toContain('"isError":true');
+
+  await settingsPage(member, "My agents");
+  await myAgentRow(member).getByRole("button", { name: "Revoke My helper" }).click();
+  const revoke = member.getByRole("dialog", { name: "Revoke My helper?" });
+  await revoke.getByRole("button", { name: "Revoke" }).click();
+  await expect(revoke.getByText(/couldn't open anything|Change the credentials/)).toBeVisible({ timeout: 30_000 });
+  expect(await callStatus(token)).toBe(401);
+});
