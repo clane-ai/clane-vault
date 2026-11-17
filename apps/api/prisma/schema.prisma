@@ -375,6 +375,23 @@ model Record {
   access    RecordAccess[]
   links     ShareLink[]
   attachments Attachment[]
+  agentOverwrites RecordAgentOverwrite[]
+}
+
+/// A personal agent's update to a record (spec §5): the body it replaced, so the owner can restore it. The newest 5 per record, for 30 days.
+model RecordAgentOverwrite {
+  id          String    @id @default(uuid()) @db.Uuid
+  recordId    String    @db.Uuid
+  record      Record    @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  agentId     String    @db.Uuid
+  prevEncBody String
+  newRevision Int
+  /// u1.<gatewayKeyId>.<sig> over the body written at newRevision
+  signature   String
+  ackedAt     DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([recordId])
 }
 
 model RecordAccess {
@@ -391,6 +408,8 @@ model RecordAccess {
   orgId            String?     @db.Uuid
   org              Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   state            AccessState @default(active)
+  /// A personal agent's row: the owner allowed it to update the record (PATCH /records/:id/agent-grants/:agentId only).
+  agentWrite       Boolean     @default(false)
   createdAt        DateTime    @default(now())
 
   @@unique([recordId, holderType, holderId])

@@ -79,7 +79,7 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
   const ownerUserId = a.ownerUserId!;
   const [rows, rules, deposits, unkept] = await Promise.all([
     db.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId, orgId: null, state: "active", record: { ownerId: ownerUserId } }, orderBy: { createdAt: "asc" },
-      select: { wrappedRecordKey: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
+      select: { wrappedRecordKey: true, agentWrite: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
     personalAgentRules(db, cfg, ownerUserId),
     db.agentDeposit.findMany({ where: { agentId: agentUserId }, orderBy: { createdAt: "asc" }, select: { id: true, encBody: true, revision: true, agentSealedKey: true } }),
     db.agentDeposit.count({ where: { ownerUserId } }),
@@ -87,8 +87,8 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
   return {
     owner: { userId: ownerUserId, publicKey: a.owner!.publicKey }, // current: the gateway refuses when it no longer matches the attestation
     agentId: agentUserId, publicKey: a.publicKey, wrappedPrivateKey: a.wrappedPrivateKey, kekId: a.kekId, expiresAt: a.expiresAt?.toISOString() ?? null,
-    records: rows.filter((r) => recordOrgOf(r.record) === null).map(({ wrappedRecordKey, record: r }) => ({
-      id: r.id, encBody: r.encBody, revision: r.revision, wrappedRecordKey: wrappedRecordKey!, write: false, deletedAt: r.deletedAt?.toISOString() ?? null })),
+    records: rows.filter((r) => recordOrgOf(r.record) === null).map(({ wrappedRecordKey, agentWrite, record: r }) => ({
+      id: r.id, encBody: r.encBody, revision: r.revision, wrappedRecordKey: wrappedRecordKey!, write: agentWrite && rules.write, deletedAt: r.deletedAt?.toISOString() ?? null })),
     reveal: [] as never[], deposits,
     inboxFree: Math.max(0, DEPOSIT_INBOX_LIMIT - unkept), // the limit is the owner's, across all their agents (F2)
     policy: { write: rules.write, reveal: rules.reveal },
@@ -107,9 +107,15 @@ export async function connectedApp(db: Db, a: FastifyRequest["agent"]): Promise<
   return (g && (await db.agentOAuthClient.findUnique({ where: { id: g.clientId }, select: { name: true } }))?.name) ?? "";
 }
 
-/** The periodic sweep: deletes unkept deposits older than 90 days. Returns how many rows went. */
+/** Kept overwrites per record (the newest), and how long. */
+export const OVERWRITE_KEEP = 5;
+export const OVERWRITE_TTL_MS = 30 * 86400e3;
+
+/** The periodic sweep: deletes unkept deposits older than 90 days and overwrites older than 30. Returns how many rows went. */
 export async function sweepAgentWrites(prisma: PrismaClient, now = new Date()): Promise<number> {
-  return (await prisma.agentDeposit.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - DEPOSIT_TTL_MS) } } })).count;
+  const d = await prisma.agentDeposit.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - DEPOSIT_TTL_MS) } } });
+  const o = await prisma.recordAgentOverwrite.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - OVERWRITE_TTL_MS) } } });
+  return d.count + o.count;
 }
 
 export interface PersonalRotation { records: { id: string }[]; revealed: { id: string; fields: string[] }[] }

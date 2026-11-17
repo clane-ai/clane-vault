@@ -65,3 +65,7 @@ export const sha256B64 = (text: string): string => createHash("sha256").update(t
 /** agentDepositMessage from @clane-vault/crypto (a test pins them byte for byte). */
 export const depositMessage = (m: { ownerUserId: string; ownerPublicKey: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
   `agent-deposit:${m.ownerUserId}:${m.ownerPublicKey}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+
+/** agentUpdateMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const updateMessage = (m: { ownerUserId: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
+  `agent-update:${m.ownerUserId}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;

@@ -33,3 +33,26 @@ ALTER TABLE "AgentDeposit" ADD CONSTRAINT "AgentDeposit_agentId_fkey" FOREIGN KE
 
 -- As Record.type (migration 20261020000000_record_item_type).
 ALTER TABLE "AgentDeposit" ADD CONSTRAINT "AgentDeposit_type_check" CHECK ("type" IN ('login', 'item'));
+
+-- AlterTable
+ALTER TABLE "RecordAccess" ADD COLUMN     "agentWrite" BOOLEAN NOT NULL DEFAULT false;
+
+-- CreateTable
+CREATE TABLE "RecordAgentOverwrite" (
+    "id" UUID NOT NULL,
+    "recordId" UUID NOT NULL,
+    "agentId" UUID NOT NULL,
+    "prevEncBody" TEXT NOT NULL,
+    "newRevision" INTEGER NOT NULL,
+    "signature" TEXT NOT NULL,
+    "ackedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "RecordAgentOverwrite_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "RecordAgentOverwrite_recordId_idx" ON "RecordAgentOverwrite"("recordId");
+
+-- AddForeignKey
+ALTER TABLE "RecordAgentOverwrite" ADD CONSTRAINT "RecordAgentOverwrite_recordId_fkey" FOREIGN KEY ("recordId") REFERENCES "Record"("id") ON DELETE CASCADE ON UPDATE CASCADE;

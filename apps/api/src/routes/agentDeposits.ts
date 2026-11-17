@@ -1,17 +1,18 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { depositMessage, gatewaySigned, sha256B64 } from "../lib/agents.js";
+import { depositMessage, gatewaySigned, sha256B64, updateMessage } from "../lib/agents.js";
 import { ensureIdentity, reqMeta } from "../lib/agentAdmin.js";
 import { logEvent } from "../lib/events.js";
 import { lockUser } from "../lib/orgs.js";
-import { isUniqueViolation, type Db } from "../lib/access.js";
+import { isUniqueViolation, recordOrgOf, type Db } from "../lib/access.js";
 import { isPrivateLocked } from "../lib/privateLock.js";
 import { agentRateKey } from "../plugins/agent.js";
-import { AGENT_ITEM_LIMIT, DEPOSIT_INBOX_LIMIT, DEPOSIT_TTL_MS, connectedApp, personalAgentRules } from "../lib/personalAgents.js";
+import { AGENT_ITEM_LIMIT, DEPOSIT_INBOX_LIMIT, DEPOSIT_TTL_MS, OVERWRITE_KEEP, connectedApp, personalAgentRules } from "../lib/personalAgents.js";
 
 const envelope = z.string().startsWith("v1.").max(65536);
 const sealed = z.string().startsWith("s1.").max(4096);
 const signature = z.string().regex(/^d1\.[^.]+\.[^.]+$/).max(512);
+const updateSignature = z.string().regex(/^u1\.[^.]+\.[^.]+$/).max(512);
 const idParam = z.object({ id: z.string().uuid() });
 
 /**
@@ -25,10 +26,11 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
   }] };
   const refuse = (reply: FastifyReply, error: "not_writable" | "conflict" | "inbox_full") => reply.code(409).send({ error });
 
+  const pinnedIdentity = async () => await app.prisma.gatewayIdentity.findUnique({ where: { id: "gateway" } }) ?? await ensureIdentity(app);
   /** The owner's current key and whether the pinned gateway identity signed this body at `revision` for them. */
   async function signedByGateway(a: FastifyRequest["agent"], b: { id: string; encBody: string; signature: string }, revision: number) {
     const owner = await app.prisma.user.findUniqueOrThrow({ where: { id: a.ownerUserId! }, select: { publicKey: true } });
-    const identity = await app.prisma.gatewayIdentity.findUnique({ where: { id: "gateway" } }) ?? await ensureIdentity(app);
+    const identity = await pinnedIdentity();
     return gatewaySigned(b.signature, "d1", depositMessage({ ownerUserId: a.ownerUserId!, ownerPublicKey: owner.publicKey, agentId: a.userId, id: b.id, revision,
       encBodyHash: sha256B64(b.encBody) }), identity);
   }
@@ -75,6 +77,35 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
       const n = await tx.agentDeposit.updateMany({ where: { id, agentId: a.userId, revision: b.revision },
         data: { encBody: b.encBody, signature: b.signature, revision: b.revision + 1 } });
       return n.count ? null : "conflict" as const;
+    });
+    return r ? refuse(reply, r) : { id, revision: b.revision + 1 };
+  });
+
+  /**
+   * update_secret on a record the owner allowed (agentWrite): under the record's row lock the previous body becomes an
+   * overwrite (the newest OVERWRITE_KEEP stay), then the body and revision change. Record.type is never changed.
+   */
+  app.put("/agent/records/:id", agentOpts, async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const b = z.object({ encBody: envelope, revision: z.number().int().min(1), signature: updateSignature }).parse(req.body);
+    const a = req.agent;
+    if (!(await writable(a))) return refuse(reply, "not_writable");
+    const identity = await pinnedIdentity();
+    const r = await app.prisma.$transaction(async (tx) => {
+      if (!(await stillWritable(tx, a.userId))) return "not_writable" as const;
+      await tx.$queryRaw`SELECT id FROM "Record" WHERE id = ${id}::uuid FOR UPDATE`; // after the agent's lock: one order everywhere
+      const rec = await tx.record.findFirst({ where: { id, ownerId: a.ownerUserId!, deletedAt: null,
+        access: { some: { holderType: "user", holderId: a.userId, state: "active", agentWrite: true } } }, select: { encBody: true, revision: true, folder: { select: { kind: true, orgId: true } } } });
+      if (!rec || recordOrgOf(rec) !== null) return "not_writable" as const;
+      if (rec.revision !== b.revision) return "conflict" as const;
+      if (!gatewaySigned(b.signature, "u1", updateMessage({ ownerUserId: a.ownerUserId!, agentId: a.userId, id, revision: b.revision + 1, encBodyHash: sha256B64(b.encBody) }), identity))
+        return "conflict" as const;
+      await tx.recordAgentOverwrite.create({ data: { recordId: id, agentId: a.userId, prevEncBody: rec.encBody, newRevision: b.revision + 1, signature: b.signature } });
+      const old = await tx.recordAgentOverwrite.findMany({ where: { recordId: id }, orderBy: { newRevision: "desc" }, skip: OVERWRITE_KEEP, select: { id: true } });
+      if (old.length) await tx.recordAgentOverwrite.deleteMany({ where: { id: { in: old.map((o) => o.id) } } });
+      await tx.record.update({ where: { id }, data: { encBody: b.encBody, revision: b.revision + 1 } });
+      await logEvent(tx, { actorId: a.userId, action: "agent.update", recordId: id });
+      return null;
     });
     return r ? refuse(reply, r) : { id, revision: b.revision + 1 };
   });

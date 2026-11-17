@@ -301,7 +301,7 @@ describe("writes against revocation (fix round 1)", () => {
         call(owner, "DELETE", `/me/agents/${agent.id}`),
       ]);
       expect(rv.statusCode).toBe(200);
-      expect([201, 409]).toContain(k.statusCode);
+      expect([201, 404, 409]).toContain(k.statusCode); // 404: the revoke committed before Keep found the deposit
       expect(await t.prisma.record.count({ where: { id: d.body.id } })).toBe(k.statusCode === 201 ? 1 : 0);
       expect(await t.prisma.agentDeposit.count({ where: { id: d.body.id } })).toBe(0);
       expect(await t.prisma.recordAccess.count({ where: { holderId: agent.id } })).toBe(0);
