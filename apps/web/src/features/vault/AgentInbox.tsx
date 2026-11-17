@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { Navigate } from "react-router";
 import { Inbox, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ApiError } from "@/lib/api";
+import { useSpacePaths } from "@/lib/space";
 import { relativeTime } from "@/lib/time";
 import { useMyAgents, type MyAgent } from "@/features/settings/myAgents";
 import { DepositChangedError, useAgentInbox, useDeleteDeposit, useKeepDeposit, usePinPersonalGateway, type OpenedDeposit } from "./useAgentInbox";
@@ -21,30 +24,51 @@ function expiryLine(d: OpenedDeposit, now = Date.now()) {
   return `Deleted in ${n} ${n === 1 ? "day" : "days"} unless you keep it.`;
 }
 
-function Meta({ d }: { d: OpenedDeposit }) {
+/** `agentName`: from My agents for the signed agentId (the server's name for it isn't signed). */
+function Meta({ d, agentName }: { d: OpenedDeposit; agentName: string }) {
   const expiry = expiryLine(d);
   return (<>
-    <p className="text-[12.5px] text-text-secondary">From {d.agentName}{d.app && <> · via {d.app}</>} · <span title={new Date(d.createdAt).toLocaleString()}>{relativeTime(d.createdAt)}</span></p>
+    <p className="text-[12.5px] text-text-secondary">From {agentName}{d.app && <> · via {d.app}</>} · <span title={new Date(d.createdAt).toLocaleString()}>{relativeTime(d.createdAt)}</span></p>
     {expiry && <p className="text-[12.5px] font-medium text-orange-ink">{expiry}</p>}
   </>);
 }
 
 /** A deposit that opened: read-only, with Keep (a folder, and whether the agent may keep using it) and Delete. */
-function DepositCard({ d, folders, agent, onKept, onError }: {
-  d: Extract<OpenedDeposit, { ok: true }>; folders: VaultFolder[]; agent?: MyAgent; onKept: (agentRow: boolean, agentName: string) => void; onError: (msg: string) => void;
+/** Delete, per card: a genuine deposit asks first (it can't be undone); a failure says so here. */
+function DeleteControl({ id, confirm, onBusy }: { id: string; confirm: boolean; onBusy?: boolean }) {
+  const del = useDeleteDeposit();
+  const [asking, setAsking] = useState(false);
+  const run = () => { setAsking(false); del.mutate(id); };
+  return (
+    <div className="flex flex-col gap-2">
+      {asking ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-text-primary">Delete this item? It can't be undone.</span>
+          <Button size="sm" variant="ghost" onClick={() => setAsking(false)}>Cancel</Button>
+          <Button size="sm" variant="destructive" onClick={run}>Delete it</Button>
+        </div>
+      ) : (
+        <div><Button size="sm" variant={confirm ? "ghost" : "destructive"} disabled={del.isPending || onBusy} onClick={() => (confirm ? setAsking(true) : run())}>Delete</Button></div>
+      )}
+      {del.isError && <p role="alert" className="text-[13px] text-red-500">Couldn't delete it. Try again.</p>}
+    </div>
+  );
+}
+
+function DepositCard({ d, folders, agent, agentName, onKept, onError }: {
+  d: Extract<OpenedDeposit, { ok: true }>; folders: VaultFolder[]; agent?: MyAgent; agentName: string; onKept: (agentRow: boolean, agentName: string) => void; onError: (msg: string) => void;
 }) {
   const [folderId, setFolderId] = useState(NO_FOLDER);
   const [grant, setGrant] = useState(true);
   const keep = useKeepDeposit();
-  const del = useDeleteDeposit();
-  const busy = keep.isPending || del.isPending;
+  const busy = keep.isPending;
   const b = d.body;
   const policy = b.agentPolicy;
   const doKeep = async () => {
     onError("");
     try {
       const r = await keep.mutateAsync({ d, folderId: folderId === NO_FOLDER ? null : folderId, agent: agent && grant ? agent : undefined });
-      onKept(r.agentRow, d.agentName);
+      onKept(r.agentRow, agentName);
     } catch (e) { onError(e instanceof DepositChangedError ? e.message : grantErrorText(e)); }
   };
   return (
@@ -54,7 +78,7 @@ function DepositCard({ d, folders, agent, onKept, onError }: {
         {b.username && <p className="font-mono text-[13px] break-all text-text-primary">{b.username}</p>}
         {b.url && <p className="text-[13px] break-all text-text-secondary">{b.url}</p>}
       </div>
-      <Meta d={d} />
+      <Meta d={d} agentName={agentName} />
       {policy && <p className="text-[12.5px] text-text-secondary">Agent use, <span className="italic">set by the agent</span>: {policy.hosts.join(", ")}</p>}
       <div className="flex flex-wrap items-center gap-3">
         <Select value={folderId} onValueChange={setFolderId} disabled={busy}>
@@ -71,22 +95,21 @@ function DepositCard({ d, folders, agent, onKept, onError }: {
           </label>
         )}
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-start gap-2">
         <Button size="sm" disabled={busy} onClick={() => void doKeep()}>{keep.isPending ? "Keeping…" : "Keep"}</Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => del.mutate(d.id)}>Delete</Button>
+        <DeleteControl id={d.id} confirm onBusy={busy} />
       </div>
     </article>
   );
 }
 
 /** A deposit that failed the gateway check: nothing of it was opened, and it can only be deleted. */
-function RefusedCard({ d }: { d: OpenedDeposit }) {
-  const del = useDeleteDeposit();
+function RefusedCard({ d, agentName }: { d: OpenedDeposit; agentName: string }) {
   return (
-    <article aria-label={`From ${d.agentName}`} className={card}>
+    <article aria-label={`From ${agentName}`} className={card}>
       <p className="flex items-center gap-2 text-[14px] font-medium text-red-500"><ShieldAlert className="size-4 shrink-0" />Not signed by the gateway — delete it</p>
-      <Meta d={d} />
-      <div><Button size="sm" variant="destructive" disabled={del.isPending} onClick={() => del.mutate(d.id)}>Delete</Button></div>
+      <Meta d={d} agentName={agentName} />
+      <DeleteControl id={d.id} confirm={false} />
     </article>
   );
 }
@@ -110,27 +133,32 @@ function PinFirst({ onPinned }: { onPinned: (publicKey: string) => void }) {
  */
 export function AgentInbox({ folders, enabled = true }: { folders: VaultFolder[]; enabled?: boolean }) {
   const q = useAgentInbox(enabled);
-  const agents = liveAgents(useMyAgents(enabled).data?.agents);
+  const paths = useSpacePaths();
+  const mine = useMyAgents(enabled).data?.agents;
+  const agents = liveAgents(mine);
+  const nameOf = (id: string) => mine?.find((a) => a.id === id)?.name ?? "an agent";
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The fingerprint of a gateway identity pinned from here (trust on first use), to compare with Settings → My agents.
   const [newGateway, setNewGateway] = useState<string | null>(null);
   const list = q.data ?? [];
   const unpinned = list.some((d) => !d.ok && d.reason === "unpinned");
+  // Personal agents off on this server: there is no inbox.
+  if (q.error instanceof ApiError && q.error.status === 404) return <Navigate to={paths.list("vault")} replace />;
   return (
     <div className="flex flex-col gap-3">
       {notice && <p role="status" className="text-[13px] text-text-primary">{notice}</p>}
       {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
       {newGateway && <p aria-label="Gateway identity" className="text-[12.5px] text-text-secondary">This device now trusts the agent gateway with fingerprint <Fingerprint publicKey={newGateway} className="text-text-primary" />. Compare it with the one in Settings → My agents.</p>}
-      {q.isLoading ? <p className="py-16 text-center text-[14px] text-text-secondary">Checking items from your agents…</p>
+      {q.isPending ? <p role="status" className="py-16 text-center text-[14px] text-text-secondary">Checking items from your agents…</p>
         : q.error ? <p role="alert" className="text-[14px] text-text-primary">Couldn't load the items from your agents.</p>
         : list.length === 0 ? <EmptyState icon={Inbox} title="Nothing from your agents" line="Items your agents save show up here until you keep or delete them." />
         : unpinned ? <PinFirst onPinned={setNewGateway} />
         : list.map((d) => d.ok
-          ? <DepositCard key={`${d.id}:${d.revision}`} d={d} folders={folders} agent={agents.find((a) => a.id === d.agentId)}
+          ? <DepositCard key={`${d.id}:${d.revision}`} d={d} folders={folders} agent={agents.find((a) => a.id === d.agentId)} agentName={nameOf(d.agentId)}
               onError={(m) => { setError(m || null); if (m) setNotice(null); }}
               onKept={(agentRow, name) => setNotice(agentRow ? "Kept." : `Kept. ${name} already has 200 items, so it can't use this one. Take an item away from it, then give it this one.`)} />
-          : <RefusedCard key={d.id} d={d} />)}
+          : <RefusedCard key={d.id} d={d} agentName={nameOf(d.agentId)} />)}
     </div>
   );
 }

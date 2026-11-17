@@ -28,6 +28,8 @@ vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: null, orgs: [ORG], 
 
 let gw: { identity: GatewayIdentity; attest: (publicKey: string) => Promise<string>; sign: (message: string) => Promise<string> };
 let writeAllowed: boolean;
+/** The server's side of Changed by agent: an ack or a save drops it from /sync; `syncs` counts the refetches. */
+let srv: { acked: boolean; saved: boolean; syncs: number };
 let agents: MyAgent[];
 const row = (o: Partial<MyAgent> = {}): MyAgent => ({ id: AGENT_ID, name: "My bot", status: "active", publicKey: agentPub, attestation: "", expiresAt: null, lastUsedAt: null,
   createdAt: "2026-11-15T00:00:00Z", verifiedAt: "2026-11-15T00:00:00Z", items: 0, owner: { userId: ME, publicKey: ownerPublicKey }, tokens: [], grants: [], ...o });
@@ -39,6 +41,7 @@ beforeEach(async () => {
   gw = { identity, attest: (publicKey) => signPersonalAgentKey(kp.privateKey, identity.keyId, { ownerUserId: ME, ownerPublicKey, agentId: AGENT_ID, publicKey }),
     sign: (message) => signGatewayMessage(kp.privateKey, identity.keyId, "u1", message) };
   writeAllowed = false;
+  srv = { acked: false, saved: false, syncs: 0 };
   await pinGateway(ME, PERSONAL_SLOT, identity);
   agents = [row({ attestation: await gw.attest(agentPub) })];
   server.use(
@@ -55,14 +58,19 @@ async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; 
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
   const signature = o.agentChange ? await gw.sign(agentUpdateMessage({ ownerUserId: ME, agentId: AGENT_ID, id, revision: o.agentChange === "signed" ? revision : revision + 1, encBodyHash: await sha256B64(enc.encBody) })) : "";
-  server.use(http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [{ id, folderId: null, type: "login", encBody: enc.encBody, wrappedRecordKey: enc.wrappedRecordKey,
-    revision, updatedAt: "2026-11-15T10:00:00Z", deletedAt: null, permission: "owner", holderType: "user", ownerId: ME, ownerName: "Sara", sharedWith: [], agentGrants: o.agentGrants ?? [],
-    ...(o.createdByAgent ? { createdByAgent: { id: AGENT_ID, name: "My bot", at: "2026-11-15T10:00:00Z" } } : {}),
-    ...(o.agentChange ? { agentChange: { agentId: AGENT_ID, agentName: "My bot", at: "2026-11-16T10:00:00Z", signature } } : {}) }] })));
+  server.use(
+    http.get("/api/v1/sync", () => { srv.syncs++; return HttpResponse.json({ serverTime: "", folders: [], records: [{ id, folderId: null, type: "login", encBody: enc.encBody, wrappedRecordKey: enc.wrappedRecordKey,
+      revision: srv.saved ? revision + 1 : revision, updatedAt: "2026-11-15T10:00:00Z", deletedAt: null, permission: "owner", holderType: "user", ownerId: ME, ownerName: "Sara", sharedWith: [], agentGrants: o.agentGrants ?? [],
+      ...(o.createdByAgent ? { createdByAgent: { id: AGENT_ID, name: "My bot", at: "2026-11-15T10:00:00Z" } } : {}),
+      ...(o.agentChange && !srv.acked && !srv.saved ? { agentChange: { agentId: AGENT_ID, agentName: "My bot", at: "2026-11-16T10:00:00Z", signature } } : {}) }] }); }),
+    http.post("/api/v1/records/:id/agent-overwrites/ack", () => { srv.acked = true; return HttpResponse.json({ ok: true }); }),
+  );
   return { id, enc, revision };
 }
+let qc: QueryClient;
 async function openRecord() {
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={qc}><MemoryRouter initialEntries={["/p/vault"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
   await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
   await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
   return screen.findByRole("complementary", { name: "Record details" });
@@ -180,6 +188,18 @@ describe("giving an item to a personal agent", () => {
     expect(screen.getByRole("checkbox", { name: "Select Stripe" }).parentElement).toHaveClass("size-6"); // a 24px hit area
   });
 
+  it("the selection is cleared when the view changes", async () => {
+    await serveRecord();
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
+    await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Select Stripe" }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: /Needs attention/ }));
+    await userEvent.click(screen.getByRole("link", { name: /^Vault/ }));
+    expect(await screen.findByRole("checkbox", { name: "Select Stripe" })).not.toBeChecked();
+    expect(screen.queryByText("1 selected")).toBeNull();
+  });
+
   it("the first grant on this device pins the gateway and shows its fingerprint", async () => {
     await serveRecord();
     localStorage.clear();
@@ -218,24 +238,42 @@ describe("provenance and Changed by agent", () => {
     expect(panel).toHaveTextContent(`Created by agent My bot on ${new Date("2026-11-15T10:00:00Z").toLocaleDateString()}`);
   });
 
-  it("a signed change shows the banner, opening it acks, and Restore previous saves the previous body through the normal edit path", async () => {
+  it("a signed change shows the banner; opening doesn't ack it, so it survives a refetch", async () => {
+    await serveRecord({ agentChange: "signed" });
+    const panel = await openRecord();
+    expect(within(panel).getByRole("note", { name: "Changed by agent" })).toHaveTextContent("Changed by agent My bot");
+    const before = srv.syncs;
+    await qc.invalidateQueries();
+    await waitFor(() => expect(srv.syncs).toBeGreaterThan(before));
+    expect(srv.acked).toBe(false);
+    expect(within(panel).getByRole("note", { name: "Changed by agent" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Restore previous" })).toBeInTheDocument();
+  });
+
+  it("Looks right acks the change and the banner goes", async () => {
+    await serveRecord({ agentChange: "signed" });
+    const panel = await openRecord();
+    await userEvent.click(within(panel).getByRole("button", { name: "Looks right" }));
+    await waitFor(() => expect(within(panel).queryByRole("note", { name: "Changed by agent" })).toBeNull());
+    expect(srv.acked).toBe(true);
+  });
+
+  it("Restore previous saves the previous body through the normal edit path, acks, and the banner goes", async () => {
     const { id, enc, revision } = await serveRecord({ agentChange: "signed" });
     const prev = { type: "login" as const, title: "Stripe", password: "old-password" };
-    let acked = false, put: { encBody: string; revision: number } | null = null;
+    let put: { encBody: string; revision: number } | null = null;
     server.use(
-      http.post("/api/v1/records/:id/agent-overwrites/ack", () => { acked = true; return HttpResponse.json({ ok: true }); }),
       http.get("/api/v1/records/:id/agent-overwrites", async () => HttpResponse.json({ overwrites: [{ id: "ow1", agentId: AGENT_ID, agentName: "My bot",
         prevEncBody: await encryptRecordBody(id, prev, enc.recordKey), newRevision: revision, signature: "", createdAt: "2026-11-16T10:00:00Z" }] })),
-      http.put("/api/v1/records/:id", async ({ request }) => { put = (await request.json()) as never; return HttpResponse.json({ ok: true }); }),
+      http.put("/api/v1/records/:id", async ({ request }) => { put = (await request.json()) as never; srv.saved = true; return HttpResponse.json({ ok: true }); }),
     );
     const panel = await openRecord();
-    const banner = within(panel).getByRole("note", { name: "Changed by agent" });
-    expect(banner).toHaveTextContent("Changed by agent My bot");
-    await waitFor(() => expect(acked).toBe(true));
-    await userEvent.click(within(banner).getByRole("button", { name: "Restore previous" }));
+    await userEvent.click(within(panel).getByRole("button", { name: "Restore previous" }));
     await waitFor(() => expect(put).not.toBeNull());
     expect(put!.revision).toBe(revision);
     expect((await decryptRecordBody(id, put!.encBody, enc.recordKey)).password).toBe("old-password");
+    await waitFor(() => expect(srv.acked).toBe(true));
+    await waitFor(() => expect(within(panel).queryByRole("note", { name: "Changed by agent" })).toBeNull());
   });
 
   it("a change the gateway didn't sign over the current body says so", async () => {
@@ -247,7 +285,6 @@ describe("provenance and Changed by agent", () => {
   it("a previous version whose key no longer opens (the record key was rotated since) says so", async () => {
     const { id, revision } = await serveRecord({ agentChange: "signed" });
     server.use(
-      http.post("/api/v1/records/:id/agent-overwrites/ack", () => HttpResponse.json({ ok: true })),
       http.get("/api/v1/records/:id/agent-overwrites", async () => HttpResponse.json({ overwrites: [{ id: "ow1", agentId: AGENT_ID, agentName: "My bot",
         prevEncBody: await encryptRecordBody(id, { type: "login", title: "x" }, randomBytes(32)), newRevision: revision, signature: "", createdAt: "2026-11-16T10:00:00Z" }] })),
     );

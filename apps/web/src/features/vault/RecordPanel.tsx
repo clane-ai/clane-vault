@@ -15,13 +15,14 @@ import type { VaultRecord } from "./types";
 import { ConflictError, OverwriteKeyError } from "./useVault";
 
 /** *Changed by agent*: the agent's newest change nobody saved over yet, with Restore previous (the body before it). */
-function AgentChangeBanner({ change, onRestore }: { change: NonNullable<VaultRecord["agentChange"]>; onRestore?: () => Promise<unknown> }) {
+function AgentChangeBanner({ change, onRestore, onAck }: { change: NonNullable<VaultRecord["agentChange"]>; onRestore?: () => Promise<unknown>; onAck?: () => Promise<unknown> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const restore = async () => {
+  // It stays until the owner acts: Looks right (ack), Restore previous (restore, then ack), or their own save.
+  const run = async (fn: () => Promise<unknown>, failed: string) => {
     setBusy(true); setError(null);
-    try { await onRestore!(); }
-    catch (e) { setError(e instanceof OverwriteKeyError || e instanceof ConflictError ? e.message : "Couldn't restore the previous version. Try again."); }
+    try { await fn(); }
+    catch (e) { setError(e instanceof OverwriteKeyError || e instanceof ConflictError ? e.message : failed); }
     finally { setBusy(false); }
   };
   return (
@@ -31,7 +32,12 @@ function AgentChangeBanner({ change, onRestore }: { change: NonNullable<VaultRec
         <span>{change.signed === false ? "Changed, but not signed by the gateway" : `Changed by agent ${change.agentName}`} <span className="text-text-secondary" title={new Date(change.at).toLocaleString()}>{relativeTime(change.at)}</span>
           {change.signed === null && <span className="block text-[12.5px] text-text-secondary">This device hasn't verified your gateway, so the change wasn't checked.</span>}</span>
       </p>
-      {onRestore && <Button variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => void restore()}><RotateCcw className="size-3.5" />Restore previous</Button>}
+      {(onRestore || onAck) && (
+        <div className="flex flex-wrap gap-2">
+          {onRestore && <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(onRestore, "Couldn't restore the previous version. Try again.")}><RotateCcw className="size-3.5" />Restore previous</Button>}
+          {onAck && <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(onAck, "Couldn't save that. Try again.")}>Looks right</Button>}
+        </div>
+      )}
       {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
     </div>
   );
@@ -81,7 +87,7 @@ function FieldValue({ f, shown }: { f: ShownField; shown: boolean }) {
   return <span aria-label={f.label} className={f.mono || f.format ? MONO : "text-[14px] break-words text-text-primary"}>{text}</span>;
 }
 
-export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious }: {
+export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious, onAckAgentChange }: {
   record: VaultRecord; folderName: string | null; teamFolder?: boolean; onClose: () => void; onEdit: () => void; onTrash: () => void; onRestore?: () => void; onPurge?: () => void;
   /** Opens the share sheet (record owners only; its "One-time link" tab makes links). */ onShare?: () => void;
   /** Needs-attention reasons for this record, if any. */ reasons?: AttentionReason[];
@@ -89,7 +95,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   /** Extra sections under the fields (who can open it, activity). */ children?: React.ReactNode;
   /** The Files section (features/attachments), right under the fields and notes, for every record type. */ files?: React.ReactNode;
   /** Scores the vault already worked out (usePasswordScores): opening a record then scores nothing. */ scoreOf?: (pw: string) => StrengthScore | undefined;
-  /** *Changed by agent* → Restore previous (owners). */ onRestorePrevious?: () => Promise<unknown>;
+  /** *Changed by agent* → Restore previous and Looks right (owners). */ onRestorePrevious?: () => Promise<unknown>; onAckAgentChange?: () => Promise<unknown>;
 }) {
   // Revealed secret fields (by field id); every record opens with all of them hidden.
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
@@ -166,7 +172,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
               </div>
             )}
 
-            {!record.deleted && record.agentChange && <AgentChangeBanner change={record.agentChange} onRestore={record.permission === "owner" ? onRestorePrevious : undefined} />}
+            {!record.deleted && record.agentChange && <AgentChangeBanner change={record.agentChange} onRestore={record.permission === "owner" ? onRestorePrevious : undefined}
+              onAck={record.permission === "owner" ? onAckAgentChange : undefined} />}
 
             {!record.deleted && reasons && reasons.length > 0 && (
               <div role="note" aria-label="Needs attention" className="flex flex-col gap-2.5 rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3">

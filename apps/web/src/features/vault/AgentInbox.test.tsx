@@ -30,7 +30,9 @@ const me = { userKey: randomBytes(32), ...(await generateKeyPair()) };
 const ownerPublicKey = b64url.encode(me.publicKey);
 const agentKeys = await generateKeyPair();
 const agentPub = b64url.encode(agentKeys.publicKey);
-const session = { org: null, orgs: [], applyOrgs: vi.fn(), user: { id: ME, name: "Sara", role: "member" }, generation: () => 0, lock: vi.fn(), signOut: vi.fn(), keys: me };
+/** The session's lock generation: bumped to simulate a lock while a fetch is running. */
+let gen = 0;
+const session = { org: null, orgs: [], applyOrgs: vi.fn(), user: { id: ME, name: "Sara", role: "member" }, generation: () => gen, lock: vi.fn(), signOut: vi.fn(), keys: me };
 vi.spyOn(sessionModule, "useSession").mockImplementation(() => session as never);
 
 const BODY: RecordBody = { type: "login", title: "Stripe", username: "sara@example.com", password: "sk_live_x", agentPolicy: { v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" } } };
@@ -39,13 +41,14 @@ let deposits: unknown[];
 let agents: MyAgent[];
 let inboxLoads: number;
 
-async function deposit(o: { signer?: Uint8Array; noSignature?: boolean; ownerKey?: string; createdAt?: string; expiresAt?: string } = {}) {
+async function deposit(o: { signer?: Uint8Array; noSignature?: boolean; ownerKey?: string; createdAt?: string; expiresAt?: string; agentId?: string } = {}) {
   const id = crypto.randomUUID();
   const recordKey = randomBytes(32);
   const encBody = await encryptRecordBody(id, BODY, recordKey);
-  const message = agentDepositMessage({ ownerUserId: ME, ownerPublicKey: o.ownerKey ?? ownerPublicKey, agentId: AGENT_ID, id, revision: 1, encBodyHash: await sha256B64(encBody) });
+  const message = agentDepositMessage({ ownerUserId: ME, ownerPublicKey: o.ownerKey ?? ownerPublicKey, agentId: o.agentId ?? AGENT_ID, id, revision: 1, encBodyHash: await sha256B64(encBody) });
   const signature = o.noSignature ? "" : await signGatewayMessage(o.signer ?? gw.privateKey, gw.identity.keyId, "d1", message);
-  const row = { id, agentId: AGENT_ID, agentName: "My bot", app: "Claude", type: "login", encBody, revision: 1, signature,
+  // The server's agentName isn't covered by the signature: the page names the agent from My agents.
+  const row = { id, agentId: o.agentId ?? AGENT_ID, agentName: "Server's name", app: "Claude", type: "login", encBody, revision: 1, signature,
     ownerSealedKey: await sealDepositKeyToOwner(recordKey, { ownerUserId: ME, id }, me.publicKey),
     createdAt: o.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString(), expiresAt: o.expiresAt ?? new Date(Date.now() + 90 * 864e5).toISOString() };
   return { row, recordKey, id };
@@ -54,6 +57,7 @@ async function deposit(o: { signer?: Uint8Array; noSignature?: boolean; ownerKey
 beforeEach(async () => {
   try { localStorage.clear(); } catch { /* none */ }
   openSpy.mockClear();
+  gen = 0;
   const kp = await generateIdentityKeyPair();
   gw = { identity: { keyId: await gatewayKeyId(kp.publicKey), publicKey: b64url.encode(kp.publicKey) }, privateKey: kp.privateKey };
   await pinGateway(ME, PERSONAL_SLOT, gw.identity);
@@ -80,7 +84,8 @@ describe("From agents", () => {
     renderInbox();
     const card = await screen.findByRole("article", { name: "Stripe" });
     expect(within(card).getByText("sara@example.com")).toBeInTheDocument();
-    expect(card).toHaveTextContent("My bot");
+    expect(card).toHaveTextContent("From My bot");
+    expect(card).not.toHaveTextContent("Server's name");
     expect(card).toHaveTextContent("Claude");
     expect(card).toHaveTextContent(/set by the agent/);
     expect(card).toHaveTextContent("api.stripe.com");
@@ -151,19 +156,45 @@ describe("From agents", () => {
     server.use(http.post("/api/v1/me/agent-deposits/:id/keep", () => { deposits = []; return HttpResponse.json({ id: "x", revision: 1, agentRow: false }, { status: 201 }); }));
     renderInbox();
     await userEvent.click(await screen.findByRole("button", { name: "Keep" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Kept. My bot already has 200 items, so it can't use this one.");
+    expect(await screen.findByText(/^Kept\. My bot already has 200 items, so it can't use this one\./)).toHaveAttribute("role", "status");
   });
 
-  it("a stale revision (409 conflict) reloads the inbox and says the agent changed it", async () => {
+  it("a stale revision (409 conflict) reloads the inbox and says the agent changed it; the replaced copy's key is zeroed", async () => {
     deposits = [(await deposit()).row];
     server.use(http.post("/api/v1/me/agent-deposits/:id/keep", () => HttpResponse.json({ error: "conflict" }, { status: 409 })));
     renderInbox();
     await userEvent.click(await screen.findByRole("button", { name: "Keep" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The agent changed this item. Check it again.");
     await waitFor(() => expect(inboxLoads).toBe(2));
+    const first = await openSpy.mock.results[0]!.value as Uint8Array;
+    await waitFor(() => expect(first.every((b) => b === 0)).toBe(true));
   });
 
-  it("Delete deletes it", async () => {
+  it("a fetch that finishes after a lock keeps nothing: the opened keys are zeroed and nothing is shown", async () => {
+    deposits = [(await deposit()).row];
+    server.use(http.get("/api/v1/me/agent-deposits", () => { gen++; return HttpResponse.json({ deposits }); }));
+    renderInbox();
+    await waitFor(() => expect(openSpy).toHaveBeenCalled());
+    const key = await openSpy.mock.results[0]!.value as Uint8Array;
+    await waitFor(() => expect(key.every((b) => b === 0)).toBe(true));
+    expect(screen.queryByRole("article", { name: "Stripe" })).toBeNull();
+  });
+
+  it("while loading it says so", async () => {
+    server.use(http.get("/api/v1/me/agent-deposits", () => new Promise(() => undefined)));
+    renderInbox();
+    expect(await screen.findByRole("status")).toHaveTextContent("Checking items from your agents…");
+  });
+
+  it("an agent not in My agents is named 'an agent', never by the server's word", async () => {
+    deposits = [(await deposit({ agentId: "cccccccc-0000-4000-8000-000000000003" })).row];
+    renderInbox();
+    const card = await screen.findByRole("article", { name: "Stripe" });
+    expect(card).toHaveTextContent("From an agent");
+    expect(card).not.toHaveTextContent("Server's name");
+  });
+
+  it("Delete asks first, then deletes it", async () => {
     const d = await deposit();
     deposits = [d.row];
     let deleted: string | null = null;
@@ -171,7 +202,39 @@ describe("From agents", () => {
     renderInbox();
     const card = await screen.findByRole("article", { name: "Stripe" });
     await userEvent.click(within(card).getByRole("button", { name: "Delete" }));
+    expect(deleted).toBeNull();
+    expect(within(card).getByText("Delete this item? It can't be undone.")).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    expect(deleted).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Delete it" }));
     await waitFor(() => expect(deleted).toBe(d.id));
+  });
+
+  it("a failed Delete says so on the card", async () => {
+    deposits = [(await deposit()).row];
+    server.use(http.delete("/api/v1/me/agent-deposits/:id", () => HttpResponse.json({ error: "internal" }, { status: 500 })));
+    renderInbox();
+    const card = await screen.findByRole("article", { name: "Stripe" });
+    await userEvent.click(within(card).getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Delete it" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("Couldn't delete it. Try again.");
+  });
+
+  it("/p/agents: private-locked shows the authenticator step-up; with personal agents off (404) it goes to the vault", async () => {
+    server.use(http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [], privateLocked: true })));
+    const view = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/agents"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
+    expect(await screen.findByRole("region", { name: "Confirm with your authenticator" })).toBeInTheDocument();
+    expect(screen.queryByText("Nothing from your agents")).toBeNull();
+    view.unmount();
+
+    server.use(
+      http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [] })),
+      http.get("/api/v1/me/agent-deposits", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
+    );
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/agents"]}><VaultPage /></MemoryRouter></QueryClientProvider>);
+    expect(await screen.findByRole("heading", { name: "Personal vault" })).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't load/)).toBeNull();
   });
 
   it("from day 60 it warns when it will be deleted", async () => {

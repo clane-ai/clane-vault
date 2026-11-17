@@ -308,6 +308,12 @@ export function useVault() {
     if (!o) throw new ConflictError();
     const body = await withSecret(r.recordKey, "record", (rk) => decryptRecordBody(r.id, o.prevEncBody, rk)).catch((e: unknown) => { throw e instanceof CryptoError ? new OverwriteKeyError() : e; });
     await updateRecord.mutateAsync({ r, body });
+    await ackAgentChange(r.id).catch(() => undefined); // the save already hides it; the ack keeps the server's list clean
+  }
+  /** The owner has seen the agent's change (Looks right, or after Restore previous): the server stops listing it. */
+  async function ackAgentChange(recordId: string) {
+    await oapi.post(`/records/${recordId}/agent-overwrites/ack`);
+    await refetch();
   }
 
   return {
@@ -335,8 +341,7 @@ export function useVault() {
     revokeAgentGrant: (recordId: string, agentId: string) => revokeAgentGrant.mutateAsync({ recordId, agentId }),
     setAgentWrite: (recordId: string, agentId: string, write: boolean) => setAgentWrite.mutateAsync({ recordId, agentId, write }),
     restorePrevious,
-    /** The owner has seen the agent's change (opening the record): the server stops listing it, the open panel keeps it. */
-    ackAgentChange: (recordId: string) => oapi.post(`/records/${recordId}/agent-overwrites/ack`),
+    ackAgentChange,
     /** Personal space: deposits waiting in From agents (absent with personal agents off, or private-locked). */ agentInbox: q.data?.agentInbox,
   };
 }

@@ -48,15 +48,23 @@ async function withKeys<T>(keys: UnlockedKeys | null | undefined, fn: (k: Unlock
 
 /** GET /me/agent-deposits, each opened (or refused) on this device. `enabled` false while the session is private-locked. */
 export function useAgentInbox(enabled = true) {
-  const { user, keys } = useSession();
+  const { user, keys, generation } = useSession();
+  const qc = useQueryClient();
+  const key = [KEY, user?.id];
   return useQuery({
-    queryKey: [KEY, user?.id], enabled: enabled && !!user && !!keys, retry: false,
+    queryKey: key, enabled: enabled && !!user && !!keys, retry: false, structuralSharing: false,
     queryFn: () => withKeys(keys, async (k) => {
+      const gen = generation();
       const { deposits } = await api.get<{ deposits: DepositRow[] }>("/me/agent-deposits");
-      return Promise.all(deposits.map((d) => openDeposit(d, user!.id, k)));
+      const opened = await Promise.all(deposits.map((d) => openDeposit(d, user!.id, k)));
+      // Locked meanwhile: lock already wiped the cache, so these keys would outlive it in a detached query.
+      if (generation() !== gen) { zeroKeys(opened); throw new Error("Vault locked"); }
+      zeroKeys(qc.getQueryData<OpenedDeposit[]>(key)); // the copies these replace
+      return opened;
     }),
   });
 }
+const zeroKeys = (list: OpenedDeposit[] | undefined) => list?.forEach((d) => { if (d.ok) d.recordKey.fill(0); });
 
 /** The inbox and the vault (a kept item, the sidebar's count) and My agents (item counts) are read again. */
 function useAfter() {

@@ -213,9 +213,6 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   const pageView = listView === "links" || listView === "agents";
   const showFlat = mode === "flat" || query !== "" || listView !== "vault" || typeFilter !== null;
   useEffect(() => { setSharing(false); }, [selectedId]);
-  // Opening a record the agent changed acknowledges it: the server stops listing the change; this panel keeps showing it.
-  const changedAt = selected?.agentChange?.at;
-  useEffect(() => { if (selected && changedAt && !offline) void v.ackAgentChange(selected.id).catch(() => undefined); }, [selectedId, changedAt]); // eslint-disable-line react-hooks/exhaustive-deps
   const spaceName = org ? org.name : "Personal";
   const HEAD: Record<typeof listView, [string, string]> = {
     vault: [org ? "Vault" : "Personal vault", org ? `${org.name}: its shared folders and records shared with you here.` : "Your private records. Nobody else sees them."],
@@ -354,7 +351,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                 </button>
               )}
               {listView === "links" ? <LinksView records={v.records} />
-                : listView === "agents" ? <AgentInbox folders={v.folders} enabled={!offline && !v.isLoading && !v.privateLocked} />
+                : listView === "agents" ? (v.privateLocked ? <TotpStepUpPanel /> : <AgentInbox folders={v.folders} enabled={!offline && !v.isLoading} />)
                 : v.isLoading ? <p className="py-16 text-center text-[14px] text-text-secondary">Decrypting your vault…</p>
                 : v.error && v.records.length === 0 && v.folders.length === 0 ? null
                 : <RecordList groups={groups} flat={visible} mode={showFlat ? "flat" : "folders"} selectedId={selectedId} onSelect={select}
@@ -372,6 +369,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
               {drop.overlay}
               <RecordPanel record={selected} files={selected.body ? <FilesSection record={selected} /> : undefined} folderName={folderName(selected.folderId)} teamFolder={folderOf(selected.folderId)?.kind === "team"} onClose={closeRecord} scoreOf={scores.scoreOf}
                 onShare={() => setSharing(true)} onRestorePrevious={offline ? undefined : () => v.restorePrevious(selected)}
+                onAckAgentChange={offline ? undefined : () => v.ackAgentChange(selected.id)}
                 onEdit={() => onEdit?.(selected.id)} reasons={reasons.get(selected.id)} onNewPassword={onEdit && !offline ? () => onEdit(selected.id, { newPassword: true }) : undefined}
                 onTrash={() => act("Moved to trash", "move it to the trash", () => v.trashRecord(selected.id))}
                 onRestore={() => act("Restored", "restore it", () => v.restoreRecord(selected.id))}
