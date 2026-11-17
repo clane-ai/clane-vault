@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
+  aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, MAX_FIELD_VALUE, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
   sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8,
   type AgentInject, type FieldKind, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
@@ -34,9 +34,14 @@ const normalized = (body: RecordBody): RecordBody => { try { return normalizeRec
  * change or drop is InvalidInput, before any write. A v1 body (no `v`) only gains `v: 2`.
  */
 async function readForUpdate(id: string, encBody: string, recordKey: Uint8Array): Promise<RecordBody> {
-  let raw: Record<string, unknown>;
-  try { raw = JSON.parse(utf8.decode(await aeadDecrypt(recordKey, encBody, `record-body:${id}`))) as Record<string, unknown>; } catch (e) {
+  let raw: Record<string, unknown>, plaintext: Uint8Array | undefined;
+  try {
+    plaintext = await aeadDecrypt(recordKey, encBody, `record-body:${id}`);
+    raw = JSON.parse(utf8.decode(plaintext)) as Record<string, unknown>;
+  } catch (e) {
     throw e instanceof CryptoError ? e : new CryptoError("bad_envelope");
+  } finally {
+    plaintext?.fill(0);
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new CryptoError("bad_envelope");
   const clean = normalized(raw as unknown as RecordBody) as unknown as Record<string, unknown>;
@@ -106,4 +111,17 @@ export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys,
     releaseOld();
     releaseNew();
   }
+}
+
+/** RFC 6901 (`~1` is "/", `~0` is "~"): the value at `pointer` if the JSON parses and it is a non-empty string of at most MAX_FIELD_VALUE, else null. */
+export function pointerValue(json: string, pointer: string): string | null {
+  let v: unknown;
+  try { v = JSON.parse(json); } catch { return null; }
+  if (pointer !== "" && !pointer.startsWith("/")) return null;
+  for (const t of pointer.split("/").slice(1).map((x) => x.replaceAll("~1", "/").replaceAll("~0", "~"))) {
+    if (Array.isArray(v)) { if (!/^(0|[1-9]\d*)$/.test(t)) return null; v = v[Number(t)]; }
+    else if (v !== null && typeof v === "object" && Object.hasOwn(v, t)) v = (v as Record<string, unknown>)[t];
+    else return null;
+  }
+  return typeof v === "string" && v.length > 0 && v.length <= MAX_FIELD_VALUE ? v : null;
 }

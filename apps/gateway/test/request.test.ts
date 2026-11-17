@@ -340,3 +340,33 @@ describe("performRequest: review round 1", () => {
     expect(onConnect).not.toHaveBeenCalled();
   });
 });
+
+describe("performRequest: capture", () => {
+  const CAP = "ghp_CAPTURED_CANARY";
+  it("is called once, on the final response, with the body before scrubbing; its value is scrubbed in every form, headers included", async () => {
+    const created = `{"id":7,"token":"${CAP}","b64":"${Buffer.from(CAP).toString("base64")}","url":"${encodeURIComponent(CAP)}","me":"${SECRET}"}`;
+    const b = await serve((_q, r) => { r.setHeader("x-token", CAP); r.setHeader(`x-${CAP.toLowerCase()}`, "1"); r.end(created); });
+    const a = await serve((_q, r) => { r.writeHead(302, { location: `http://api.test:${b.port}/final` }).end(`{"token":"hop"}`); });
+    const calls: [string, number][] = [];
+    const out = await performRequest({ method: "GET", url: `http://api.test:${a.port}/` },
+      ctx([`api.test:${a.port}`, `api.test:${b.port}`], { capture: (body, status) => { calls.push([body, status]); return CAP; } }));
+    expect(calls).toEqual([[created, 200]]);
+    expect(out).toMatchObject({ ok: true, reflected: true, result: { status: 200, headers: { "x-token": REDACTED } } });
+    const s = JSON.stringify(out);
+    for (const f of [CAP, Buffer.from(CAP).toString("base64"), encodeURIComponent(CAP), CAP.toLowerCase()]) expect(s).not.toContain(f);
+    expect(s).toContain('\\"id\\":7');
+  });
+  it("a captured value alone is not a reflection of the injected secret", async () => {
+    const up = await serve((_q, r) => r.end(`{"token":"${CAP}"}`));
+    const out = await performRequest({ method: "GET", url: `http://api.test:${up.port}/` }, ctx([`api.test:${up.port}`], { capture: () => CAP }));
+    expect(out).toMatchObject({ ok: true, reflected: false, result: { body: `{"token":"${REDACTED}"}` } });
+  });
+  it("is never called for a truncated response", async () => {
+    const up = await serve((_q, r) => r.end(`{"token":"${CAP}","pad":"${"x".repeat(2000)}"}`));
+    const capture = vi.fn(() => CAP);
+    const out = await performRequest({ method: "GET", url: `http://api.test:${up.port}/` },
+      { ...ctx([`api.test:${up.port}`], { capture }), cfg: { maxResponseBytes: 100, upstreamTimeoutMs: 5000 } });
+    expect(out).toMatchObject({ ok: true, result: { truncated: true } });
+    expect(capture).not.toHaveBeenCalled();
+  });
+});

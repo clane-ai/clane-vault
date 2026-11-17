@@ -4,13 +4,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { AGENT_METHODS, CryptoError, FIELD_KINDS, MAX_FIELD_VALUE, RECORD_TYPES, type AgentMethod, type MembershipKeys } from "@clane-vault/crypto";
-import { ApiRefused, isPersonal, type AgentSync, type ApiClient, type PersonalAgentSync, type UseEvent } from "./apiClient.js";
+import { AGENT_METHODS, CryptoError, defaultSecretRef, FIELD_KINDS, MAX_FIELD_VALUE, RECORD_TYPES, type AgentMethod, type MembershipKeys, type RecordType } from "@clane-vault/crypto";
+import { ApiRefused, isPersonal, type AgentSync, type ApiClient, type PersonalAgentSync, type UseEvent, type WriteRefused } from "./apiClient.js";
 import { challenge, type AgentPrincipal, type BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
-import { buildDeposit, buildUpdate, InvalidInput, type SaveInput } from "./deposits.js";
+import { buildDeposit, buildUpdate, InvalidInput, pointerValue, type SaveInput } from "./deposits.js";
 import type { Identity } from "./identity.js";
 import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
@@ -33,9 +33,12 @@ const IDLE_MS = 30 * MINUTE;
 const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
 
 export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update">;
-export type HttpRequestInput = OutboundInput & { item: string };
+/** Personal sessions only: save the credential the upstream creates, at JSON pointer `from`, into `type`'s default secret field. */
+export type CaptureInput = { from: string; title: string; type: RecordType; agent_use?: SaveInput["agent_use"] };
+export type HttpRequestInput = OutboundInput & { item: string; capture?: CaptureInput };
 export type Refusal = { error: "refused"; reason: string };
-export type HttpRequestResult = { status: number; headers: Record<string, string>; body: string; truncated?: true } | Refusal;
+export type HttpRequestResult = { status: number; headers: Record<string, string>; body: string; truncated?: true;
+  saved?: { item: string }; capture?: { refused: string } } | Refusal;
 
 /** The client address: `hops` trusted proxies from the right of X-Forwarded-For (the API's TRUST_PROXY semantics), else the socket. */
 export function clientAddress(req: IncomingMessage, hops: number): string {
@@ -78,6 +81,31 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
     return invalid(e);
   };
 
+  /** buildDeposit, the API's POST, then the new deposit's handle. The API's refusal is returned as is. */
+  async function deposit(p: AgentPrincipal, sync: PersonalAgentSync, keys: MembershipKeys, input: SaveInput): Promise<{ item: string } | WriteRefused> {
+    const built = await buildDeposit(sync, keys, d.identity, input, d.held);
+    const r = await d.api.deposit(p.accessToken, built);
+    d.syncs.drop(p.agentId);
+    if ("refused" in r) return r;
+    const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey }];
+    return { item: (await handleOf({ ...sync, deposits }, keys, built.id, d.log)) ?? built.id };
+  }
+
+  /** The upstream already made the credential: a failure from here is `capture.refused`, never a lost response. ApiRefused still ends the agent. */
+  async function saveCaptured(p: AgentPrincipal, sync: PersonalAgentSync, keys: MembershipKeys, c: CaptureInput, value: string) {
+    const ref = defaultSecretRef(c.type)!; // the input schema allows only types that have one
+    const fields = ref === "password" ? { password: value } : { data: { [ref.slice(5)]: value } };
+    try {
+      const r = await deposit(p, sync, keys, { title: c.title, type: c.type, fields, ...(c.agent_use ? { agent_use: c.agent_use } : {}) });
+      return "refused" in r ? { capture: { refused: r.refused } } : { saved: r };
+    } catch (e) {
+      if (e instanceof ApiRefused) throw e;
+      if (e instanceof InvalidInput) return { capture: { refused: "invalid" } };
+      d.log.error({ event: "capture_error", class: classOf(e) });
+      return { capture: { refused: "internal_error" } };
+    }
+  }
+
   const event = (action: UseEvent["action"], method: AgentMethod, host: string, extra: Pick<UseEvent, "recordId" | "reason" | "truncated"> = {}): UseEvent =>
     ({ at: new Date().toISOString(), action, host, method, ...extra });
 
@@ -95,17 +123,11 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
       return asPersonal(p, async (sync, keys) => {
         if (!sync.policy.write) return refused("not_writable");
         if (sync.inboxFree <= 0) return refused("inbox_full");
-        const built = await buildDeposit(sync, keys, d.identity, input, d.held).catch(invalid);
-        if ("error" in built) return built;
-        const r = await d.api.deposit(p.accessToken, built);
-        d.syncs.drop(p.agentId);
-        if ("refused" in r) {
-          // conflict on a new id means a broken API or a colliding id: not a reason save_secret has.
-          if (r.refused === "conflict") throw new Error("deposit refused: conflict");
-          return refused(r.refused);
-        }
-        const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey }];
-        return { item: (await handleOf({ ...sync, deposits }, keys, built.id, d.log)) ?? built.id };
+        const r = await deposit(p, sync, keys, input).catch(invalid);
+        if ("error" in r || !("refused" in r)) return r;
+        // conflict on a new id means a broken API or a colliding id: not a reason save_secret has.
+        if (r.refused === "conflict") throw new Error("deposit refused: conflict");
+        return refused(r.refused);
       }).catch(ownerKeyChanged);
     },
 
@@ -127,13 +149,28 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
     },
 
     async httpRequest(p: AgentPrincipal, input: HttpRequestInput): Promise<HttpRequestResult> {
-      const { item, ...req } = input;
+      const { item, capture, ...req } = input;
+      // A capture checks the owner-wide inbox on a fresh sync (F2); the key still opens first (F1).
+      if (capture) d.syncs.drop(p.agentId);
       let ran = false;
       const r = await asAgent(p, async (sync, keys) => {
+        if (capture) {
+          if (!isPersonal(sync)) throw new Error("not a personal agent");
+          // Before anything is sent: else the upstream makes a credential that can't be saved (Review Focus 3).
+          if (!sync.policy.write) return refused("not_writable");
+          if (sync.inboxFree <= 0) return refused("inbox_full");
+        }
+        let value: string | null = null, release = () => {};
         try {
           return await withItem(sync, keys, item, d.held, async (x) => {
             ran = true;
-            const o = await performRequest(req, { policy: x.policy, secret: x.secret, username: x.username, cfg: d.cfg, allow, resolve: d.resolve });
+            const grab = (body: string, status: number) => {
+              value = status >= 200 && status < 300 ? pointerValue(body, capture!.from) : null;
+              if (value) release = d.held.hold(value);
+              return value;
+            };
+            const o = await performRequest(req, { policy: x.policy, secret: x.secret, username: x.username, cfg: d.cfg, allow, resolve: d.resolve,
+              ...(capture ? { capture: grab } : {}) });
             // The host comes from the outcome: the policy's may be a wildcard.
             if (!o.ok) {
               d.events.push(p, event("refused", req.method, o.host, { recordId: x.recordId, reason: o.reason }));
@@ -141,7 +178,9 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
             }
             d.events.push(p, event("use", req.method, o.host, { recordId: x.recordId, ...(o.result.truncated ? { truncated: true } : {}) }));
             if (o.reflected) d.events.push(p, event("reflected", req.method, o.host, { recordId: x.recordId }));
-            return o.result;
+            if (!capture) return o.result;
+            if (value === null) return { ...o.result, capture: { refused: "not_found" } };
+            return { ...o.result, ...(await saveCaptured(p, sync as PersonalAgentSync, keys, capture, value)) };
           }, d.log);
         } catch (e) {
           if (ran) throw e;
@@ -149,6 +188,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
           const unopenable = e instanceof CryptoError || e instanceof ItemUnopenable;
           d.log.error({ event: unopenable ? "item_unopenable" : "item_error", class: classOf(e) });
           return { error: "refused", reason: unopenable ? "not_found" : "upstream_error" } as Refusal;
+        } finally {
+          release();
         }
       }).catch(ownerKeyChanged);
       if (!ran && "error" in r) d.events.push(p, event("refused", req.method, hostOf(req.url), { reason: r.reason }));
@@ -190,6 +231,12 @@ const saveSecretInput = {
     secret: z.string().max(128).optional(),
   }).optional(),
 };
+const captureInput = z.strictObject({
+  from: z.string().max(256),
+  title: saveSecretInput.title,
+  type: saveSecretInput.type.refine((t) => defaultSecretRef(t) !== null, "a type with a default secret field"),
+  agent_use: saveSecretInput.agent_use,
+});
 const updateSecretInput = { item: z.string().max(200), set: fieldsInput, revision: z.number().int().min(1).optional() };
 
 interface Session { agentId: string; transport: WebStandardStreamableHTTPServerTransport; busy: boolean; timer?: NodeJS.Timeout }
@@ -219,10 +266,13 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
   };
   server.registerTool("list_secrets", { description: "The items you may use: handles, hosts and how the credential is injected. Never a secret." },
     (extra) => run(extra, async (p) => { const r = await tools.listSecrets(p); return Array.isArray(r) ? { secrets: r } : r; }));
-  server.registerTool("http_request", {
-    description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id).",
-    inputSchema: httpRequestInput,
-  }, (input, extra) => run(extra, (p) => tools.httpRequest(p, input), (p) => tools.busy(p, input)));
+  const httpRequest = { description: "An HTTP request with an item's credential injected by the gateway. `item` is a handle from list_secrets (or a record id)." };
+  const onHttpRequest = (input: object, extra: Parameters<typeof run>[0]) =>
+    run(extra, (p) => tools.httpRequest(p, input as HttpRequestInput), (p) => tools.busy(p, input as HttpRequestInput));
+  if (personal) server.registerTool("http_request", { ...httpRequest, inputSchema: { ...httpRequestInput, capture: captureInput.optional() } }, onHttpRequest);
+  // An organisation session refuses `capture` rather than silently dropping it.
+  else server.registerTool("http_request", { ...httpRequest,
+    inputSchema: z.looseObject(httpRequestInput).refine((x) => !("capture" in x), "capture is for personal agents only") }, onHttpRequest);
   if (!personal) return server;
   server.registerTool("save_secret", {
     description: "Saves a credential already in the conversation as a new item in the owner's inbox (they keep or delete it). Returns its handle.",
@@ -305,6 +355,8 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       const msg = m as { method?: unknown; params?: { name?: unknown } } | null;
       if (msg?.method !== "tools/call") continue;
       if (msg.params?.name === "http_request" && limited(res, `http:${p.agentId}`, cfg.agentRatePerMinute)) return;
+      const capturing = (msg.params as { arguments?: { capture?: unknown } } | undefined)?.arguments?.capture !== undefined;
+      if (msg.params?.name === "http_request" && capturing && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
       if (msg.params?.name === "list_secrets" && limited(res, `list:${p.agentId}`, LIST_PER_MINUTE)) return;
       if ((msg.params?.name === "save_secret" || msg.params?.name === "update_secret") && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
     }
