@@ -25,6 +25,7 @@ import { useOrgApi } from "@/lib/scope";
 import { useSpacePaths } from "@/lib/space";
 import { planMessage, useLocked } from "@/features/admin/plan";
 import { agentsOff, useGateway } from "@/features/admin/agents";
+import { useMyAgents } from "@/features/settings/myAgents";
 
 type Editing = ({ mode: "create" } & NewRecordStart) | { mode: "edit"; id: string; newPassword?: string } | null;
 
@@ -46,6 +47,8 @@ export default function VaultScreen() {
   // The plan is readable by owners and admins; for plain members the server cannot enforce Business-only policy fields (they are ciphertext).
   // Agents off answers 404 (members can read this); a 503 or any other error keeps the section.
   const gw = useGateway(!!org, true);
+  // In Personal the section is for personal agents: /me/agents answers 404 when they are off on this server.
+  const mine = useMyAgents(!org && !offline && !v.privateLocked);
   const pathsLocked = useLocked("agentPathPolicy", !!org && org.role !== "member");
   // Bulk migration (Keeper with shared folders and people) is an org admin's: Import lives in Personal, so it offers the
   // organisation the user administers.
@@ -117,7 +120,7 @@ export default function VaultScreen() {
           {editing && (
             <RecordEditor key={editing.mode === "edit" ? `${editing.id}-${current?.revision}` : "new"} TitleAs={SheetTitle}
               mode={editing.mode} type={editing.mode === "create" ? editing.type : (current?.body?.type ?? "login")}
-              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={team && !agentsOff(gw.error) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
+              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={(team ? !agentsOff(gw.error) : !!mine.data) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
               onSave={save} onCancel={closeEditor}
               files={!limits.enabled || offline ? undefined : editing.mode === "create" ? <QueuedFiles queue={queue} onChange={setQueue} /> : current?.body ? <EditorFiles record={current} /> : undefined} />
           )}

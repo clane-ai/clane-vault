@@ -124,7 +124,7 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   TitleAs?: ElementType;
   /** The Files part at the bottom (features/attachments): uploads for an existing record, a queue for a new one. */
   files?: React.ReactNode;
-  /** Edit holders in an organisation get the Agent use section. */ agentUse?: boolean;
+  /** Edit holders in an organisation, and owners in Personal while personal agents are on, get the Agent use section. */ agentUse?: boolean;
   /** Methods and paths need the Business plan. */ pathsLocked?: boolean;
 }) {
   const template = templateOf(type);
