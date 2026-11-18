@@ -174,7 +174,7 @@ async function ask(owner: U, agent: PA, access: string, recordId: string, o: { f
 const poll = (access: string, id: string) => agentCall(access, "GET", `/agent/reveals/${id}`);
 const rids = (id: string, recordId: string, agentId: string) => ({ requestId: id, recordId, agentId });
 const approve = async (owner: U, q: { id: string; kp: { publicKey: Uint8Array } }, recordId: string, agentId: string) =>
-  call(owner, "POST", `/me/agent-reveals/${q.id}/approve`, { sealed: await sealReveal({ username: "u" }, rids(q.id, recordId, agentId), q.kp.publicKey) }, { org: false });
+  call(owner, "POST", `/me/agent-reveals/${q.id}/approve`, { sealed: await sealReveal({ username: "u" }, rids(q.id, recordId, agentId), q.kp.publicKey, owner.keys.privateKey) }, { org: false });
 
 describe("reveal requests", () => {
   afterEach(() => { vi.restoreAllMocks(); });
@@ -195,11 +195,11 @@ describe("reveal requests", () => {
     const list = (await call(owner, "GET", "/me/agent-reveals", undefined, { org: false })).json();
     expect(list.requests).toEqual([expect.objectContaining({ id: q.id, agentId: agent.id, agentName: "Personal agent", app: "ci", recordId: r.id, fields: ["username"], reason: "to check the account" })]);
     expect(list.paused).toEqual([]);
-    const sealed = await sealReveal({ username: "u" }, rids(q.id, r.id, agent.id), q.kp.publicKey);
+    const sealed = await sealReveal({ username: "u" }, rids(q.id, r.id, agent.id), q.kp.publicKey, owner.keys.privateKey);
     expect((await call(owner, "POST", `/me/agent-reveals/${q.id}/approve`, { sealed }, { org: false })).json()).toEqual({ ok: true });
     const got = (await poll(access, q.id)).json();
     expect(got).toEqual({ status: "approved", sealed });
-    expect(await openReveal(got.sealed, rids(q.id, r.id, agent.id), q.kp)).toEqual({ username: "u" });
+    expect(await openReveal(got.sealed, rids(q.id, r.id, agent.id), q.kp, owner.keys.publicKey, ["username"])).toEqual({ username: "u" });
     expect((await poll(access, q.id)).json()).toEqual({ status: "expired" });
     expect(await t.prisma.agentRevealRequest.findUnique({ where: { id: q.id } })).toMatchObject({ status: "delivered", sealed: null });
     const ev = await t.prisma.event.findMany({ where: { action: { startsWith: "agent.reveal" } }, orderBy: { id: "asc" } });

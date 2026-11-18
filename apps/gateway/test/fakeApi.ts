@@ -161,10 +161,10 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
     if (r.status === "approved") { const sealed = r.sealed; r.status = "delivered"; delete r.sealed; return send(res, 200, { status: "approved", sealed }); }
     return send(res, 200, { status: r.status === "delivered" ? "expired" : r.status });
   }
-  /** The owner's browser: seal these fields to the request's key (as the web app does on Allow once). */
-  async function approveReveal(id: string, fields: Record<string, string>) {
+  /** The owner's browser: seal these fields to the request's key (as the web app does on Allow once). `sealer`: another key, to forge one. */
+  async function approveReveal(id: string, fields: Record<string, string>, sealer: Uint8Array = ownerKeys.privateKey) {
     const r = reveals.find((x) => x.id === id)!;
-    r.sealed = await sealReveal(fields, { requestId: r.id, recordId: r.recordId, agentId: personalId }, b64url.decode(r.requestPublicKey));
+    r.sealed = await sealReveal(fields, { requestId: r.id, recordId: r.recordId, agentId: personalId }, b64url.decode(r.requestPublicKey), sealer);
     r.status = "approved";
   }
 

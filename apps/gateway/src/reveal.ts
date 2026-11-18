@@ -7,14 +7,16 @@ import type { Identity } from "./identity.js";
 import { revealableItem, standingBody } from "./items.js";
 import type { HeldSecrets, Logger } from "./log.js";
 
-export type RevealReason = "reveal_off" | "field" | "denied" | "expired" | "busy" | "not_found";
+/** "unverified": the approval did not come from the owner's key (a forged or broken seal); nothing is released. */
+export type RevealReason = "reveal_off" | "field" | "denied" | "expired" | "busy" | "not_found" | "unverified";
 /** `release` (fields only): the values stay held in the log scrubber until the caller has written the result. */
 export type RevealResult = { fields: Record<string, string>; release: () => void } | { status: "pending"; request_id: string } | { error: "refused"; reason: RevealReason };
 
 /** A request lives 5 minutes (the API refuses a longer one). */
 export const REVEAL_TTL_MS = 5 * 60e3;
 
-interface Pending { id: string; agentId: string; recordId: string; keys: SealKeys; expiresAt: number }
+/** `ownerPublicKey`: the owner key checked against the k2 attestation when the request was made; `fields`: what was asked. */
+interface Pending { id: string; agentId: string; recordId: string; fields: string[]; ownerPublicKey: string; keys: SealKeys; expiresAt: number }
 
 /**
  * In memory, per process: the one-time private key of each open request. A request can only be completed by the gateway
@@ -22,8 +24,10 @@ interface Pending { id: string; agentId: string; recordId: string; keys: SealKey
  */
 export class PendingReveals {
   private open = new Map<string, Pending>();
+  /** Abandoned requests too: their keys are zeroed within a minute of expiring, even if nothing touches them again. */
+  constructor() { setInterval(() => this.sweep(Date.now()), 60e3).unref(); }
   add(p: Pending): void { this.sweep(Date.now()); this.open.set(p.id, p); }
-  get(id: string, agentId: string): Pending | undefined { const p = this.open.get(id); return p && p.agentId === agentId ? p : undefined; }
+  get(id: string, agentId: string): Pending | undefined { this.sweep(Date.now()); const p = this.open.get(id); return p && p.agentId === agentId ? p : undefined; }
   take(id: string): void { const p = this.open.get(id); if (p) { p.keys.privateKey.fill(0); this.open.delete(id); } }
   sweep(now: number): void { for (const p of [...this.open.values()]) if (p.expiresAt < now) this.take(p.id); }
 }
@@ -66,7 +70,7 @@ export async function requestReveal(d: RevealDeps, p: AgentPrincipal, sync: Pers
     r = await d.api.createReveal(p.accessToken, { id, recordId: it.recordId, fields, reason: input.reason, requestPublicKey, signature, expiresAt });
   } catch (e) { kp.privateKey.fill(0); throw e; }
   if ("refused" in r) { kp.privateKey.fill(0); return refused(r.refused); }
-  d.pending.add({ id, agentId: sync.agentId, recordId: it.recordId, keys: kp, expiresAt: Date.parse(expiresAt) });
+  d.pending.add({ id, agentId: sync.agentId, recordId: it.recordId, fields, ownerPublicKey: sync.owner.publicKey, keys: kp, expiresAt: Date.parse(expiresAt) });
   return wait(d, p, id);
 }
 
@@ -86,7 +90,9 @@ async function wait(d: RevealDeps, p: AgentPrincipal, id: string): Promise<Revea
     try { s = await d.api.reveal(p.accessToken, id); } catch (e) { d.pending.take(id); throw e; }
     if (s.status === "approved") {
       try {
-        const fields = await openReveal(s.sealed, { requestId: id, recordId: pr.recordId, agentId: p.agentId }, pr.keys);
+        let fields: Record<string, string>;
+        try { fields = await openReveal(s.sealed, { requestId: id, recordId: pr.recordId, agentId: p.agentId }, pr.keys, b64url.decode(pr.ownerPublicKey), pr.fields); }
+        catch { d.log?.error({ event: "reveal_unverified", requestId: id }); return refused("unverified"); }
         const releases = Object.values(fields).map((v) => d.held.hold(v));
         return { fields, release: () => { for (const r of releases) r(); } };
       } finally { d.pending.take(id); }

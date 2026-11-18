@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentRevealRequestMessage, verifyGatewayMessage, type RecordBody } from "@clane-vault/crypto";
+import { agentRevealRequestMessage, generateKeyPair, verifyGatewayMessage, type RecordBody } from "@clane-vault/crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createGateway } from "../src/app.js";
@@ -77,6 +77,15 @@ describe("get_secret", () => {
     expect(await verifyGatewayMessage(b.signature, "q1", msg, identity)).toBe(true);
   });
 
+  it("an approval the owner's key did not seal is `unverified` and releases nothing; an unrequested field is dropped (I1)", async () => {
+    const { api, tool, ask } = await setup();
+    const apiKey = (await generateKeyPair()).privateKey; // what a malicious API holds: the request's public key, not the owner's private key
+    api.personal.onReveal((r) => api.personal.approveReveal(r.id, { username: "forged" }, apiKey));
+    expect(await tool("get_secret", ask)).toEqual({ error: "refused", reason: "unverified" });
+    api.personal.onReveal((r) => api.personal.approveReveal(r.id, { username: "u", notes: "injected" }));
+    expect(await tool("get_secret", ask)).toEqual({ fields: { username: "u" } });
+  });
+
   it("a field outside the stub is `field`, an item without a stub `reveal_off`, an unknown item `not_found`: no API call", async () => {
     const { api, tool, ask, asked } = await setup();
     await api.personal.addRecord({ ...login, title: "Plain" });
@@ -144,16 +153,25 @@ describe("PendingReveals", () => {
   it("zeroes a key when it is taken or swept, and gives a request only to its own agent", () => {
     const p = new PendingReveals();
     const k = { privateKey: new Uint8Array([1, 2, 3]), publicKey: new Uint8Array(32) };
-    p.add({ id: "q", agentId: "a", recordId: "r", keys: k, expiresAt: 1000 });
+    const later = Date.now() + 60e3;
+    p.add({ id: "q", agentId: "a", recordId: "r", fields: ["username"], ownerPublicKey: "", keys: k, expiresAt: later });
     expect(p.get("q", "b")).toBeUndefined();
     expect(p.get("q", "a")?.recordId).toBe("r");
     p.take("q");
     expect([...k.privateKey]).toEqual([0, 0, 0]);
     const k2 = { privateKey: new Uint8Array([4]), publicKey: new Uint8Array(32) };
-    p.add({ id: "q2", agentId: "a", recordId: "r", keys: k2, expiresAt: 1000 });
-    p.sweep(1001);
+    p.add({ id: "q2", agentId: "a", recordId: "r", fields: ["username"], ownerPublicKey: "", keys: k2, expiresAt: later });
+    p.sweep(later + 1);
     expect(p.get("q2", "a")).toBeUndefined();
     expect([...k2.privateKey]).toEqual([0]);
+  });
+
+  it("an expired one-time key is zeroed on any access, not only on add (M4)", () => {
+    const pending = new PendingReveals();
+    const keys = { publicKey: new Uint8Array(32), privateKey: new Uint8Array(32).fill(7) };
+    pending.add({ id: "q", agentId: "a", recordId: "r", fields: ["username"], ownerPublicKey: "", keys, expiresAt: Date.now() - 1 });
+    expect(pending.get("other", "a")).toBeUndefined();
+    expect(keys.privateKey.every((b) => b === 0)).toBe(true);
   });
 });
 

@@ -2,7 +2,8 @@ import { b64url, utf8 } from "./encoding.js";
 import { envKeys, envValue } from "./envFile.js";
 import { coreKeysOf, dataKeysOf, type RecordType } from "./recordTypes.js";
 import type { RecordBody } from "./records.js";
-import { openSealed, sealTo } from "./seal.js";
+import { hkdf } from "./hkdf.js";
+import { openSealed, sealTo, shared } from "./seal.js";
 import { totpCode } from "./totp.js";
 import type { SealKeys } from "./sharing.js";
 
@@ -230,12 +231,18 @@ export const agentRevealRequestMessage = (m: { requestId: string; ownerUserId: s
   `agent-reveal-request:${m.requestId}:${m.ownerUserId}:${m.agentId}:${m.recordId}:${[...m.fields].sort().join(",")}:${m.requestPublicKey}:${m.expiresAt}`;
 export const agentRevealAad = (requestId: string, recordId: string, agentId: string) => `agent-reveal:${requestId}:${recordId}:${agentId}`;
 type RevealIds = { requestId: string; recordId: string; agentId: string };
-export const sealReveal = (fields: Record<string, string>, ids: RevealIds, requestPublicKey: Uint8Array) =>
-  sealTo(requestPublicKey, utf8.encode(JSON.stringify(fields)), agentRevealAad(ids.requestId, ids.recordId, ids.agentId));
-export async function openReveal(sealed: string, ids: RevealIds, keys: SealKeys): Promise<Record<string, string>> {
-  const o = JSON.parse(utf8.decode(await openSealed(keys.privateKey, keys.publicKey, sealed, agentRevealAad(ids.requestId, ids.recordId, ids.agentId))));
+/** HKDF of X25519(owner, one-time request key): only the owner (or the request key's holder) can compute it, so it proves who sealed. */
+const revealOwnerTag = async (privateKey: Uint8Array, publicKey: Uint8Array) =>
+  b64url.encode(await hkdf(await shared(privateKey, publicKey), new Uint8Array(0), "clane-vault/agent-reveal-owner", 32));
+/** Allow once: sealed to the one-time key, with the owner tag in the AAD so the API cannot forge an approval. */
+export const sealReveal = async (fields: Record<string, string>, ids: RevealIds, requestPublicKey: Uint8Array, ownerPrivateKey: Uint8Array) =>
+  sealTo(requestPublicKey, utf8.encode(JSON.stringify(fields)), `${agentRevealAad(ids.requestId, ids.recordId, ids.agentId)}:${await revealOwnerTag(ownerPrivateKey, requestPublicKey)}`);
+/** Throws unless the owner whose key is `ownerPublicKey` sealed it; returns only the `requested` fields. */
+export async function openReveal(sealed: string, ids: RevealIds, keys: SealKeys, ownerPublicKey: Uint8Array, requested: string[]): Promise<Record<string, string>> {
+  const aad = `${agentRevealAad(ids.requestId, ids.recordId, ids.agentId)}:${await revealOwnerTag(keys.privateKey, ownerPublicKey)}`;
+  const o = JSON.parse(utf8.decode(await openSealed(keys.privateKey, keys.publicKey, sealed, aad)));
   if (!o || typeof o !== "object" || Array.isArray(o) || Object.values(o).some((v) => typeof v !== "string")) throw new Error("reveal is invalid");
-  return o as Record<string, string>;
+  return Object.fromEntries(Object.entries(o as Record<string, string>).filter(([k]) => requested.includes(k)));
 }
 
 /** Standing reveal (spec §5.6), inside the encrypted body: which agents may read which fields without asking. */

@@ -66,7 +66,7 @@ describe("the reveal approval sheet", () => {
     expect(sheet).toHaveTextContent("Username");
     await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
     await waitFor(() => expect(approved).not.toBeNull());
-    const out = await openReveal(approved!.sealed, { requestId: r.id, recordId: RECORD_ID, agentId: AGENT_ID }, oneTime);
+    const out = await openReveal(approved!.sealed, { requestId: r.id, recordId: RECORD_ID, agentId: AGENT_ID }, oneTime, me.publicKey, r.fields);
     expect(out).toEqual({ username: "u" });
     expect(JSON.stringify(out)).not.toContain(SEED);
   });

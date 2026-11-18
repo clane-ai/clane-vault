@@ -90,14 +90,18 @@ export function revealFieldLabel(body: Pick<RecordBody, "type" | "fields">, ref:
 
 /** Allow once: only the asked fields, sealed to the request's one-time key. Sends nothing when checkRequest is not "ok". */
 export function useApproveReveal() {
-  const { user } = useSession();
+  const { user, keys } = useSession();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (v: { r: RevealRequest; record: VaultRecord | undefined }) => {
-      if (!user) throw new Error("Not signed in");
+      if (!user || !keys) throw new Error("Vault locked");
       if (await checkRequest(v.r, user.id, v.record) !== "ok") throw new Error("This request can't be allowed.");
       const fields = await revealFieldsOf(v.record!.body!, v.r.fields);
-      const sealed = await sealReveal(fields, { requestId: v.r.id, recordId: v.r.recordId, agentId: v.r.agentId }, b64url.decode(v.r.requestPublicKey));
+      // The owner's key goes into the seal (I1), so the gateway can tell an approval from one the API made up.
+      const priv = keys.privateKey.slice();
+      let sealed: string;
+      try { sealed = await sealReveal(fields, { requestId: v.r.id, recordId: v.r.recordId, agentId: v.r.agentId }, b64url.decode(v.r.requestPublicKey), priv); }
+      finally { priv.fill(0); }
       await api.post(`/me/agent-reveals/${v.r.id}/approve`, { sealed });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: [KEY] }),
