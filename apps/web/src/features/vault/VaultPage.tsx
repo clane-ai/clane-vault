@@ -380,7 +380,8 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                 <ShareSheet record={selected} teamFolder={folderOf(selected.folderId)?.kind === "team" ? folderOf(selected.folderId) : null} open={sharing} onClose={() => setSharing(false)}
                   onShare={(p, perm) => v.shareRecord(selected, p, perm)} onShareIn={(o, p, perm) => v.shareRecordIn(selected, o, p, perm)} onUpdate={(uid, perm) => v.updateShare(selected.id, uid, perm)} onRemove={(uid) => v.unshare(selected.id, uid)}
                   onGrantAgent={(a) => v.grantAgent(selected, a)} onRevokeAgent={(id) => v.revokeAgentGrant(selected.id, id)}
-                  onSetAgentWrite={(id, write) => v.setAgentWrite(selected.id, id, write)} />
+                  onSetAgentWrite={(id, write) => v.setAgentWrite(selected.id, id, write)}
+                  onSetAgentReveal={(a, fields) => v.setAgentReveal(selected, a, fields)} onUnrevealAgent={(id) => v.revokeAgentReveal(selected.id, id)} />
               )}
             </div>
           )}

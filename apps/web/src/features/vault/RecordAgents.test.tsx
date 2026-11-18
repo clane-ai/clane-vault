@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import {
   agentUpdateMessage, b64url, decryptRecordBody, encryptNewRecord, encryptRecordBody, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openPersonalAgentRecordKey, randomBytes,
-  sha256B64, signGatewayMessage, signPersonalAgentKey,
+  openRevealStub, sha256B64, signGatewayMessage, signPersonalAgentKey,
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
@@ -28,6 +28,8 @@ vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: null, orgs: [ORG], 
 
 let gw: { identity: GatewayIdentity; attest: (publicKey: string) => Promise<string>; sign: (message: string) => Promise<string> };
 let writeAllowed: boolean;
+/** rules.reveal and the gateway's GATEWAY_REVEAL as GET /me/agents reports them. */
+let reveal: { rules: string; gateway: string };
 /** The server's side of Changed by agent: an ack or a save drops it from /sync; `syncs` counts the refetches. */
 let srv: { acked: boolean; saved: boolean; syncs: number };
 let agents: MyAgent[];
@@ -41,11 +43,13 @@ beforeEach(async () => {
   gw = { identity, attest: (publicKey) => signPersonalAgentKey(kp.privateKey, identity.keyId, { ownerUserId: ME, ownerPublicKey, agentId: AGENT_ID, publicKey }),
     sign: (message) => signGatewayMessage(kp.privateKey, identity.keyId, "u1", message) };
   writeAllowed = false;
+  reveal = { rules: "off", gateway: "off" };
   srv = { acked: false, saved: false, syncs: 0 };
   await pinGateway(ME, PERSONAL_SLOT, identity);
   agents = [row({ attestation: await gw.attest(agentPub) })];
   server.use(
-    http.get("/api/v1/me/agents", () => HttpResponse.json({ agents, allowance: { used: 1, allowed: 2 }, rules: { allowed: true, blockedByOrgId: null, write: writeAllowed, reveal: "off" }, gateway: null, revealEmail: true })),
+    http.get("/api/v1/me/agents", () => HttpResponse.json({ agents, allowance: { used: 1, allowed: 2 }, rules: { allowed: true, blockedByOrgId: null, write: writeAllowed, reveal: reveal.rules },
+      gateway: { url: "https://gw.test/mcp", identityKeyId: identity.keyId, identityPublicKey: identity.publicKey, reveal: reveal.gateway }, revealEmail: true })),
     http.get("/api/v1/records/:id/activity", () => HttpResponse.json({ events: [] })),
     http.get("/api/v1/users", () => HttpResponse.json({ users: [] })),
   );
@@ -53,7 +57,7 @@ beforeEach(async () => {
 
 async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
   const id = crypto.randomUUID();
-  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, password: "pw" }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
+  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw" }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
@@ -239,6 +243,51 @@ describe("giving an item to a personal agent", () => {
     const section = await openShare();
     await within(section).findByRole("combobox", { name: "Access for My bot" });
     expect(within(section).queryByRole("checkbox", { name: "Agent can update this item" })).toBeNull();
+  });
+});
+
+describe("Can reveal", () => {
+  it("Can reveal with the default field seals a stub to the agent and gives it no record key", async () => {
+    reveal = { rules: "approval", gateway: "approval" };
+    const { id } = await serveRecord();
+    let put: { path: string; body: { sealedStub: string; fields: string[] } } | null = null, granted = false;
+    server.use(
+      http.put("/api/v1/records/:id/agent-reveal/:agentId", async ({ params, request }) => { put = { path: `${params.id}/${params.agentId}`, body: (await request.json()) as never }; return HttpResponse.json({ ok: true }); }),
+      http.post("/api/v1/records/:id/agent-grants", () => { granted = true; return HttpResponse.json({ ok: true }, { status: 201 }); }),
+    );
+    const section = await openShare();
+    await choose(section, "Can reveal");
+    expect(within(section).getByText("Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.")).toBeInTheDocument();
+    expect(within(section).getByText("Prefer Can use. Reveal only what can't be sent in an HTTP call and is easy to change.")).toBeInTheDocument();
+    expect(within(section).getByRole("checkbox", { name: "Password" })).not.toBeChecked();
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    expect(put!.path).toBe(`${id}/${AGENT_ID}`);
+    expect(put!.body.fields).toEqual(["username"]);
+    expect(await openRevealStub(put!.body.sealedStub, { ownerUserId: ME, agentId: AGENT_ID, recordId: id }, agentKeys)).toEqual({ title: "Stripe", type: "login", fields: ["username"] });
+    expect(granted).toBe(false);
+  });
+
+  it("the reveal options are absent when the gateway or the rules say off", async () => {
+    for (const r of [{ rules: "approval", gateway: "off" }, { rules: "off", gateway: "approval" }]) {
+      reveal = r;
+      await serveRecord();
+      const section = await openShare();
+      await userEvent.click(await within(section).findByRole("combobox", { name: "Access for My bot" }));
+      expect(await screen.findByRole("option", { name: "Can use" })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Can reveal" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("an env file lists its keys, none ticked, and no whole-file option", async () => {
+    reveal = { rules: "approval", gateway: "approval" };
+    await serveRecord({ envFile: true, agentPolicy: false });
+    const section = await openShare();
+    await choose(section, "Can reveal");
+    expect(within(section).getByRole("checkbox", { name: "STRIPE_KEY" })).not.toBeChecked();
+    expect(within(section).queryByRole("checkbox", { name: /Contents/ })).toBeNull();
+    expect(within(section).getByRole("button", { name: "Save" })).toBeDisabled();
   });
 });
 

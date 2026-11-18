@@ -96,7 +96,7 @@ function PersonalSharing({ record, onShareIn }: { record: VaultRecord; onShareIn
   );
 }
 
-export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent, onSetAgentWrite }: {
+export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent, onSetAgentWrite, onSetAgentReveal, onUnrevealAgent }: {
   record: VaultRecord; teamFolder: VaultFolder | null; open: boolean; onClose: () => void;
   onShare: (p: Person, permission: Grant) => Promise<unknown>;
   /** Personal space: share inside one of my organisations. */ onShareIn?: (inOrg: Org, p: Person, permission: Grant) => Promise<unknown>;
@@ -105,6 +105,8 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
   /** Personal space: give this record to one of my personal agents, or take it away. */
   onGrantAgent?: (agent: MyAgent) => Promise<GrantResult>; onRevokeAgent?: (agentId: string) => Promise<unknown>;
   onSetAgentWrite?: (agentId: string, write: boolean) => Promise<unknown>;
+  /** *Can reveal* on, with these fields, or off. */
+  onSetAgentReveal?: (agent: MyAgent, fields: string[]) => Promise<GrantResult>; onUnrevealAgent?: (agentId: string) => Promise<unknown>;
 }) {
   const { user, org } = useSession();
   const people = usePeople();
@@ -150,7 +152,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
               <SheetBody className="gap-6 pt-5">
                 {!org ? <>
                   <PersonalSharing record={record} onShareIn={onShareIn} />
-                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} onSetWrite={onSetAgentWrite} />}
+                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} onSetWrite={onSetAgentWrite} onSetReveal={onSetAgentReveal} onUnreveal={onUnrevealAgent} />}
                 </> : <>
                 <section aria-label="Add people" className="flex flex-col gap-2.5">
                   <h3 className="text-[13px] font-medium text-text-primary">Add people</h3>
