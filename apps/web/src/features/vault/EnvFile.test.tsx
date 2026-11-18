@@ -174,7 +174,7 @@ describe("the record panel", () => {
     expect(copySecret).toHaveBeenLastCalledWith("sk_live_1");
   });
 
-  it("Copy all copies the file; Download gives the stored bytes under the file name", async () => {
+  it("Copy all copies the file; Download gives the stored bytes, named after the title for a dot file name", async () => {
     const blobs: Blob[] = [];
     vi.spyOn(URL, "createObjectURL").mockImplementation((b) => { blobs.push(b as Blob); return "blob:env"; });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
@@ -184,7 +184,7 @@ describe("the record panel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy all" }));
     expect(copySecret).toHaveBeenLastCalledWith(FILE);
     await userEvent.click(screen.getByRole("button", { name: "Download" }));
-    expect(names).toEqual([".env.production"]);
+    expect(names).toEqual(["web-shop.env.production"]);
     expect(await bytesOf(blobs[0]!)).toEqual([...BYTES]);
   });
 

@@ -316,7 +316,8 @@ test("10. a .env file item: entries masked, a byte-identical download, found by 
   await details(member).getByRole("button", { name: "Hide STRIPE_KEY" }).click();
 
   const [dl] = await Promise.all([member.waitForEvent("download"), details(member).getByRole("button", { name: "Download" }).click()]);
-  // The app names it ".env"; Chromium drops a leading dot from a download's name, so only the bytes are checked.
+  // A dot name follows the title's slug: Chromium would save ".env" as "env".
+  expect(dl.suggestedFilename()).toBe("billing-env.env");
   expect(readFileSync(await dl.path()).equals(ENV_FILE)).toBe(true);
 
   const row = member.getByRole("button", { name: /Billing env/ });

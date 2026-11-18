@@ -51,11 +51,11 @@ export function keepEol(stored: string, edited: string): string {
   return units.slice(0, p).join("") + edited.slice(p, edited.length - s).replace(/\n/g, eol) + units.slice(units.length - s).join("");
 }
 
-/** Saves exactly the stored text (as UTF-8) under the item's file name when that is a plain name, else `.env`. */
-export function downloadEnv(content: string, fileName?: string): void {
+/** Saves exactly the stored text (as UTF-8) under envFileName: the item's file name, or `<title-slug>.env` for a dot name or none. */
+export function downloadEnv(content: string, fileName?: string, title?: string): void {
   const url = URL.createObjectURL(new Blob([content], { type: "application/octet-stream" }));
   const a = document.createElement("a");
-  a.href = url; a.download = envFileName(fileName);
+  a.href = url; a.download = envFileName(fileName, title);
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -116,13 +116,13 @@ export function EnvDiff({ before, after }: { before: string; after: string }) {
 }
 
 /** The panel's part for an env file: Copy all and Download above the entry list. */
-export function EnvPanelSection({ content, fileName, useOnly }: { content: string; fileName?: string; useOnly: boolean }) {
+export function EnvPanelSection({ content, fileName, title, useOnly }: { content: string; fileName?: string; title?: string; useOnly: boolean }) {
   return (
     <section aria-label="Entries in this file" className="flex flex-col gap-2">
       <div className="flex items-center gap-1">
         <h3 className={cn(eyebrow, "mr-auto")}>Entries</h3>
         <span className="flex items-center gap-1 rounded-[8px] border border-border-default pl-2 text-[12.5px] text-text-secondary"><span aria-hidden="true">Copy all</span><CopyButton value={content} label="Copy all" /></span>
-        {!useOnly && <Button variant="outline" size="sm" onClick={() => downloadEnv(content, fileName)}><Download className="size-3.5" />Download</Button>}
+        {!useOnly && <Button variant="outline" size="sm" onClick={() => downloadEnv(content, fileName, title)}><Download className="size-3.5" />Download</Button>}
       </div>
       <EnvEntries content={content} useOnly={useOnly} />
     </section>

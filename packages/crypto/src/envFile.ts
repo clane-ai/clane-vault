@@ -148,5 +148,14 @@ export function checkEnvContent(text: string): void {
   if (entriesOf(text).length > MAX_ENV_ENTRIES) throw new Error("env file has too many entries");
 }
 
-/** The name a download gets: `name` when it matches /^[A-Za-z0-9._-]{1,100}$/ and is not only dots, else ".env". (`safeFilename` strips the leading dot, so it is not used here.) */
-export const envFileName = (name?: string): string => (name && /^[A-Za-z0-9._-]{1,100}$/.test(name) && !/^\.+$/.test(name) ? name : ".env");
+/**
+ * The name a download gets. `name` when it matches /^[A-Za-z0-9._-]{1,100}$/, is not only dots and doesn't start with a dot.
+ * Chrome and Edge drop a leading dot (`.env` arrives as `env`), so a dot name, or none, follows the title's slug:
+ * `.env` → `billing-api.env`, `.env.production` → `billing-api.env.production`.
+ */
+export function envFileName(name?: string, title = ""): string {
+  const plain = !!name && /^[A-Za-z0-9._-]{1,100}$/.test(name) && !/^\.+$/.test(name);
+  if (plain && !name.startsWith(".")) return name;
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60).replace(/-$/, "");
+  return slug + (plain ? name : ".env");
+}

@@ -42,5 +42,8 @@ describe("env files (spec §10.3)", () => {
     expect(() => checkEnvContent(Array.from({ length: 501 }, (_, i) => `K${i}=1`).join("\n"))).toThrow("too many");
     expect(() => checkEnvContent("A=1\u0000")).toThrow("text");
     expect([envFileName(".env.production"), envFileName("../x"), envFileName(".."), envFileName(undefined)]).toEqual([".env.production", ".env", ".env", ".env"]);
+    // A dot name, or none, follows the title's slug (Chrome and Edge drop a leading dot); a plain name stays as it is.
+    expect([envFileName(".env", "Billing API"), envFileName(undefined, "Billing API"), envFileName("../x", "Billing API"), envFileName(".env.production", "Web shop"), envFileName("prod.env", "Web shop")])
+      .toEqual(["billing-api.env", "billing-api.env", "billing-api.env", "web-shop.env.production", "prod.env"]);
   });
 });

@@ -114,7 +114,7 @@ function DepositCard({ d, folders, records, agent, agentName, onKept, onReplaced
             <div className="flex flex-col gap-1.5 pl-6">
               <EnvDiff before={target.body?.data?.content ?? ""} after={b.data?.content ?? ""} />
               <p className="text-[12.5px] text-text-primary">The current contents will be replaced.</p>
-              <div><Button variant="outline" size="sm" onClick={() => downloadEnv(target.body?.data?.content ?? "", target.body?.data?.fileName)}><Download className="size-3.5" />Download current</Button></div>
+              <div><Button variant="outline" size="sm" onClick={() => downloadEnv(target.body?.data?.content ?? "", target.body?.data?.fileName, target.body?.title)}><Download className="size-3.5" />Download current</Button></div>
               <p className="text-[12.5px] text-text-secondary">The existing item keeps its own agent settings.</p>
             </div>
           )}

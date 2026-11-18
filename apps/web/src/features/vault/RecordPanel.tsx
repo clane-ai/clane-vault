@@ -225,7 +225,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
               </div>
             )}
 
-            {env && b.data?.content && <EnvPanelSection key={record.id} content={b.data.content} fileName={b.data.fileName} useOnly={useOnly} />}
+            {env && b.data?.content && <EnvPanelSection key={record.id} content={b.data.content} fileName={b.data.fileName} title={b.title} useOnly={useOnly} />}
 
             {b.notes && (
               <section className="flex flex-col gap-2" aria-label="Notes">

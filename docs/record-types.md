@@ -40,8 +40,10 @@ folder: if you want one, make a folder such as *Env backups*. It is an ordinary 
 stored: the entries you see are parsed from it each time (`parseEnv`, `packages/crypto/src/envFile.ts`, used by the web
 app and the agent gateway alike). **Download** saves exactly that text, so the file you get back is byte-identical to the
 one you dropped in: CRLF line endings, a byte-order mark, comments, spacing and lines the parser doesn't understand
-included. The download is named after *File name* when that is a plain name, else `.env`. Chrome and Edge drop the leading dot
-of a downloaded file's name (`.env` arrives as `env`): rename it after the download.
+included. The download is named after *File name* when that is a plain name such as `prod.env`. Chrome and Edge drop the leading
+dot of a downloaded file's name (`.env` would arrive as `env`), so a name that starts with a dot, or no name, follows the
+item's title: *Billing API* with `.env` downloads as `billing-api.env`, with `.env.production` as
+`billing-api.env.production`. Rename it to `.env` after the download.
 
 **In the editor**, drop a file on the drop zone or use **Choose file**. The file is read as strict UTF-8. Dropping it
 fills *File name* and, from `.env.<name>` or `<name>.env`, *Environment*, when those are empty. Below it each entry is
