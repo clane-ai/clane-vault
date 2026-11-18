@@ -9,6 +9,7 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   const token = randomBytes(24).toString("base64url");
   let down = !!o.down;
   let signWrongAgent = false;
+  let reveal: string | undefined;
   let priv: Uint8Array = new Uint8Array();
   const identity: GatewayIdentityInfo = { keyId: "", publicKey: "" };
   const rotateIdentity = async () => {
@@ -26,7 +27,7 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
     if (down) return send(503, { error: "down" });
     if (req.headers["x-gateway-token"] !== token) return send(401, { error: "unauthorized" });
     const url = req.url ?? "";
-    if (req.method === "GET" && url === "/internal/health") return send(200, { ok: true, identity: { ...identity } });
+    if (req.method === "GET" && url === "/internal/health") return send(200, { ok: true, identity: { ...identity }, ...(reveal ? { reveal } : {}) });
     if (req.method === "POST" && url === "/internal/agents") {
       let raw = "";
       for await (const c of req) raw += c;
@@ -50,6 +51,8 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token, identity, created, dropped, rotateIdentity,
     setDown(d: boolean) { down = d; },
+    /** Tests: what /internal/health reports as GATEWAY_REVEAL (undefined: an older gateway that says nothing). */
+    setReveal(m: string | undefined) { reveal = m; },
     /** Tests: sign as the gateway's identity key (deposits, updates). */
     sign: (tag: GatewaySigTag, message: string) => signGatewayMessage(priv, identity.keyId, tag, message),
     /** Tests: attest a different agent id than the one asked for. */

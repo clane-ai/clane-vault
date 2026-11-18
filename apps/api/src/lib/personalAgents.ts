@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { recordOrgOf, type Db } from "./access.js";
 import { AgentLimitError } from "./agents.js";
 import { lockUser } from "./orgs.js";
+import { logEvent } from "./events.js";
 import { getEntitlements, getPersonalEntitlements, PLAN_SELECT } from "./plans.js";
 import { readPolicies, type Policies } from "./policies.js";
 
@@ -109,6 +110,16 @@ export async function connectedApp(db: Db, a: FastifyRequest["agent"]): Promise<
   return (g && (await db.agentOAuthClient.findUnique({ where: { id: g.clientId }, select: { name: true } }))?.name) ?? "";
 }
 
+/** Claims a pending or approved request past its expiry as expired (sealed nulled) and logs agent.reveal_expired once. */
+export async function expireReveal(db: PrismaClient, id: string, now = new Date()): Promise<boolean> {
+  return db.$transaction(async (tx) => {
+    const r = await tx.agentRevealRequest.findUnique({ where: { id }, select: { agentId: true, recordId: true, fields: true, connectedApp: true } });
+    if (!r || !(await tx.agentRevealRequest.updateMany({ where: { id, status: { in: ["pending", "approved"] }, expiresAt: { lte: now } }, data: { status: "expired", sealed: null } })).count) return false;
+    await logEvent(tx, { actorId: r.agentId, action: "agent.reveal_expired", recordId: r.recordId, meta: { requestId: id, fields: r.fields, app: r.connectedApp } });
+    return true;
+  });
+}
+
 /** Kept overwrites per record (the newest), and how long. */
 export const OVERWRITE_KEEP = 5;
 export const OVERWRITE_TTL_MS = 30 * 86400e3;
@@ -117,7 +128,11 @@ export const OVERWRITE_TTL_MS = 30 * 86400e3;
 export async function sweepAgentWrites(prisma: PrismaClient, now = new Date()): Promise<number> {
   const d = await prisma.agentDeposit.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - DEPOSIT_TTL_MS) } } });
   const o = await prisma.recordAgentOverwrite.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - OVERWRITE_TTL_MS) } } });
-  return d.count + o.count;
+  // Reveal requests past their expiry lose any sealed reply, and log their expiry once.
+  let x = 0;
+  for (const r of await prisma.agentRevealRequest.findMany({ where: { status: { in: ["pending", "approved"] }, expiresAt: { lte: now } }, select: { id: true } }))
+    if (await expireReveal(prisma, r.id, now)) x++;
+  return d.count + o.count + x;
 }
 
 export interface PersonalRotation { records: { id: string }[]; revealed: { id: string; fields: string[] }[] }
@@ -136,11 +151,20 @@ export async function revokePersonalAgent(tx: Db, agentUserId: string, byUserId:
   await tx.recordAccess.deleteMany({ where: { holderType: "user", holderId: agentUserId } });
   await tx.agentDeposit.deleteMany({ where: { agentId: agentUserId } }); // unkept ones; kept records are the owner's
   await tx.agentRevealGrant.deleteMany({ where: { agentId: agentUserId } });
+  await tx.agentRevealRequest.updateMany({ where: { agentId: agentUserId, status: { in: ["pending", "approved"] } }, data: { status: "expired", sealed: null } });
+  // What the model was shown: the owner changes these fields (field names only, from the agent's own events).
+  const shown = new Map<string, Set<string>>();
+  for (const e of await tx.event.findMany({ where: { actorId: agentUserId, action: "agent.reveal", recordId: { not: null } }, select: { recordId: true, meta: true } })) {
+    const f = (e.meta as { fields?: unknown } | null)?.fields;
+    const set = shown.get(e.recordId!) ?? new Set<string>();
+    if (Array.isArray(f)) for (const x of f) if (typeof x === "string") set.add(x);
+    shown.set(e.recordId!, set);
+  }
   await tx.agentToken.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.agentGrant.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.user.update({ where: { id: agentUserId }, data: { status: "disabled" } });
   await logLifecycle(tx, a.ownerUserId!, "revoke", agentUserId);
-  return { records: held.map((r) => ({ id: r.recordId })), revealed: [] };
+  return { records: held.map((r) => ({ id: r.recordId })), revealed: [...shown].map(([id, f]) => ({ id, fields: [...f].sort() })) };
 }
 
 /** Revokes every live personal agent of the owner, then deletes all of that owner's agents' User rows (R3); returns their ids. */

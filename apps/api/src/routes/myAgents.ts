@@ -54,13 +54,14 @@ export const myAgentRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/", async (req) => {
     const owner = me(req);
-    const [rows, rules, ownerRow, gw] = await Promise.all([
+    const [rows, rules, ownerRow, gw, reveal] = await Promise.all([
       app.prisma.agent.findMany({ where: { ownerUserId: owner }, orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } },
         tokens: { orderBy: { createdAt: "asc" }, select: { id: true, label: true, createdAt: true, expiresAt: true, lastUsedAt: true, revokedAt: true } },
         grants: { where: { revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "asc" }, select: { id: true, clientId: true, createdAt: true } } } }),
       personalAgentRules(app.prisma, app.config, owner),
-      app.prisma.user.findUniqueOrThrow({ where: { id: owner }, select: { publicKey: true } }),
+      app.prisma.user.findUniqueOrThrow({ where: { id: owner }, select: { publicKey: true, agentRevealEmail: true } }),
       gatewayInfo(app).catch(() => null), // by design an unreachable gateway, or a changed identity (GatewayIdentityChanged), shows as no gateway here instead of failing the list
+      app.gateway.revealMode().catch(() => "off" as const),
     ]);
     const [items, clients] = await Promise.all([
       app.prisma.recordAccess.groupBy({ by: ["holderId"], where: { holderType: "user", holderId: { in: rows.map((r) => r.userId) }, state: "active" }, _count: true }),
@@ -79,11 +80,18 @@ export const myAgentRoutes: FastifyPluginAsync = async (app) => {
       })),
       allowance: { used: rows.filter((r) => !r.revokedAt).length, allowed: rules.max },
       rules: { allowed: rules.allowed, blockedByOrgId: rules.blockedByOrgId, write: rules.write, reveal: rules.reveal },
-      gateway: gw, revealEmail: true,
+      gateway: gw && { ...gw, reveal }, revealEmail: ownerRow.agentRevealEmail,
     };
   });
 
   app.get("/gateway", async () => gatewayInfo(app));
+
+  /** Owner settings for all their agents. */
+  app.patch("/settings", async (req) => {
+    const b = z.object({ revealEmail: z.boolean() }).strict().parse(req.body);
+    await app.prisma.user.update({ where: { id: me(req) }, data: { agentRevealEmail: b.revealEmail } });
+    return { ok: true };
+  });
 
   /** The owner's browser checked the attestation and the fingerprints; `publicKey` is the key it checked. */
   app.post("/:id/verify", async (req, reply) => verifyAgent(app, req, reply, () => mine(req, reply),
