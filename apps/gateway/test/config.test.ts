@@ -6,7 +6,7 @@ const base = { API_URL: "http://api:3001/api/v1", GATEWAY_API_TOKEN: "t".repeat(
 describe("loadConfig", () => {
   it("applies the defaults", () => {
     expect(loadConfig(base)).toEqual({ apiUrl: base.API_URL, apiToken: base.GATEWAY_API_TOKEN, publicUrl: base.PUBLIC_URL, kek: "file:/k", identityKeyFile: "/id.json",
-      cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [], port: 3002, internalPort: 3003, internalHost: "0.0.0.0", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10 });
+      cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [], port: 3002, internalPort: 3003, internalHost: "0.0.0.0", trustProxy: 0, writePerHour: 20, reveal: "approval", revealPerHour: 10 });
   });
   it("parses overrides", () => {
     expect(loadConfig({ ...base, GATEWAY_CACHE_TTL_SECONDS: "0", GATEWAY_ALLOW_PRIVATE_CIDRS: "10.0.0.0/8, fd00::/8", TRUST_PROXY: "1", INTERNAL_HOST: "10.0.0.5", PUBLIC_URL: "http://localhost:3002/mcp" }))
@@ -32,7 +32,12 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, GATEWAY_WRITE_PER_HOUR: "5" }).writePerHour).toBe(5);
     for (const bad of ["0", "-1", "1.5", "x"]) expect(() => loadConfig({ ...base, GATEWAY_WRITE_PER_HOUR: bad }), bad).toThrow(/GATEWAY_WRITE_PER_HOUR/);
   });
-  it("GATEWAY_REVEAL: off by default, off|approval|standing; GATEWAY_REVEAL_PER_HOUR 10, a positive integer", () => {
+  it("GATEWAY_REVEAL: approval by default (unset or blank), off|approval|standing; GATEWAY_REVEAL_PER_HOUR 10, a positive integer", () => {
+    expect(loadConfig(base).reveal).toBe("approval");
+    // The compose file passes it blank when the operator's .env doesn't set it.
+    expect(loadConfig({ ...base, GATEWAY_REVEAL: "" }).reveal).toBe("approval");
+    // Off is the operator's to choose, and standing is never reached without being set.
+    expect(loadConfig({ ...base, GATEWAY_REVEAL: "off" }).reveal).toBe("off");
     for (const m of ["off", "approval", "standing"]) expect(loadConfig({ ...base, GATEWAY_REVEAL: m }).reveal).toBe(m);
     expect(() => loadConfig({ ...base, GATEWAY_REVEAL: "always" })).toThrow(/GATEWAY_REVEAL/);
     expect(loadConfig({ ...base, GATEWAY_REVEAL_PER_HOUR: "3" }).revealPerHour).toBe(3);
