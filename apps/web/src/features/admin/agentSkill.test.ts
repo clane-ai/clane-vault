@@ -11,7 +11,7 @@ describe("the Clane Vault agent skill (spec §11)", () => {
     const short = SKILL.split("\n## The rules in short\n\n")[1]!.split("\n\n## ")[0]!;
     expect(short).toBe(AGENT_PROMPT);
     expect(AGENT_PROMPT.length).toBeLessThanOrEqual(1500);
-    expect(AGENT_PROMPT.split("\n")).toHaveLength(6);
+    expect(AGENT_PROMPT.split("\n")).toHaveLength(7);
   });
 
   it("is a valid skill: name, a one-line description, under 500 lines; the docs give its install command", () => {
@@ -19,7 +19,7 @@ describe("the Clane Vault agent skill (spec §11)", () => {
     expect(name).toBe("clane-vault");
     expect(description!.length).toBeLessThanOrEqual(1024);
     expect(SKILL.split("\n").length).toBeLessThanOrEqual(500);
-    expect(SKILL).not.toContain("get_secret"); // Phase C adds it (Tasks 18 and 21); delete this line there
+    expect(SKILL).toContain("## Reading a value (personal agents)");
     expect(readFileSync(path.join(root, "docs/agents.md"), "utf8")).toContain(SKILL_INSTALL);
   });
 });

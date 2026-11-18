@@ -1,5 +1,5 @@
 import {
-  CryptoError, agentSecretOf, basicUsername, decryptFolderName, envKeys, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, unwrapKey,
+  CryptoError, agentSecretOf, basicUsername, decryptFolderName, envKeys, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, openRevealStub, unwrapKey,
   type AgentInject, type AgentMethod, type AgentPolicy, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import { isPersonal, type AgentSync, type OrgAgentSync, type PersonalAgentSync } from "./apiClient.js";
@@ -12,6 +12,8 @@ export interface ItemSummary {
   revision: number; deposit?: true; can_update?: true;
   /** An env file's: its keys (never a value), and the one entry its policy injects. */
   env_keys?: string[]; env_injects?: string;
+  /** A personal agent's kept record or reveal stub: "use" when it holds the record key, "reveal" when the owner allowed get_secret. */
+  modes?: ("use" | "reveal")[]; reveal?: { fields: string[]; approval: boolean };
 }
 /** A personal agent's unkept deposits are listed with its records: the same handles, opened with agentSealedKey. */
 type SyncRecord = (AgentSync["records"][number] | PersonalAgentSync["records"][number]) & { deposit?: true };
@@ -88,11 +90,40 @@ function orgOpener(sync: OrgAgentSync, keys: MembershipKeys) {
  * Summaries in record-id order; `onlyPrefix` decrypts just the records under one handle prefix (collisions never cross prefixes).
  * One record that won't open is skipped and logged; when none opens at all (a dead key), it throws.
  */
-async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, onlyPrefix?: string): Promise<ItemSummary[]> {
+/** `standing`: GATEWAY_REVEAL and every policy say standing, so an item's own agentReveal lists fields readable with no approval. */
+async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, onlyPrefix?: string, standing = false): Promise<ItemSummary[]> {
   const o = opener(sync, keys), used = new Set<string>(), out: ItemSummary[] = [];
   let failed = 0, opened = 0;
+  const handleFor = (prefix: string, title: string) => {
+    const base = `${prefix}/${slug(title) || "item"}`;
+    let handle = base;
+    for (let n = 2; used.has(handle); n++) handle = `${base}-${n}`;
+    used.add(handle);
+    return handle;
+  };
+  // Reveal stubs of a personal agent: on a record it holds, or alone (a reveal-only item, listed with the same handles).
+  const stubs = new Map(isPersonal(sync) ? sync.reveal.map((x) => [x.recordId, x.sealedStub] as const) : []);
+  const openStub = async (recordId: string) => {
+    const sealed = stubs.get(recordId);
+    if (!sealed || !isPersonal(sync)) return null;
+    try { return await openRevealStub(sealed, { ownerUserId: sync.owner.userId, agentId: sync.agentId, recordId }, keys); } catch (e) {
+      log?.error({ event: "stub_skipped", recordId, reason: e instanceof CryptoError ? e.code : "unopenable" });
+      return null;
+    }
+  };
+  const keyed = live(sync);
+  const stubOnly = [...stubs.keys()].filter((id) => !keyed.some((r) => r.id === id && !r.deposit)).map((id) => ({ id, stubOnly: true as const }));
   try {
-    for (const r of live(sync).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    for (const e of [...keyed, ...stubOnly].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      if ("stubOnly" in e) {
+        if (onlyPrefix !== undefined && onlyPrefix !== "personal") continue;
+        const st = await openStub(e.id);
+        if (!st) continue;
+        out.push({ handle: handleFor("personal", st.title), recordId: e.id, title: st.title, type: st.type, hosts: [], inject: { kind: "none" }, approval: false,
+          revision: 0, modes: ["reveal"], reveal: { fields: st.fields, approval: true } });
+        continue;
+      }
+      const r = e;
       let prefix: string, body: RecordBody;
       try {
         prefix = await o.prefix(r);
@@ -107,16 +138,19 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
         log?.error({ event: "item_skipped", recordId: r.id, reason: e instanceof CryptoError ? e.code : "unopenable" });
         continue;
       }
-      const base = `${prefix}/${slug(body.title) || "item"}`;
-      let handle = base;
-      for (let n = 2; used.has(handle); n++) handle = `${base}-${n}`;
-      used.add(handle);
+      const handle = handleFor(prefix, body.title);
       const p = body.agentPolicy; // only summary fields are kept; the body is dropped here
+      const st = isPersonal(sync) && !r.deposit ? await openStub(r.id) : null;
+      // F19: standing reveal is read from the body; it applies to kept records whose agentReveal lists this agent.
+      const sr = standing && isPersonal(sync) && !r.deposit && body.agentReveal?.agents.includes(sync.agentId) ? body.agentReveal.fields : null;
       out.push({ handle, recordId: r.id, title: body.title, type: body.type, hosts: p?.hosts ?? [], inject: p?.inject ?? { kind: "none" }, approval: p?.approval ?? false,
         ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}),
         ...(body.type === "envFile" ? { env_keys: envKeys(body.data?.content ?? "") } : {}),
         ...(p?.secret?.startsWith("env:") ? { env_injects: p.secret.slice(4) } : {}),
-        revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), ...("write" in r && r.write ? { can_update: true as const } : {}) });
+        revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), ...("write" in r && r.write ? { can_update: true as const } : {}),
+        ...(isPersonal(sync) && !r.deposit ? { modes: st || sr ? ["use", "reveal"] as ("use" | "reveal")[] : ["use"] as ("use" | "reveal")[] } : {}),
+        // shortcut: one reveal entry per item; a stub's extra fields aren't listed where standing applies.
+        ...(sr ? { reveal: { fields: sr, approval: false } } : st ? { reveal: { fields: st.fields, approval: true } } : {}) });
     }
   } finally {
     o.close();
@@ -127,8 +161,23 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
 }
 
 /** `keys` come from `AgentKeyCache.use` (or open + release in finally). */
-export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Logger): Promise<ItemSummary[]> {
-  return summarize(sync, keys, log);
+export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Logger, standing = false): Promise<ItemSummary[]> {
+  return summarize(sync, keys, log, undefined, standing);
+}
+
+/**
+ * Standing reveal: the kept record's body when its own agentReveal lists this agent and every asked field; else null.
+ * The caller zeroes nothing here: the body's strings are plain JavaScript strings, as for http_request.
+ */
+export async function standingBody(sync: PersonalAgentSync, keys: MembershipKeys, item: string, fields: string[], log?: Logger): Promise<{ recordId: string; body: RecordBody } | null> {
+  const hit = await findItem(sync, keys, item, log);
+  const r = hit && !hit.deposit && live(sync).find((x) => x.id === hit.id);
+  if (!r) return null;
+  const o = opener(sync, keys);
+  let body: RecordBody;
+  try { body = await o.body(r); } catch { return null; } finally { o.close(); }
+  const ar = body.agentReveal;
+  return ar && ar.agents.includes(sync.agentId) && fields.every((f) => ar.fields.includes(f)) ? { recordId: r.id, body } : null;
 }
 
 /** `item` is a handle or a record id (a deposit's too). */
@@ -140,6 +189,14 @@ export async function findItem(sync: AgentSync, keys: MembershipKeys, item: stri
     r = hit && live(sync).find((x) => x.id === hit.recordId);
   }
   return r && { id: r.id, revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), write: "write" in r && r.write };
+}
+
+/** For get_secret: the item's reveal stub fields, "no_stub" for an item the agent has without one, undefined for no such item. */
+export async function revealableItem(sync: PersonalAgentSync, keys: MembershipKeys, item: string, log?: Logger): Promise<{ recordId: string; fields: string[] } | "no_stub" | undefined> {
+  const all = await summarize(sync, keys, log, "personal");
+  const hit = all.find((s) => s.handle === item) ?? all.find((s) => s.recordId === item);
+  if (!hit) return undefined;
+  return hit.reveal ? { recordId: hit.recordId, fields: hit.reveal.fields } : "no_stub";
 }
 
 /** The handle of the item with this id, or undefined. */

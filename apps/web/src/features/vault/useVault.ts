@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  agentUpdateMessage, b64url, CryptoError, decryptRecordBody, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, serverRecordType,
+  agentUpdateMessage, b64url, CryptoError, decryptRecordBody, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, sealRevealStub, serverRecordType,
   sha256B64, verifyGatewayMessage, wrapKey,
   type RecordBody, type UnlockedKeys,
 } from "@clane-vault/crypto";
@@ -11,7 +11,7 @@ import { dropSync, loadSync, orgKey, saveSync } from "@/lib/offline";
 import {
   assertPinned, ensureGatewayPinned, isAgent, KeyChangedError, myMembershipKey, PERSONAL_SLOT, pinKey, pinnedGateway, pinStatus, sealFolderKeyTo, sealShareTo, verifyPersonalAgentKey,
 } from "@/lib/orgKeys";
-import type { MyAgent } from "@/features/settings/myAgents";
+import type { MyAgent, MyAgents } from "@/features/settings/myAgents";
 import { decryptSync } from "./decrypt";
 import type { FolderMember, Grant, Permission, Person, SyncResponse, VaultFolder, VaultRecord } from "./types";
 
@@ -124,6 +124,14 @@ export function useVault() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.code !== "in_trash") { await refetch(); throw new ConflictError(); }
       throw e;
+    }
+    // A renamed item: its *Can reveal* stubs carry the title the agent lists, so they are sealed again (best effort).
+    if (v.body.title !== v.r.body?.title || v.body.type !== v.r.body?.type) {
+      const mine = user ? qc.getQueryData<MyAgents>(["my-agents", user.id])?.agents ?? [] : [];
+      for (const g of v.r.agentGrants ?? []) {
+        const a = g.reveal?.length ? mine.find((x) => x.id === g.agentId) : undefined;
+        if (a) await sealStub(v.r.id, v.body, a, g.reveal!).catch(() => undefined);
+      }
     }
   }, ...after });
 
@@ -299,6 +307,24 @@ export function useVault() {
     pinKey(user.id, PERSONAL_SLOT, a.id, a.publicKey);
     return pinned; // pinnedNow: the caller shows the gateway's fingerprint (trust on first use)
   }, ...after });
+  /** *Can reveal*: { title, type, fields } sealed to the agent (its key checked as for a grant); the agent gets no record key. */
+  async function sealStub(recordId: string, body: RecordBody, a: MyAgent, fields: string[]) {
+    if (!user) throw new Error("Not signed in");
+    if (pinStatus(user.id, PERSONAL_SLOT, a.id, a.publicKey).status === "changed") throw new KeyChangedError(a.id);
+    const pinned = await ensureGatewayPinned(oapi, user.id, PERSONAL_SLOT, "/me/agents/gateway");
+    const sealedStub = await withKey(async (k) => {
+      await verifyPersonalAgentKey(user.id, a, a.owner, k.privateKey);
+      return sealRevealStub({ title: body.title, type: body.type, fields }, { ownerUserId: user.id, agentId: a.id, recordId }, b64url.decode(a.publicKey));
+    });
+    await oapi.put(`/records/${recordId}/agent-reveal/${a.id}`, { sealedStub, fields: [...fields].sort() });
+    pinKey(user.id, PERSONAL_SLOT, a.id, a.publicKey);
+    return pinned;
+  }
+  const setAgentReveal = useMutation({ mutationFn: (v: { r: VaultRecord; agent: MyAgent; fields: string[] }) => {
+    if (!v.r.body) throw new Error("This record can't be opened");
+    return sealStub(v.r.id, v.r.body, v.agent, v.fields);
+  }, ...after });
+  const revokeAgentReveal = useSimple((v: { recordId: string; agentId: string }) => oapi.del(`/records/${v.recordId}/agent-reveal/${v.agentId}`));
   const revokeAgentGrant = useSimple((v: { recordId: string; agentId: string }) => oapi.del(`/records/${v.recordId}/agent-grants/${v.agentId}`));
   const setAgentWrite = useSimple((v: { recordId: string; agentId: string; write: boolean }) => oapi.patch(`/records/${v.recordId}/agent-grants/${v.agentId}`, { write: v.write }));
   /** Restore previous: the body before the agent's change, opened with the record key and saved as any edit (a stale revision is a ConflictError). */
@@ -343,6 +369,8 @@ export function useVault() {
     grantAgent: (record: VaultRecord, agent: MyAgent) => grantAgent.mutateAsync({ r: record, agent }),
     revokeAgentGrant: (recordId: string, agentId: string) => revokeAgentGrant.mutateAsync({ recordId, agentId }),
     setAgentWrite: (recordId: string, agentId: string, write: boolean) => setAgentWrite.mutateAsync({ recordId, agentId, write }),
+    setAgentReveal: (record: VaultRecord, agent: MyAgent, fields: string[]) => setAgentReveal.mutateAsync({ r: record, agent, fields }),
+    revokeAgentReveal: (recordId: string, agentId: string) => revokeAgentReveal.mutateAsync({ recordId, agentId }),
     restorePrevious, previousBody,
     ackAgentChange,
     /** Personal space: deposits waiting in From agents (absent with personal agents off, or private-locked). */ agentInbox: q.data?.agentInbox,

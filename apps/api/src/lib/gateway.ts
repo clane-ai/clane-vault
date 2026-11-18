@@ -25,6 +25,8 @@ export interface GatewayClient {
   /** A personal agent's key: the wrapper (k2.) and the attestation are bound to the owner's current public key. */
   createPersonalAgentKey(ids: { agentId: string; ownerUserId: string; ownerPublicKey: string }): Promise<AgentKeyResult>;
   dropAgent(agentId: string): Promise<void>;
+  /** GATEWAY_REVEAL as the gateway reports it on /internal/health; absent → "off". */
+  revealMode(): Promise<"off" | "approval" | "standing">;
 }
 
 const noDot = z.string().regex(/^[^.]+$/);
@@ -55,6 +57,7 @@ export function gatewayClient(cfg: AgentConfig, fetchImpl: typeof fetch = fetch)
     health: async () => { const { identity } = parse(healthBody, await call("GET", "/internal/health")); return { keyId: identity.keyId, publicKey: identity.publicKey }; },
     createAgentKey: async (ids) => parse(keyBody("k1"), await call("POST", "/internal/agents", ids)),
     createPersonalAgentKey: async (ids) => parse(keyBody("k2"), await call("POST", "/internal/agents", ids)),
+    revealMode: async () => z.object({ reveal: z.enum(["off", "approval", "standing"]).optional() }).catch({}).parse(await call("GET", "/internal/health")).reveal ?? "off",
     dropAgent: async (agentId) => { await call("DELETE", `/internal/agents/${encodeURIComponent(agentId)}`); },
   };
 }

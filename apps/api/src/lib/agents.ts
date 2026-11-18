@@ -69,3 +69,7 @@ export const depositMessage = (m: { ownerUserId: string; ownerPublicKey: string;
 /** agentUpdateMessage from @clane-vault/crypto (a test pins them byte for byte). */
 export const updateMessage = (m: { ownerUserId: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
   `agent-update:${m.ownerUserId}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+
+/** agentRevealRequestMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const revealRequestMessage = (m: { requestId: string; ownerUserId: string; agentId: string; recordId: string; fields: string[]; requestPublicKey: string; expiresAt: string }): string =>
+  `agent-reveal-request:${m.requestId}:${m.ownerUserId}:${m.agentId}:${m.recordId}:${[...m.fields].sort().join(",")}:${m.requestPublicKey}:${m.expiresAt}`;

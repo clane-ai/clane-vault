@@ -203,6 +203,25 @@ describe("Settings → My agents", () => {
     expect(within(dialog).getByText("An item you can't open")).toBeInTheDocument();
   });
 
+  it("revoke also lists the fields shown to the model; the reveal email switch saves", async () => {
+    agents = [row({ publicKey: await agentKey() })];
+    rest = { ...rest, rules: { ...rest.rules, reveal: "approval" } };
+    let patched: unknown = null;
+    server.use(
+      http.get("/api/v1/me/agents", () => HttpResponse.json({ agents, ...rest, gateway: { url: "https://gw.test/mcp", identityKeyId: "k", identityPublicKey: "p", reveal: "approval" } })),
+      http.patch("/api/v1/me/agents/settings", async ({ request }) => { patched = await request.json(); return HttpResponse.json({ ok: true }); }),
+      http.delete(`/api/v1/me/agents/${AGENT_ID}`, () => HttpResponse.json({ rotate: { records: [], revealed: [{ id: "r1", fields: ["username"] }] } })),
+    );
+    renderSection();
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Email me when an agent asks for a secret" }));
+    await waitFor(() => expect(patched).toEqual({ revealEmail: false }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke My bot" }));
+    const dialog = await screen.findByRole("dialog", { name: "Revoke My bot?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+    expect(await within(dialog).findByText("These fields were shown to the AI model. Change them.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Stripe live key: username")).toBeInTheDocument();
+  });
+
   it("a 404 from /me/agents hides My agents from the settings menu", async () => {
     const health = <p>health</p>;
     const { unmount } = render(wrap(<SettingsArea section="health" mobile={false} health={health} records={[]} />));

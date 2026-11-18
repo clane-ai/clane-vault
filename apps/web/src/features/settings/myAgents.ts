@@ -14,14 +14,14 @@ export interface MyAgent {
 export interface MyAgents {
   agents: MyAgent[]; allowance: { used: number; allowed: number };
   rules: { allowed: boolean; blockedByOrgId: string | null; write: boolean; reveal: string };
-  /** null: the gateway is unreachable or its identity changed. */
-  gateway: Gateway | null; revealEmail: boolean;
+  /** null: the gateway is unreachable or its identity changed. `reveal`: its GATEWAY_REVEAL ("off" when it doesn't say). */
+  gateway: (Gateway & { reveal?: "off" | "approval" | "standing" }) | null; revealEmail: boolean;
 }
 /** `POST /me/agents`: the page recomputes both fingerprints and checks the attestation itself. */
 export interface CreatedMyAgent {
   id: string; name: string; publicKey: string; attestation: string; owner: { userId: string; publicKey: string }; gateway: { keyId: string; publicKey: string };
 }
-export interface Rotation { records: { id: string }[]; revealed: unknown[] }
+export interface Rotation { records: { id: string }[]; revealed: { id: string; fields: string[] }[] }
 export interface AgentEvent { id: string; at: string; action: string; recordId: string | null; meta: unknown }
 
 const KEY = "my-agents";
@@ -62,6 +62,10 @@ export function useVerifyMyAgent() {
 }
 export function useUpdateMyAgent() {
   return useMyMutation(({ id, ...changed }: { id: string; name?: string; expiresAt?: string | null }) => api.patch(`/me/agents/${id}`, changed));
+}
+/** Email me when an agent asks for a secret. */
+export function useRevealEmail() {
+  return useMyMutation((revealEmail: boolean) => api.patch("/me/agents/settings", { revealEmail }));
 }
 export function useRevokeMyAgent() {
   return useMyMutation((v: { id: string }) => api.del(`/me/agents/${v.id}`) as unknown as Promise<{ rotate: Rotation }>);

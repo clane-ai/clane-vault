@@ -48,6 +48,11 @@ permanent install needs the AMO-signed build (Firefox 128 or newer).
   the header and Settings. The password generator uses the same generator as the web app.
 - **Save offers**: after you submit a sign-in form, a small banner asks **Save** (new login in your private vault),
   **Update** (the saved password changed; needs edit permission) or **Never for this site**.
+- **An agent asking for a secret** (personal agents, `docs/agents.md`, *Letting an agent read a value*): while you are
+  unlocked the extension checks every 30 seconds and shows the number of waiting requests on its icon, and the popup
+  shows *An agent is asking for a secret* with **Open Clane Vault**. It shows no item or reason and can't answer: you
+  allow or deny the request in the web app, which decrypts the item. With the optional `notifications` permission it
+  also shows a system notification once per request.
 
 ## Permissions and why
 
@@ -60,6 +65,7 @@ permanent install needs the AMO-signed build (Firefox 128 or newer).
 | `clipboardWrite`, `offscreen` (Chrome/Edge) | Clear a copied secret after 30 s even when the popup is closed. |
 | Optional host: your server | Talk to the vault API. Asked on first run, for that one origin. |
 | Optional host: all sites | Only for save offers, asked when you switch them on. Fill doesn't need it. |
+| Optional: `notifications` | A system notification when one of your personal agents asks for a secret. Asked from the popup (**Notify me next time**); the badge works without it. |
 
 No remote code, no analytics, no third-party requests: the extension talks only to the server you chose. The CSP is
 `script-src 'self' 'wasm-unsafe-eval'` (Argon2id runs as WebAssembly).

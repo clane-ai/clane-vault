@@ -159,3 +159,8 @@ export function ssoChangedEmail(productName: string, orgName: string, actorName:
     text: `${actorName} changed the single sign-on settings of ${orgName} in ${productName}:\n\n${what.map((w) => `- ${labels[w] ?? w}`).join("\n")}\n\nIf you didn't expect this, check Organisation settings → Single sign-on and the event log.`,
   };
 }
+
+/** An agent asked to read a value (spec §5.3). No link to the request, no item, no reason: it only brings the owner to the app. */
+export function agentRevealEmail(productName: string, appUrl: string): { subject: string; text: string } {
+  return { subject: "An agent is asking for a secret", text: `An agent is asking for a secret. Open ${productName} to answer: ${appUrl}` };
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  encryptNewRecord, decryptRecord, encryptRecordBody, decryptRecordBody, normalizeRecordBody, encryptFolderName, decryptFolderName, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8,
+  encryptNewRecord, decryptRecord, encryptRecordBody, decryptRecordBody, normalizeRecordBody, encryptFolderName, decryptFolderName, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8, validateAgentReveal,
 } from "../src/index.js";
 
 const body: RecordBody = { type: "login", title: "AWS root", username: "ops@clane.ai", password: "Tg7#qL2v!Rm9zW4x", url: "console.aws.amazon.com", notes: "Rotate 90d" };
@@ -113,5 +113,33 @@ describe("record agentPolicy", () => {
     const dec = await decryptRecordBody(rid, ct, key);
     expect(dec.agentPolicy).toBeUndefined();
     expect(dec.data).toEqual({ secret: "sk_test_1" });
+  });
+});
+
+describe("record agentReveal (standing reveal)", () => {
+  const key = randomBytes(32);
+  const rid = crypto.randomUUID();
+  const agent = "bbbbbbbb-0000-4000-8000-000000000002";
+  const login: RecordBody = { v: 2, type: "login", title: "Wifi", username: "u", password: "p", agentReveal: { v: 1, agents: [agent], fields: ["username"] } };
+
+  it("round-trips unchanged", async () => {
+    const enc = await encryptNewRecord(rid, login, key);
+    expect((await decryptRecord(rid, enc.encBody, enc.wrappedRecordKey, key)).body).toEqual(login);
+    expect(validateAgentReveal({ v: 1, agents: [agent], fields: ["username", "password"] }, login)).toEqual({ v: 1, agents: [agent], fields: ["password", "username"] });
+  });
+
+  it("refuses a seed, an extra key, no agents, a non-UUID agent, a field the body lacks", () => {
+    for (const r of [{ v: 1, agents: [agent], fields: ["totpSecret"] }, { v: 1, agents: [agent], fields: ["username"], x: 1 }, { v: 1, agents: [], fields: ["username"] },
+      { v: 1, agents: ["nope"], fields: ["username"] }, { v: 1, agents: [agent, agent], fields: ["username"] }, { v: 2, agents: [agent], fields: ["username"] },
+      { v: 1, agents: [agent], fields: ["totp"] }])
+      expect(() => normalizeRecordBody({ ...login, agentReveal: r as never })).toThrow(/agent reveal|reveal fields/);
+  });
+
+  it("drops an invalid stored one on read", async () => {
+    const bad = { ...login, agentReveal: { v: 1, agents: ["nope"], fields: ["username"] } };
+    const ct = await aeadEncrypt(key, utf8.encode(JSON.stringify(bad)), `record-body:${rid}`);
+    const dec = await decryptRecordBody(rid, ct, key);
+    expect(dec.agentReveal).toBeUndefined();
+    expect(dec.username).toBe("u");
   });
 });

@@ -23,6 +23,7 @@ export const server = setupServer(
   http.get("/api/v1/admin/events/actions", () => HttpResponse.json({ actions: [] })),
   // Personal agents are off unless a test says so (every /me/agents route is 404 then).
   http.get("/api/v1/me/agents", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
+  http.get("/api/v1/me/agent-reveals", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   http.get("/api/v1/admin/agents/personal-count", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),
   // Billing is off unless a test says so (hosted plans: docs/plans.md).
   http.get("/api/v1/org/plan", () => HttpResponse.json({ error: "not_found" }, { status: 404 })),

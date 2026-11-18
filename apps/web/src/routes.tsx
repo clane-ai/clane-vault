@@ -18,6 +18,7 @@ import PublicLinkPage from "@/features/links/PublicLinkPage";
 import { AdminRecoveryLinkPage, RecoverWithKitPage } from "@/features/recovery/RecoverPages";
 import { RecoveryKitPanel } from "@/features/recovery/RecoveryKit";
 import { AuthLayout } from "@/features/auth/AuthLayout";
+import { RevealApproval } from "@/features/vault/RevealApproval";
 
 /** Full-page boot loader: the mark's working spin while the session resumes. */
 export function Loading() {
@@ -124,7 +125,8 @@ function Guard() {
   if (state === "signed_out") return <Navigate to="/sign-in" replace state={location.pathname !== "/" ? { from: { pathname: location.pathname, search: location.search } } : undefined} />;
   if (state === "locked") return <Unlock />;
   if (kitRequired) return <KitRequiredScreen mode={kitRequired} />;
-  return <SpaceGate>{(space) => <VaultScreen key={space} />}</SpaceGate>;
+  // An agent asking to read a value is answered on whatever screen is open (spec §5.3).
+  return <><RevealApproval /><SpaceGate>{(space) => <VaultScreen key={space} />}</SpaceGate></>;
 }
 
 export function AppRoutes() {

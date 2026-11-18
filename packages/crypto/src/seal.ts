@@ -10,7 +10,8 @@ export async function generateKeyPair(): Promise<{ publicKey: Uint8Array; privat
   };
 }
 
-async function shared(privatePkcs8: Uint8Array, publicRaw: Uint8Array): Promise<Uint8Array> {
+/** Raw X25519 between a PKCS#8 private key and a raw public key. */
+export async function shared(privatePkcs8: Uint8Array, publicRaw: Uint8Array): Promise<Uint8Array> {
   try {
     const priv = await crypto.subtle.importKey("pkcs8", privatePkcs8 as BufferSource, { name: "X25519" }, false, ["deriveBits"]);
     const pub = await crypto.subtle.importKey("raw", publicRaw as BufferSource, { name: "X25519" }, false, []);

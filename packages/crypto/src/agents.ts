@@ -2,7 +2,9 @@ import { b64url, utf8 } from "./encoding.js";
 import { envKeys, envValue } from "./envFile.js";
 import { coreKeysOf, dataKeysOf, type RecordType } from "./recordTypes.js";
 import type { RecordBody } from "./records.js";
-import { openSealed, sealTo } from "./seal.js";
+import { hkdf } from "./hkdf.js";
+import { openSealed, sealTo, shared } from "./seal.js";
+import { totpCode } from "./totp.js";
 import type { SealKeys } from "./sharing.js";
 
 export const AGENT_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -177,3 +179,84 @@ export const sealDepositKeyToOwner = (recordKey: Uint8Array, ids: { ownerUserId:
   sealTo(ownerPublicKey, recordKey, agentDepositOwnerAad(ids.ownerUserId, ids.id));
 export const openDepositKey = (sealed: string, ids: { ownerUserId: string; id: string }, keys: SealKeys) =>
   openSealed(keys.privateKey, keys.publicKey, sealed, agentDepositOwnerAad(ids.ownerUserId, ids.id));
+
+/** A field reference an agent may be shown. Never "totpSecret": "totp" is the current code. */
+export const REVEAL_REF = /^(username|password|url|notes|totp|data\.[A-Za-z0-9_]{1,40}|field:[A-Za-z0-9_-]{1,64}|env:[A-Za-z0-9_.-]{1,128})$/;
+const revealFail = (m: string): never => { throw new Error(`reveal fields: ${m}`); };
+
+/** 1–20 unique refs that this body has; returns them sorted. A seed (totpSecret, a totp-kind field) and a whole env file are never revealable. */
+export function validateRevealFields(fields: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret" | "data">): string[] {
+  if (!Array.isArray(fields) || fields.length < 1 || fields.length > 20) return revealFail("1 to 20 fields are required");
+  if (new Set(fields).size !== fields.length) revealFail("fields must be unique");
+  for (const f of fields as unknown[]) {
+    if (typeof f !== "string" || !REVEAL_REF.test(f)) return revealFail("a field is invalid");
+    const ok =
+      f === "notes" ||
+      ((f === "username" || f === "password" || f === "url") && (coreKeysOf(body.type) as string[]).includes(f)) ||
+      (f === "totp" && !!body.totpSecret) ||
+      (f.startsWith("data.") && dataKeysOf(body.type).includes(f.slice(5)) && !(body.type === "envFile" && f === "data.content")) ||
+      (f.startsWith("field:") && !!body.fields?.some((x) => x.id === f.slice(6) && x.kind !== "totp")) ||
+      (f.startsWith("env:") && body.type === "envFile" && envKeys(body.data?.content ?? "").includes(f.slice(4)));
+    if (!ok) revealFail(`"${f}" isn't a revealable field of this record`);
+  }
+  return [...(fields as string[])].sort();
+}
+
+/** Only the named fields that have a value. "totp" → the current code; the seed is never returned under any ref. */
+export async function revealFieldsOf(body: RecordBody, fields: string[], atMs = Date.now()): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    let v: string | null | undefined;
+    if (f === "username" || f === "password" || f === "url" || f === "notes") v = body[f];
+    else if (f === "totp") v = body.totpSecret ? await totpCode(body.totpSecret, atMs) : undefined;
+    else if (f.startsWith("data.")) v = body.type === "envFile" && f === "data.content" ? undefined : body.data?.[f.slice(5)];
+    else if (f.startsWith("field:")) { const c = body.fields?.find((x) => x.id === f.slice(6)); v = c && c.kind !== "totp" ? c.value : undefined; }
+    else if (f.startsWith("env:") && body.type === "envFile") v = envValue(body.data?.content ?? "", f.slice(4));
+    if (v) out[f] = v;
+  }
+  return out;
+}
+
+export interface RevealStub { title: string; type: RecordType; fields: string[] }
+export const personalAgentStubAad = (ownerUserId: string, agentId: string, recordId: string) => `personal-agent-stub:${ownerUserId}:${agentId}:${recordId}`;
+export const sealRevealStub = (stub: RevealStub, ids: RecordIds, agentPublicKey: Uint8Array) =>
+  sealTo(agentPublicKey, utf8.encode(JSON.stringify({ title: stub.title, type: stub.type, fields: stub.fields })), personalAgentStubAad(ids.ownerUserId, ids.agentId, ids.recordId));
+export async function openRevealStub(sealed: string, ids: RecordIds, keys: SealKeys): Promise<RevealStub> {
+  const o = JSON.parse(utf8.decode(await openSealed(keys.privateKey, keys.publicKey, sealed, personalAgentStubAad(ids.ownerUserId, ids.agentId, ids.recordId))));
+  if (typeof o?.title !== "string" || typeof o.type !== "string" || !Array.isArray(o.fields) || o.fields.some((f: unknown) => typeof f !== "string" || !REVEAL_REF.test(f))) throw new Error("reveal stub is invalid");
+  return { title: o.title, type: o.type, fields: o.fields };
+}
+
+export const agentRevealRequestMessage = (m: { requestId: string; ownerUserId: string; agentId: string; recordId: string; fields: string[]; requestPublicKey: string; expiresAt: string }) =>
+  `agent-reveal-request:${m.requestId}:${m.ownerUserId}:${m.agentId}:${m.recordId}:${[...m.fields].sort().join(",")}:${m.requestPublicKey}:${m.expiresAt}`;
+export const agentRevealAad = (requestId: string, recordId: string, agentId: string) => `agent-reveal:${requestId}:${recordId}:${agentId}`;
+type RevealIds = { requestId: string; recordId: string; agentId: string };
+/** HKDF of X25519(owner, one-time request key): only the owner (or the request key's holder) can compute it, so it proves who sealed. */
+const revealOwnerTag = async (privateKey: Uint8Array, publicKey: Uint8Array) =>
+  b64url.encode(await hkdf(await shared(privateKey, publicKey), new Uint8Array(0), "clane-vault/agent-reveal-owner", 32));
+/** Allow once: sealed to the one-time key, with the owner tag in the AAD so the API cannot forge an approval. */
+export const sealReveal = async (fields: Record<string, string>, ids: RevealIds, requestPublicKey: Uint8Array, ownerPrivateKey: Uint8Array) =>
+  sealTo(requestPublicKey, utf8.encode(JSON.stringify(fields)), `${agentRevealAad(ids.requestId, ids.recordId, ids.agentId)}:${await revealOwnerTag(ownerPrivateKey, requestPublicKey)}`);
+/** Throws unless the owner whose key is `ownerPublicKey` sealed it; returns only the `requested` fields. */
+export async function openReveal(sealed: string, ids: RevealIds, keys: SealKeys, ownerPublicKey: Uint8Array, requested: string[]): Promise<Record<string, string>> {
+  const aad = `${agentRevealAad(ids.requestId, ids.recordId, ids.agentId)}:${await revealOwnerTag(keys.privateKey, ownerPublicKey)}`;
+  const o = JSON.parse(utf8.decode(await openSealed(keys.privateKey, keys.publicKey, sealed, aad)));
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.values(o).some((v) => typeof v !== "string")) throw new Error("reveal is invalid");
+  return Object.fromEntries(Object.entries(o as Record<string, string>).filter(([k]) => requested.includes(k)));
+}
+
+/** Standing reveal (spec §5.6), inside the encrypted body: which agents may read which fields without asking. */
+export interface AgentReveal { v: 1; agents: string[]; fields: string[] }
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Unknown keys refused; `agents` 1–20 unique lower-case UUIDs; `fields` through validateRevealFields (returned sorted). */
+export function validateAgentReveal(p: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret" | "data">): AgentReveal {
+  const bad = (m: string): never => { throw new Error(`agent reveal: ${m}`); };
+  if (!p || typeof p !== "object" || Array.isArray(p)) return bad("must be an object");
+  const o = p as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!["v", "agents", "fields"].includes(k)) bad(`unknown key "${k}"`);
+  if (o.v !== 1) bad("unknown version");
+  const agents = o.agents;
+  if (!Array.isArray(agents) || agents.length < 1 || agents.length > 20 || agents.some((a) => typeof a !== "string" || !AGENT_ID.test(a)) || new Set(agents).size !== agents.length)
+    bad("1 to 20 different agents are required");
+  return { v: 1, agents: [...(agents as string[])], fields: validateRevealFields(o.fields, body) };
+}

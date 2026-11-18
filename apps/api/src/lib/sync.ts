@@ -77,6 +77,15 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
   const personalAgentIds = !orgId && shares.length
     ? new Set((await db.agent.findMany({ where: { userId: { in: [...new Set(shares.map((s) => s.holderId))] }, ownerUserId: { not: null } }, select: { userId: true } })).map((a) => a.userId))
     : new Set<string>();
+  // *Can reveal* stubs on my private records: an agent holding only a stub is listed with use false.
+  const stubs = !orgId && ownedIds.length ? await db.agentRevealGrant.findMany({ where: { recordId: { in: ownedIds } }, orderBy: { createdAt: "asc" }, select: { recordId: true, agentId: true, fields: true } }) : [];
+  const agentGrantsOf = (recordId: string) => {
+    const out = shares.filter((s) => s.recordId === recordId && personalAgentIds.has(s.holderId))
+      .map((s) => ({ agentId: s.holderId, use: true, write: s.agentWrite, ...revealOf(recordId, s.holderId) }));
+    for (const s of stubs) if (s.recordId === recordId && !out.some((g) => g.agentId === s.agentId)) out.push({ agentId: s.agentId, use: false, write: false, reveal: s.fields });
+    return out;
+  };
+  const revealOf = (recordId: string, agentId: string) => { const s = stubs.find((x) => x.recordId === recordId && x.agentId === agentId); return s ? { reveal: s.fields } : {}; };
   const shareLive = orgId ? await liveKeys(db, orgId, shares.map((s) => s.holderId)) : new Set<string>();
   // The Personal space: which of my orgs each of my records is shared in (managed there).
   const sharedIn = new Map<string, string[]>();
@@ -140,7 +149,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         keyFolderId: holder.holderType === "folder" ? holder.holderId : null,
         ...(holder.holderType === "user" && holder.permission !== "owner" ? { sealedTo: holder.sealedTo } : {}),
         ownerId: r.ownerId, ownerName: r.owner.name,
-        ...(isOwner && !orgId ? { agentGrants: shares.filter((s) => s.recordId === r.id && personalAgentIds.has(s.holderId)).map((s) => ({ agentId: s.holderId, use: true as const, write: s.agentWrite })) } : {}),
+        ...(isOwner && !orgId ? { agentGrants: agentGrantsOf(r.id) } : {}),
         ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
         ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "", at: r.createdAt.toISOString() } } : {}),

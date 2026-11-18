@@ -1,5 +1,5 @@
 import { aeadDecrypt, aeadEncrypt } from "./aead.js";
-import { validateAgentPolicy, type AgentPolicy } from "./agents.js";
+import { validateAgentPolicy, validateAgentReveal, type AgentPolicy, type AgentReveal } from "./agents.js";
 import { randomBytes, utf8, CryptoError } from "./encoding.js";
 import { checkEnvContent } from "./envFile.js";
 import { CORE_KEYS, FIELD_KINDS, coreKeysOf, dataKeysOf, isRecordType, type CoreKey, type FieldKind, type RecordType } from "./recordTypes.js";
@@ -23,6 +23,8 @@ export interface RecordBody {
   data?: Record<string, string>; fields?: CustomField[];
   /** How agents may use this record (docs/agents.md); absent = agents get no_policy. */
   agentPolicy?: AgentPolicy;
+  /** Standing reveal: agents that may read these fields with no approval (docs/agents.md); absent = none. */
+  agentReveal?: AgentReveal;
 }
 
 /** Limits on a body (docs/record-types.md). The whole body must fit the server's 64 KiB ciphertext envelope. */
@@ -89,7 +91,7 @@ function validateV1(body: RecordBody): RecordBody {
   return clean;
 }
 
-/** `lenient` (reads only): an invalid stored agentPolicy is dropped, so people can still open the record and agents fail closed. */
+/** `lenient` (reads only): an invalid stored agentPolicy or agentReveal is dropped, so people can still open the record and agents fail closed. */
 function validateV2(body: RecordBody, lenient = false): RecordBody {
   if (!isRecordType(body.type)) throw new Error("record type is invalid");
   if (typeof body.title !== "string" || body.title.trim() === "") throw new Error("record title is required");
@@ -112,6 +114,9 @@ function validateV2(body: RecordBody, lenient = false): RecordBody {
   if (fields) clean.fields = fields;
   if (body.agentPolicy !== undefined) {
     try { clean.agentPolicy = validateAgentPolicy(body.agentPolicy, clean); } catch (e) { if (!lenient) throw e; }
+  }
+  if (body.agentReveal !== undefined) {
+    try { clean.agentReveal = validateAgentReveal(body.agentReveal, clean); } catch (e) { if (!lenient) throw e; }
   }
   if (utf8.encode(JSON.stringify(clean)).length > MAX_BODY_BYTES) throw new Error("record is too large");
   return clean;

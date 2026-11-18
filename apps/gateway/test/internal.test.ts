@@ -15,7 +15,7 @@ const TOKEN = "t".repeat(40);
 const cfg: GatewayConfig = {
   apiUrl: "http://localhost:3001", apiToken: TOKEN, publicUrl: "http://localhost:3002/mcp", kek: "file:x", identityKeyFile: "x",
   cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304, upstreamTimeoutMs: 30000, allowPrivateCidrs: [],
-  port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20,
+  port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10,
 };
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); });
@@ -90,10 +90,10 @@ describe("internal routes", () => {
     expect(bad.status).toBe(400);
     expect((await fetch(`${int}/internal/agents`, { method: "POST", body: "{", headers: auth })).status).toBe(400);
   });
-  it("GET /internal/health returns the identity", async () => {
+  it("GET /internal/health returns the identity and the reveal mode", async () => {
     const { int, identity } = await start();
     const res = await fetch(`${int}/internal/health`, { headers: auth });
-    expect(await res.json()).toEqual({ ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey } });
+    expect(await res.json()).toEqual({ ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey }, reveal: "off" });
     expect((await fetch(`${int}/internal/health`)).status).toBe(401);
   });
   it("DELETE /internal/agents/:id drops the agent's cached key", async () => {

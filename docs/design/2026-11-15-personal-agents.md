@@ -253,7 +253,7 @@ A reveal:
    - optionally (user setting, default on) the API emails "An agent is asking for a secret. Open Clane Vault to answer." The email contains **no approve link**, no item title and no reason; it only brings the user to the app. A mailbox is not an approval channel;
    - web push to a closed PWA is a follow-up, not phase C.
 3. The sheet shows: the agent, the connected app (OAuth client name or token label), the item title, the fields asked for, the time, and the agent's reason labelled *"Written by the agent. It may not be true."* Buttons: **Allow once**, **Deny**. The browser first verifies the request signature against the pinned gateway identity; if that fails there is no Allow button.
-4. On Allow the browser decrypts the record, takes only the approved fields, and seals that JSON to `requestPublicKey` with AAD `agent-reveal:<requestId>:<recordId>:<agentId>` → `POST /me/agent-reveals/:id/approve { sealed }`.
+4. On Allow the browser decrypts the record, takes only the approved fields, and seals that JSON to `requestPublicKey` with AAD `agent-reveal:<requestId>:<recordId>:<agentId>:<ownerTag>`, where `ownerTag` is base64url HKDF-SHA256(X25519(owner private key, `requestPublicKey`), info `clane-vault/agent-reveal-owner`, 32 bytes). The gateway computes the same tag from the one-time private key and the attested owner key, so a seal the server made fails to open (`refused: unverified`, nothing released), and it keeps only the requested fields → `POST /me/agent-reveals/:id/approve { sealed }`.
 5. The gateway (long-polling the API, up to 50 seconds per tool call) opens it, returns `{ fields: { … } }`, zeroes its copies. If the user has not answered, the tool returns `{ status: "pending", request_id }` and the agent calls `get_secret { request_id }` again.
 
 Events: `agent.reveal_request`, then `agent.reveal` (field names only), `agent.reveal_denied` or `agent.reveal_expired`. All owner-visible only.
@@ -267,12 +267,12 @@ Personal-agent sessions list five static tools; organisation-agent sessions keep
 | Tool | Input | Output |
 |---|---|---|
 | `list_secrets` | — | as today, plus per item `modes: ["use"?, "reveal"?]`, `reveal: { fields, approval: true \| false }`, `deposit: true` for the agent's own unkept deposits, `can_update` |
-| `http_request` | as today, plus optional `capture` (§4.6) | as today; with capture, `saved: { item }` |
+| `http_request` | as today, plus optional `capture` (§4.6); a .env file capture's `agent_use` without `secret` defaults to `env:<entry>` | as today; with capture, `saved: { item }` |
 | `save_secret` | `{ title, type, fields: { username?, password?, url?, notes?, data? }, custom_fields?, agent_use?: { hosts, inject, secret? } }` | `{ item }` (a deposit) |
 | `update_secret` | `{ item, set: { …fields }, revision? }` | `{ item, revision }`, or `refused: not_writable \| conflict` |
-| `get_secret` | `{ item, fields, reason }` or `{ request_id }` | `{ fields }`, `{ status: "pending", request_id }`, or `refused: reveal_off \| field \| denied \| expired \| busy` |
+| `get_secret` | `{ item, fields, reason }` or `{ request_id }` | `{ fields }`, `{ status: "pending", request_id }`, or `refused: reveal_off \| field \| denied \| expired \| busy \| unverified` |
 
-New refusal reasons: `reveal_off` (operator, policy or item), `field`, `denied`, `expired`, `not_writable`, `conflict`, `inbox_full`, `owner_key_changed`.
+New refusal reasons: `reveal_off` (operator, policy or item), `field`, `denied`, `expired`, `unverified` (the approval's seal is not the owner's), `not_writable`, `conflict`, `inbox_full`, `owner_key_changed`.
 
 ### 5.5 Limits
 

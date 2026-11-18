@@ -386,3 +386,51 @@ describe("per-org key pairs", () => {
     expect((await items()).map((i) => i.title)).not.toContain("Org share");
   });
 });
+
+describe("an agent asking for a secret (R6)", () => {
+  const req = (id: string) => ({ id, recordId: "r-secret-item", reason: "a persuasive reason", agentName: "My bot" });
+  const asked = () => api.s.calls.filter((c) => c.path === "/me/agent-reveals");
+
+  it("unlocked: a badge with the count and one notification per request, without title or reason; gone → no badge", async () => {
+    await signedIn();
+    expect(env.revealChecks()).toBeGreaterThan(0);
+    api.s.reveals.requests = [req("q1")];
+    expect(await core.checkReveals()).toBe(1);
+    expect(env.badges.at(-1)).toBe("1");
+    expect(env.notes).toEqual([{ id: "q1", message: "An agent is asking for a secret. Open Clane Vault to answer." }]);
+    expect(asked().at(-1)!.headers["x-org-id"]).toBeUndefined();
+    await core.checkReveals();
+    expect(env.notes).toHaveLength(1);
+    expect(await core.onPopup({ type: "reveals" })).toEqual({ count: 1 });
+    api.s.reveals.requests = [];
+    expect(await core.checkReveals()).toBe(0);
+    expect(env.badges.at(-1)).toBe("");
+    expect(JSON.stringify(env.notes)).not.toMatch(/persuasive|r-secret-item/);
+  });
+
+  it("locked: no request is made", async () => {
+    await signedIn();
+    await core.onPopup({ type: "lock" });
+    const n = asked().length;
+    expect(await core.checkReveals()).toBe(0);
+    expect(asked()).toHaveLength(n);
+  });
+
+  it("a 404 or a 403 clears the badge and stops asking until the next unlock", async () => {
+    for (const status of [404, 403] as const) {
+      await signedIn();
+      api.s.reveals = { status, requests: [] };
+      await core.checkReveals();
+      expect(env.badges.at(-1)).toBe("");
+      const n = asked().length;
+      await core.onRevealAlarm();
+      await core.checkReveals();
+      expect(asked()).toHaveLength(n);
+      api.s.reveals = { status: 200, requests: [req("q2")] };
+      await core.onPopup({ type: "lock" });
+      expect(await core.onPopup({ type: "unlock", password: PASSWORD })).toEqual({ ok: true });
+      expect(await core.checkReveals()).toBe(1);
+      api.s.reveals = { status: 200, requests: [] };
+    }
+  });
+});

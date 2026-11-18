@@ -17,7 +17,7 @@ import { AgentConnectSheet } from "@/features/admin/AgentConnectSheet";
 import { AgentVerifyDialog } from "@/features/admin/AgentVerifyDialog";
 import { AgentForm, type ToVerify } from "@/features/admin/AgentsPage";
 import { AGENTS_OFF, agentErrorText, agentsOff, personalAgentsOffLine, STATUS_LABEL } from "@/features/admin/agents";
-import { useMyAgentActivity, useMyAgents, useRevokeMyAgent, type MyAgent, type Rotation } from "./myAgents";
+import { useMyAgentActivity, useMyAgents, useRevealEmail, useRevokeMyAgent, type MyAgent, type Rotation } from "./myAgents";
 
 const card = "rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]";
 const mono = "font-mono text-[11.5px] tracking-[.02em] text-text-tertiary";
@@ -42,6 +42,10 @@ function RevokeDialog({ agent, titleOf, onClose }: { agent: MyAgent; titleOf: Ti
               <p className="text-text-primary">The gateway could open these items. Change the credentials in them.</p>
               <ul className="list-disc pl-5">{rotate.records.map((r) => <li key={r.id}>{titleOf(r.id)}</li>)}</ul>
             </>) : <p className="text-text-secondary">It couldn't open anything, so there's nothing to rotate.</p>}
+            {rotate.revealed.length > 0 && (<>
+              <p className="text-text-primary">These fields were shown to the AI model. Change them.</p>
+              <ul className="list-disc pl-5">{rotate.revealed.map((r) => <li key={r.id}>{titleOf(r.id)}: {r.fields.join(", ")}</li>)}</ul>
+            </>)}
             <div className="flex justify-end"><Button onClick={onClose}>Done</Button></div>
           </div>
         ) : (<>
@@ -133,6 +137,7 @@ function MyAgentRow({ agent, canConnect, on }: { agent: MyAgent; canConnect: boo
 export function MyAgentsSection({ records, privateLocked = false }: { records: VaultRecord[]; privateLocked?: boolean }) {
   const { orgs } = useSession();
   const q = useMyAgents(!privateLocked);
+  const revealEmail = useRevealEmail();
   const [form, setForm] = useState<{ agent?: MyAgent } | null>(null);
   const [verifying, setVerifying] = useState<ToVerify | null>(null);
   const [open, setOpen] = useState<{ kind: "connect" | "activity" | "revoke"; id: string } | null>(null);
@@ -158,6 +163,13 @@ export function MyAgentsSection({ records, privateLocked = false }: { records: V
                 <Button onClick={() => setForm({})} disabled={atLimit}>New agent</Button>
                 <span className="text-[13px] text-text-secondary">{d.allowance.used} of {d.allowance.allowed} agents</span>
               </div>
+            )}
+            {d.rules.reveal !== "off" && d.gateway?.reveal && d.gateway.reveal !== "off" && (
+              <label className="flex min-h-6 cursor-pointer items-center gap-2 text-[13.5px] text-text-primary">
+                <input type="checkbox" className="size-4 accent-blue-500" checked={d.revealEmail} disabled={revealEmail.isPending}
+                  onChange={(e) => revealEmail.mutate(e.target.checked, { onError: () => toast.error("Couldn't save that change. Try again.") })} />
+                Email me when an agent asks for a secret
+              </label>
             )}
             {d.agents.length === 0 ? <p className="text-[13.5px] text-text-secondary">No agents yet.</p> : (
               <ul className={card} aria-label="My agents">

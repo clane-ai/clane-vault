@@ -20,7 +20,7 @@ and missing fields take their defaults. Every change is logged as `org.policies_
 | `ipAllowlist`: IPv4 and IPv6 CIDRs that may reach the organisation (empty means anywhere) | `[]` | Server, on every org-scoped request |
 | `personalAgents.allowed`, `personalAgents.maxPerMember` (1–20, null for no limit): members may have personal agents, and how many (`docs/agents.md`) | on, null | Server (`/me/agents`, every call of a personal agent) |
 | `personalAgents.write`: members' agents may save items and update the ones they're allowed to (`docs/agents.md`, *Saving and updating items*) | on | Server (the agent's sync, `/agent/deposits*`, `/agent/records/:id`) |
-| `personalAgents.reveal` (`off`, `approval`, `standing`): for a later release | `approval` | Server |
+| `personalAgents.reveal` (*Reading values*): `off` (members' agents can't read values), `approval` (*With approval*: each read approved by the member in the web app) or `standing` (*Without approval*: also reading without approval, where the gateway allows it and the member turns it on for an item; `docs/agents.md`, *Letting an agent read a value*). The strictest of a member's organisations applies | `approval` | Server (`/records/:id/agent-reveal/*`, `/me/agent-reveals*`, `/agent/reveals*`, the agent's sync) |
 | `ownerBreakGlass`: the owner reaches the organisation from anywhere despite the allowlist | on | Server |
 
 ## How clients read them

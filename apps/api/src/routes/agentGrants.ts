@@ -55,15 +55,16 @@ export const agentGrantRoutes: FastifyPluginAsync = async (app) => {
     const b = z.object({ write: z.boolean() }).parse(req.body);
     const me = req.auth.userId;
     if (!(await app.prisma.agent.findFirst({ where: { userId: agentId, ownerUserId: me }, select: { userId: true } }))) return reply.code(404).send({ error: "not_found" });
-    const n = await app.prisma.$transaction(async (tx) => {
+    const r = await app.prisma.$transaction(async (tx) => {
       await lockUser(tx, agentId); // the agent's lock first, as revocation and the agent's writes
-      // Turning write on gets a grant's checks (private, not trashed, a live verified agent); turning it off never is refused.
+      // Turning write on gets a grant's checks (the owner's own live private record, the agent live and verified); turning it off is never refused.
       if (b.write) { const g = await assertGrantable(tx, me, id, agentId); if ("error" in g) return g; }
-      const u = await tx.recordAccess.updateMany({ where: { recordId: id, holderType: "user", holderId: agentId, permission: { not: "owner" }, record: { ownerId: me } }, data: { agentWrite: b.write } });
-      if (u.count) await logEvent(tx, { actorId: me, action: "agent.item_write", recordId: id, targetUserId: agentId, meta: { write: b.write }, ...reqMeta(req) });
-      return u.count ? null : { code: 404 as const, error: "not_found" as const };
+      const u = await tx.recordAccess.updateMany({ where: { recordId: id, holderType: "user", holderId: agentId, permission: { not: "owner" }, orgId: null, state: "active", record: { ownerId: me } }, data: { agentWrite: b.write } });
+      if (!u.count) return { code: 404 as const, error: "not_found" as const };
+      await logEvent(tx, { actorId: me, action: "agent.item_write", recordId: id, targetUserId: agentId, meta: { write: b.write }, ...reqMeta(req) });
+      return null;
     });
-    if (n) return reply.code(n.code).send({ error: n.error });
+    if (r) return reply.code(r.code).send({ error: r.error });
     if (!b.write) app.gateway?.dropAgent(agentId).catch(() => undefined); // best effort: it forgets that it may write
     return { ok: true };
   });

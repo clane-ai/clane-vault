@@ -34,7 +34,10 @@ export default defineConfig({
         GATEWAY_KEK: `file:${kekFile}`, GATEWAY_IDENTITY_KEY_FILE: path.join(keys, "identity.json"), PORT: String(GW), INTERNAL_PORT: String(GW_INTERNAL),
         INTERNAL_HOST: "127.0.0.1", GATEWAY_ALLOW_PRIVATE_CIDRS: "127.0.0.0/8",
         // No sync cache: an owner's change (Agent can update, a Keep) reaches the agent at its next call, not up to 60 s later.
-        GATEWAY_CACHE_TTL_SECONDS: "0" } },
+        GATEWAY_CACHE_TTL_SECONDS: "0",
+        // get_secret with the owner's approval and, where every policy and the item allow it, without (personal.spec.ts,
+        // Phases C and D). A gateway on standing still serves approval.
+        GATEWAY_REVEAL: "standing" } },
     { command: "npm run dev -w @clane-vault/api", cwd: "..", port: API, reuseExistingServer: false, env: { PORT: String(API), PUBLIC_URL: `http://localhost:${WEB}`,
       RATE_LIMIT_PER_MINUTE: "5000", GATEWAY_INTERNAL_URL: `http://127.0.0.1:${GW_INTERNAL}`, GATEWAY_PUBLIC_URL: gatewayPublicUrl,
       GATEWAY_API_TOKEN: gatewayApiToken, AGENT_TOKEN_PRIVATE_KEY: tokenKey } },

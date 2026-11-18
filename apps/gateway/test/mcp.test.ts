@@ -29,7 +29,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); })
 
 const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> = {}): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, ...over,
+  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10, ...over,
 });
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
@@ -542,11 +542,12 @@ describe("MCP endpoint", () => {
     const org = (await (await connect(url, api.staticToken)).client.listTools()).tools;
     const personal = (await (await connect(url, await api.personal.token())).client.listTools()).tools;
     expect(named("Organisation")).toEqual(org.map((t) => t.name).sort());
-    expect(named("Personal")).toEqual(personal.map((t) => t.name).sort()); // four names after Phase E
+    expect(named("Personal")).toEqual(personal.map((t) => t.name).sort()); // five names after Phase C
     for (const t of personal) for (const arg of Object.keys(t.inputSchema.properties ?? {})) expect(SKILL, `${t.name}.${arg}`).toContain("`" + arg + "`");
     // RefuseReason (outbound/ssrf.ts), the reasons mcp.ts and items.ts return, the write reasons, and capture.refused's internal_error.
     for (const reason of ["not_found", "no_policy", "host", "scheme", "ssrf", "method", "path", "timeout", "request_too_large", "upstream_error", "busy",
-      "owner_key_changed", "not_kept", "invalid", "not_writable", "conflict", "inbox_full", "internal_error"]) expect(SKILL).toContain("`" + reason + "`");
+      "owner_key_changed", "not_kept", "invalid", "not_writable", "conflict", "inbox_full", "internal_error",
+      "reveal_off", "field", "denied", "expired", "unverified"]) expect(SKILL).toContain("`" + reason + "`");
   });
 
   it("a personal agent: personal/ handles, the credential injected and scrubbed; a swapped owner key refuses both tools with no outbound call", async () => {
@@ -558,7 +559,7 @@ describe("MCP endpoint", () => {
     const port = (echo.address() as AddressInfo).port;
     const id = await api.personal.addRecord(apiKey("Echo", [`api.test:${port}`]));
     const { client } = await connect(url, await api.personal.token());
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets", "save_secret", "update_secret"]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["get_secret", "http_request", "list_secrets", "save_secret", "update_secret"]);
     expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "personal/echo", hosts: [`api.test:${port}`] })] });
     const args = { item: "personal/echo", method: "GET", url: `http://api.test:${port}/v1` };
     const r = result(await client.callTool({ name: "http_request", arguments: args }));

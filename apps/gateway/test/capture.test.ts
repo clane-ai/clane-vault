@@ -23,7 +23,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); })
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig>): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, ...over,
+  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10, ...over,
 });
 
 /** The upstream creates a credential on /create; /fail answers 500 with one; /big has one past the response cap, and in a header. */
