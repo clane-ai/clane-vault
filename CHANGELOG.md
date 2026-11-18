@@ -2,9 +2,9 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
-## Unreleased
+## 1.9.0 — 2026-11-18
 
-Upgrading: migration `20261115000000_personal_agents` (`Agent.orgId` becomes nullable, a new `Agent.ownerUserId` column with a CHECK that exactly one of the two is set) runs on start. **Operators using AWS KMS must add `ownerUserId` to the allowed encryption-context keys before anyone enrols a personal agent** (`docs/agents.md`, *Keys at rest*). No `.env` change otherwise.
+Upgrading: take a backup; migrations `20261115000000_personal_agents` (`Agent.orgId` becomes nullable, a new `Agent.ownerUserId` column with a CHECK that exactly one of the two is set), `20261116000000_agent_writes` and `20261117000000_agent_reveal` run on start. **Upgrade the server, the agent gateway, the web app and the extension together**: an older gateway and a newer web app can't complete a reveal approval, and an older app can't open .env file items. **Operators using AWS KMS must add `ownerUserId` to the allowed encryption-context keys before anyone enrols a personal agent** (`docs/agents.md`, *Keys at rest*). No `.env` change otherwise.
 
 - **Personal agents** (`docs/agents.md`, *Personal agents*): anyone, not only admins, can create an agent of their own under **Settings → My agents** and give it items from their Personal space one at a time (*Can use* in the share sheet, or **Give to agent…** on several). A personal agent is not an organisation member; enrolment binds it to its owner's key, which the owner's browser checks, and the gateway pin for personal agents is the owner's own (`personal`), trust-on-first-use in practice. My agents shows each agent's activity; Revoke lists the items to rotate. The OAuth consent page lists *Your agents*.
 - Organisations get a *Personal agents* policy block, editable on every plan (`docs/policies.md`): switching it off suspends members' personal agents without deleting them. Admins see lifecycle events only (`personal_agent.create|verify|revoke|connect|suspended`) and a count under **Admin → Agents**, never what an agent holds.
