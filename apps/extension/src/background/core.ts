@@ -34,6 +34,12 @@ export interface Platform {
   /** (Re)arms the idle auto-lock alarm. */
   armAutoLock(minutes: number): void;
   scheduleClipboardClear(): void;
+  /** The toolbar badge text ("" clears it). */
+  setBadge(text: string): void;
+  /** A system notification; a no-op without the optional `notifications` permission (F14). */
+  notify(id: string, message: string): void;
+  /** Arms the repeating alarm named `reveals` (every 0.5 minutes, the MV3 minimum). */
+  scheduleRevealCheck(): void;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -104,6 +110,7 @@ export function createCore(p: Platform) {
     keys?.userKey.fill(0); keys?.privateKey.fill(0);
     keys = null;
     wipeVault(vault); vault = null;
+    p.setBadge("");
     await p.session.remove("keys");
     await p.session.remove("pending");
   }
@@ -116,7 +123,30 @@ export function createCore(p: Platform) {
     await lock();
     keys = k;
     await p.session.set("keys", { userKey: b64url.encode(k.userKey), privateKey: b64url.encode(k.privateKey), publicKey: b64url.encode(k.publicKey) } satisfies StoredKeys);
+    await p.session.remove("revealsOff"); // a 404 or 403 stopped asking until this unlock
     await touch();
+    p.scheduleRevealCheck();
+  }
+
+  /**
+   * An agent asking for a secret (spec §5.3, R6): only a badge and a notification that bring the person to the web app,
+   * which answers. Nothing is decrypted, and no item, reason or Allow button is shown here.
+   */
+  async function checkReveals(): Promise<number> {
+    await hydrate();
+    if (!auth || !keys || await p.session.get<boolean>("revealsOff")) return 0;
+    let requests: { id: string }[];
+    try {
+      requests = (await client.get<{ requests: { id: string }[] }>("/me/agent-reveals", null)).requests;
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 403)) { await p.session.set("revealsOff", true); p.setBadge(""); }
+      return 0;
+    }
+    p.setBadge(requests.length ? String(requests.length) : "");
+    const seen = new Set((await p.session.get<string[]>("revealsNotified")) ?? []);
+    for (const r of requests) if (!seen.has(r.id)) p.notify(r.id, "An agent is asking for a secret. Open Clane Vault to answer.");
+    await p.session.set("revealsNotified", requests.map((r) => r.id));
+    return requests.length;
   }
 
   /** The strictest auto-lock any of my orgs sets (the keys open every org's items), or null. */
@@ -281,6 +311,7 @@ export function createCore(p: Platform) {
         return state();
       }
       case "copied": p.scheduleClipboardClear(); return { ok: true };
+      case "reveals": return { count: await checkReveals() };
     }
     // Everything below needs a signed-in, unlocked session.
     if (!auth) return { error: "signed_out" };
@@ -398,7 +429,9 @@ export function createCore(p: Platform) {
   }
 
   return {
-    onPopup, onContent, hydrate, lock,
+    onPopup, onContent, hydrate, lock, checkReveals,
+    /** The `reveals` alarm fired. */
+    onRevealAlarm: async () => { await hydrate(); await checkIdle(); await checkReveals(); },
     /** The auto-lock alarm fired. */
     onAlarm: async () => { await hydrate(); await checkIdle(); },
     /** The screen was locked or the machine went idle: lock now. */

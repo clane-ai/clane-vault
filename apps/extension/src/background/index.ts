@@ -41,6 +41,13 @@ const core = createCore({
     ext.idle?.setDetectionInterval(Math.max(15, Math.round(minutes * 60)));
   },
   scheduleClipboardClear: () => { void ext.alarms.create("clipboard", { delayInMinutes: 0.5 }); },
+  setBadge: (text) => { void ext.action.setBadgeText({ text }); },
+  // `notifications` is optional (F14): without the grant the API is absent and this does nothing.
+  notify: (id, message) => {
+    if (!ext.notifications) return;
+    void ext.notifications.create(`reveal:${id}`, { type: "basic", iconUrl: ext.runtime.getURL("icons/icon-128.png"), title: ext.runtime.getManifest().name, message });
+  },
+  scheduleRevealCheck: () => { void ext.alarms.create("reveals", { periodInMinutes: 0.5 }); },
 });
 
 /** The save-offer content script runs only while the user has it on and has granted access to all sites. */
@@ -70,6 +77,7 @@ ext.runtime.onMessage.addListener((msg: { type?: string; target?: string }, send
 ext.alarms.onAlarm.addListener((a) => {
   if (a.name === "autolock") void core.onAlarm();
   if (a.name === "clipboard") void clearClipboard().catch(() => undefined);
+  if (a.name === "reveals") void core.onRevealAlarm();
 });
 // Screen locked, or the machine idle for the auto-lock time: lock the vault too. Firefox does not report "locked"
 // everywhere, so the idle state is what locks there.

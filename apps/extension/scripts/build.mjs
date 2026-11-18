@@ -49,6 +49,9 @@ function manifest(target) {
     // activeTab + scripting: fill only the tab the user acted on. storage: session keys / local settings.
     // alarms + idle: auto-lock. clipboardWrite (+ offscreen on Chrome): clear copied secrets after 30 s.
     permissions: ["activeTab", "scripting", "storage", "alarms", "idle", "clipboardWrite", ...(chrome ? ["offscreen"] : [])],
+    // notifications: "an agent is asking for a secret", asked for from the popup (an auto-update adding a required
+    // permission would disable the extension until the user accepts it). The badge works without it.
+    optional_permissions: ["notifications"],
     // Asked at run time: the chosen server, and every site only when the user switches on save offers.
     optional_host_permissions: ["https://*/*", "http://localhost/*", "http://127.0.0.1/*", "<all_urls>"],
     ...(target === "chrome-e2e" ? { host_permissions: ["http://127.0.0.1/*", "http://localhost/*"] } : {}),

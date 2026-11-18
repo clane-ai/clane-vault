@@ -36,7 +36,9 @@ export type PopupMessage =
   /** `confirm` + `origin`: the user's "Fill anyway" for that page origin (from the confirm response). */
   | { type: "fill"; id: string; tabId: number; confirm?: "mismatch" | "insecure" | "both"; origin?: string }
   | { type: "settings"; autoLockMinutes?: number; saveOffers?: boolean }
-  | { type: "copied" };
+  | { type: "copied" }
+  /** How many agent requests for a secret wait for the person (answered in the web app). */
+  | { type: "reveals" };
 
 /** Messages from the content script (untrusted page context: values only go in, never secrets out). */
 export type ContentMessage =
