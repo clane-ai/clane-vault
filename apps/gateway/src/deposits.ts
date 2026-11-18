@@ -60,19 +60,26 @@ async function readForUpdate(id: string, encBody: string, recordKey: Uint8Array)
   return clean as unknown as RecordBody;
 }
 
+function bodyOf(input: SaveInput): RecordBody {
+  const f = input.fields ?? {};
+  return {
+    v: 2, type: input.type, title: input.title, username: f.username, password: f.password, url: f.url, notes: f.notes, data: f.data,
+    fields: input.custom_fields?.map((c) => ({ id: randomUUID(), ...c })),
+    ...(input.agent_use ? { agentPolicy: { v: 1 as const, hosts: input.agent_use.hosts, inject: input.agent_use.inject,
+      ...(input.agent_use.secret !== undefined ? { secret: input.agent_use.secret } : {}) } } : {}),
+  };
+}
+
+/** The checks buildDeposit makes, without sealing: InvalidInput when the vault's rules refuse the body. */
+export const checkDeposit = (input: SaveInput): void => { normalized(bodyOf(input)); };
+
 /**
  * normalizeRecordBody (a throw → InvalidInput), a random id and record key, both seals, the d1 signature at revision 1.
  * `keys` come from AgentKeyCache.open on this same sync, which proved `sync.owner` is the owner bound into the agent's k2 key:
  * only then may the record key be sealed to `sync.owner.publicKey`. Zeroes the key; the values are held until it returns.
  */
 export async function buildDeposit(sync: PersonalAgentSync, keys: MembershipKeys, identity: Identity, input: SaveInput, held: HeldSecrets): Promise<BuiltDeposit> {
-  const f = input.fields ?? {};
-  const body: RecordBody = {
-    v: 2, type: input.type, title: input.title, username: f.username, password: f.password, url: f.url, notes: f.notes, data: f.data,
-    fields: input.custom_fields?.map((c) => ({ id: randomUUID(), ...c })),
-    ...(input.agent_use ? { agentPolicy: { v: 1 as const, hosts: input.agent_use.hosts, inject: input.agent_use.inject,
-      ...(input.agent_use.secret !== undefined ? { secret: input.agent_use.secret } : {}) } } : {}),
-  };
+  const body = bodyOf(input);
   const release = holdValues(held, body);
   const recordKey = randomBytes(32);
   try {

@@ -199,6 +199,18 @@ describe("http_request capture, env files", () => {
     expect((await tool("http_request", req("/envtok", { from: "/token", title: "Deploy", type: "envFile", entry: "BAD KEY" }))).r.isError).toBe(true);
     expect(up.seen).toEqual([]);
   });
+
+  it("an agent_use the vault would refuse is invalid before anything is sent; an env file's agent_use with no secret injects the entry", async () => {
+    const { api, up, tool, req, capture } = await setup();
+    for (const agent_use of [{ hosts: ["api.github.test"], inject: { kind: "header" } }, { hosts: ["api.github.test"], inject: { kind: "bearer" }, secret: "data.nope" }])
+      expect((await tool("http_request", req("/create", { ...capture, agent_use }))).out).toEqual({ error: "refused", reason: "invalid" });
+    expect(up.seen).toEqual([]);
+    expect(api.personal.writes).toEqual([]);
+    const envUse = { hosts: ["api.stripe.test"], inject: { kind: "bearer" } };
+    expect((await tool("http_request", req("/envtok", { from: "/token", title: "Deploy", type: "envFile", entry: "DEPLOY_TOKEN", agent_use: envUse }))).out)
+      .toMatchObject({ status: 201, saved: { item: "personal/deploy" } });
+    expect(await api.personal.open(api.personal.deposits[0]!.id)).toMatchObject({ agentPolicy: { secret: "env:DEPLOY_TOKEN" } });
+  });
 });
 
 describe("pointerValue", () => {

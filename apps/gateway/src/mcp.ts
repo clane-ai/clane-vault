@@ -10,7 +10,7 @@ import { challenge, type AgentPrincipal, type BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
-import { buildDeposit, buildUpdate, InvalidInput, pointerValue, type SaveInput, type UpdateSet } from "./deposits.js";
+import { buildDeposit, buildUpdate, checkDeposit, InvalidInput, pointerValue, type SaveInput, type UpdateSet } from "./deposits.js";
 import type { Identity } from "./identity.js";
 import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
@@ -59,6 +59,15 @@ const ownerKeyChanged = (e: unknown): Refusal => { if (e instanceof OwnerKeyChan
 const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
 const classOf = (e: unknown) => (e instanceof Error ? e.name : typeof e);
 
+/** What a capture deposits. An env file's agent_use with no `secret` injects the captured entry. */
+function capturedInput(c: CaptureInput, value: string): SaveInput {
+  const ref = defaultSecretRef(c.type)!; // the input schema allows only types that have one, or envFile with an entry
+  const fields = c.type === "envFile" ? { data: { content: `${c.entry}=${quoteEnvValue(value)}\n`, fileName: ".env" } }
+    : ref === "password" ? { password: value } : { data: { [ref.slice(5)]: value } };
+  const agentUse = c.agent_use && c.type === "envFile" && c.agent_use.secret === undefined ? { ...c.agent_use, secret: `env:${c.entry}` } : c.agent_use;
+  return { title: c.title, type: c.type, fields, ...(agentUse ? { agent_use: agentUse } : {}) };
+}
+
 /** The tools' work, outside MCP. Every call runs as the verified principal's agent only. */
 export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "events" | "log" | "held" | "resolve" | "identity">) {
   const allow = parseCidrs(d.cfg.allowPrivateCidrs);
@@ -97,11 +106,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
 
   /** The upstream already made the credential: a failure from here is `capture.refused`, never a lost response. ApiRefused still ends the agent. */
   async function saveCaptured(p: AgentPrincipal, sync: PersonalAgentSync, keys: MembershipKeys, c: CaptureInput, value: string) {
-    const ref = defaultSecretRef(c.type)!; // the input schema allows only types that have one, or envFile with an entry
-    const fields = c.type === "envFile" ? { data: { content: `${c.entry}=${quoteEnvValue(value)}\n`, fileName: ".env" } }
-      : ref === "password" ? { password: value } : { data: { [ref.slice(5)]: value } };
     try {
-      const r = await deposit(p, sync, keys, { title: c.title, type: c.type, fields, ...(c.agent_use ? { agent_use: c.agent_use } : {}) });
+      const r = await deposit(p, sync, keys, capturedInput(c, value));
       return "refused" in r ? { capture: { refused: r.refused } } : { saved: r };
     } catch (e) {
       if (e instanceof ApiRefused) throw e;
@@ -165,6 +171,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
           // Before anything is sent: else the upstream makes a credential that can't be saved (Review Focus 3).
           if (!sync.policy.write) return refused("not_writable");
           if (sync.inboxFree <= 0) return refused("inbox_full");
+          // The deposit's own checks on a placeholder value: an agent_use the vault refuses must not cost a minted credential.
+          try { checkDeposit(capturedInput(capture, "x".repeat(8))); } catch (e) { return invalid(e); }
         }
         let value: string | null = null, release = () => {};
         try {
