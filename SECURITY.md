@@ -53,6 +53,7 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 | Records never shared to an agent | ciphertext only (unchanged) | nothing (no key reaches it) | nothing |
 | Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
 | Personal items with *Can use* (a person's own agent) | ciphertext only | **plaintext at use time**; could decrypt any time while the agent is live | names, hosts, policy; responses with the secret scrubbed |
+| Deposits and agent updates (a personal agent's `save_secret`, `update_secret`, `capture`) | ciphertext, a gateway signature, the previous version of an updated item | **plaintext at write time**, even for an item the agent is never given to use | for `save_secret` and `update_secret`, the value it supplied; for `capture`, only the new item's handle |
 | Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
 | Who used what, where, when | metadata events | metadata log | its own calls |
 
@@ -67,6 +68,14 @@ Residual risks, which no mitigation in this release removes:
   [docs/agents.md](docs/agents.md#personal-agents).
 - **Admins don't see what personal agents hold.** An organisation's event log shows only that a member created,
   verified, connected or revoked a personal agent; an organisation that needs more control switches personal agents off.
+- **Agent updates rest on a server flag.** Whether a personal agent may update an item (*Agent can update*) is
+  `agentWrite`, server state. A malicious server together with a hijacked agent could overwrite any item the agent
+  holds a key for. Each update is signed by the gateway and the server keeps the previous version (the last 5, for 30
+  days, *Restore previous*), so an overwrite is visible and reversible, not impossible. Saved items never become records
+  without the owner's Keep, so the server can't plant one in a vault.
+- **The gateway sees what it writes.** It encrypts a saved or updated value itself, so it sees it even if the agent is
+  never given that item to use. With `save_secret` and `update_secret` the model supplied the value, so it has seen it
+  too; `capture` keeps a created credential away from the model.
 
 - **A hijacked agent** (prompt injection) can make legitimate-looking calls to an allowed host with bad intent (delete
   the repo, email the customer list). Per-path policy narrows it; nothing removes it.

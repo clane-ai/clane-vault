@@ -295,7 +295,7 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
 
        docker compose exec gateway /nodejs/bin/node dist/cli.js identity
 
-**Personal agents** (people's own agents, for their Personal space; `docs/agents.md`, *Personal agents*) are on with agent access. To switch them off for the whole server, set `PERSONAL_AGENTS=off` in `.env` and restart; an organisation can also switch them off for its own members in its policies. With AWS KMS, add `ownerUserId` to the key policy's allowed encryption-context keys before anyone creates one.
+**Personal agents** (people's own agents, for their Personal space; `docs/agents.md`, *Personal agents*) are on with agent access. To switch them off for the whole server, set `PERSONAL_AGENTS=off` in `.env` and restart; an organisation can also switch them off for its own members in its policies. With AWS KMS, add `ownerUserId` to the key policy's allowed encryption-context keys before anyone creates one. A personal agent may save items to its owner's *From agents* inbox and update the items it's allowed to, at most `GATEWAY_WRITE_PER_HOUR` (default 20) times an hour; set it in `.env` to change that.
 
 Rules the gateway checks at start:
 - `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.

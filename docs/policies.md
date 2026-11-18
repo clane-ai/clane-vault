@@ -19,7 +19,8 @@ and missing fields take their defaults. Every change is logged as `org.policies_
 | `breachCheckAllowed`: members may opt in to the Have I Been Pwned check (`docs/password-health.md`) | on | Web app |
 | `ipAllowlist`: IPv4 and IPv6 CIDRs that may reach the organisation (empty means anywhere) | `[]` | Server, on every org-scoped request |
 | `personalAgents.allowed`, `personalAgents.maxPerMember` (1–20, null for no limit): members may have personal agents, and how many (`docs/agents.md`) | on, null | Server (`/me/agents`, every call of a personal agent) |
-| `personalAgents.write`, `personalAgents.reveal` (`off`, `approval`, `standing`): for later releases | on, `approval` | Server |
+| `personalAgents.write`: members' agents may save items and update the ones they're allowed to (`docs/agents.md`, *Saving and updating items*) | on | Server (the agent's sync, `/agent/deposits*`, `/agent/records/:id`) |
+| `personalAgents.reveal` (`off`, `approval`, `standing`): for a later release | `approval` | Server |
 | `ownerBreakGlass`: the owner reaches the organisation from anywhere despite the allowlist | on | Server |
 
 ## How clients read them

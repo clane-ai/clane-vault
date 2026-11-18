@@ -77,12 +77,12 @@ The gateway also refuses, whatever the policy says:
 
 ## Tools
 
-The gateway offers two MCP tools. There is no tool that returns a credential.
+The gateway offers two MCP tools to every agent, and two more to personal agents (`save_secret` and `update_secret`, in [Saving and updating items](#saving-and-updating-items)). There is no tool that returns a credential.
 
-- `list_secrets` → the items the agent may use: `handle`, title, type, hosts, how it is sent, and methods/paths if set. Never a secret field. A **handle** is `<folder>/<title>`, slugged. The folder part names the folder that **holds the record's key** (for a record in a subfolder, the team folder it belongs to), or `shared` for a record shared directly. Duplicates get `-2`, `-3`.
+- `list_secrets` → the items the agent may use: `handle`, title, type, hosts, how it is sent, and methods/paths if set; for a personal agent also `deposit: true` on an item it saved that the owner hasn't kept yet, and `can_update: true` where it may change the item. Never a secret field. A **handle** is `<folder>/<title>`, slugged. The folder part names the folder that **holds the record's key** (for a record in a subfolder, the team folder it belongs to), or `shared` for a record shared directly. Duplicates get `-2`, `-3`.
 - `http_request` `{ item, method, url, headers?, body? }` → `{ status, headers, body, truncated? }`, or `{ error: "refused", reason }`. The gateway drops any `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` and policy header the agent sent, injects the real one, and scrubs the secret (raw, base64, base64url, URL-encoded, hex, JSON-escaped and the `username:secret` form) from the response headers and decompressed body as `[clane:redacted]`.
 
-Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session), and for personal agents `owner_key_changed` (the owner key the server reports isn't the one the agent was enrolled with; see [Personal agents](#personal-agents)).
+Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session), and for personal agents `owner_key_changed` (the owner key the server reports isn't the one the agent was enrolled with; see [Personal agents](#personal-agents)), `not_kept` (`http_request` with an item the owner hasn't kept yet), and the write reasons in [Saving and updating items](#saving-and-updating-items).
 
 ## Connecting a client
 
@@ -167,6 +167,28 @@ A **personal agent** belongs to one person and reaches only items in that person
 
 **Revocation and what to rotate.** **Revoke** in My agents removes every item from the agent, ends its tokens and connected apps, deletes its wrapped key and drops the gateway's cache, at once. It then lists **the items the gateway could open for it: change the credentials in them**, for the same reason as for organisation agents. Taking one item away (*None* in its share sheet) deletes that grant at once but doesn't rotate the record key (`docs/sharing.md`), so change the credential if it matters. Moving an item into a team folder, trashing or purging it takes it away from the agent in the same step.
 
+### Saving and updating items
+
+A personal agent can save a credential for its owner and change items the owner lets it change. It can't delete, trash, move or share anything, and it can never change an item's *Agent use* settings or who can use it.
+
+**A saved item is a deposit, not a record.** The gateway holds the agent's key, never yours, so it can't put a readable item into your vault the way your browser does: anyone can seal a key to your public key, so a server that could add records for you could plant a login for a look-alike site and have the extension offer it. What the agent saves therefore goes to **From agents** in your Personal space (with a count in the sidebar), signed by the gateway. It is not in your vault, the extension, autofill, password health, exports or offline copies until you keep it. Your browser checks the gateway's signature against the gateway you pinned, and that the item was sealed to your own key; one that fails shows *Not signed by the gateway — delete it* and is never opened. Each item shows the agent's name, the connected app (the token or OAuth client it used), when, and any *Agent use* settings, marked *set by the agent*.
+
+**Keep or Delete.** **Keep** (optionally into a folder) makes it an ordinary record: your browser wraps its key under your own key, and the record shows *Created by agent <name>*. *<agent> can keep using this item* is ticked by default and gives the agent *Can use*. **Delete** asks first and can't be undone. An item you don't keep is deleted after 90 days; the inbox warns from day 60. At most 100 unkept items per person, from all their agents (`inbox_full`).
+
+**Updates.** An agent can change its own items until you keep them. After that, and for any other item, only where you tick **Agent can update this item** under the agent in the item's share sheet. Keep leaves it off, and nothing else turns it on. An update is signed by the gateway, and the server keeps the previous version (the last 5 per item, for 30 days): the item shows *Changed by agent <name>* until you choose **Looks right** or **Restore previous**, which puts the earlier version back. Your own edit also clears it.
+
+**The tools** (personal agents only):
+
+- `save_secret` `{ title, type, fields?, custom_fields?, agent_use? }` → `{ item }`, the new item's handle. `fields` is `{ username?, password?, url?, notes?, data? }` (`data` holds the type's own fields, e.g. `{ "secret": "…" }` for an API key); `agent_use` is `{ hosts, inject: { kind, name?, prefix? }, secret? }`, as in the editor. The agent can use the item only once you keep it with *can keep using* ticked.
+- `update_secret` `{ item, set, revision? }` → `{ item, revision }`. `set` has the shape of `fields` and changes only what it names. With `revision`, the call is refused (`conflict`) unless it is the item's current one.
+- `http_request` with `capture: { from, title, type, agent_use? }`, for a call that **creates** a credential (a new API token, a service account key). `from` is a JSON Pointer into the response body (e.g. `/token`). The gateway saves the value there as a new item of `type` (in its default secret field) in your inbox, scrubs it from the response, and adds `saved: { item }` to the result: the model never sees the value. If the save fails, the result still has the response, with `capture: { refused: <reason> }`. A value that is the injected credential itself, is shorter than 8 characters, or comes in a response that was cut short or isn't a 2xx, is not saved. **Prefer `capture` over `save_secret`**: with `save_secret` the model supplied the value, so it has already seen it.
+
+Write refusal reasons (`{ error: "refused", reason }`): `not_writable` (this agent may not update the item, or an organisation's policy switched saving off), `inbox_full`, `conflict`, `invalid` (the fields don't fit the type, or a captured value that can't be saved), `not_found`, `owner_key_changed`. Saves, updates and captures together are limited to `GATEWAY_WRITE_PER_HOUR` (default 20) per agent per hour (HTTP 429). An organisation can switch saving off for its members' agents (*Agents may save and update items*, `docs/policies.md`).
+
+**What this costs.** The gateway sees a secret when it writes it, even if the agent is never given the item to use. Whether an agent may update an item is a flag on the server: a malicious server together with a hijacked agent could overwrite any item the agent holds. The signature and the kept previous version make that visible and reversible, not impossible. See `SECURITY.md`.
+
+Events, visible to the owner and in no organisation's log: `agent.deposit` and `agent.update` (the agent's), `agent.deposit_keep`, `agent.deposit_delete` and `agent.item_write` (*Agent can update* changed).
+
 **Connecting a client.** **Connect** in My agents opens the same sheet: the URL, the snippets and **Create API token**. OAuth flows end on the consent page, which lists *Your agents*: you may allow your own agent there without being an admin.
 
 **What admins see and don't see.** The owner sees everything their agent did under **My agents → Activity** (`agent.use`, `agent.refused`, `agent.reflected`, with the item, host and method); those rows belong to no organisation. An admin sees, in their organisation's event log, lifecycle only, for members of that organisation: `personal_agent.create`, `personal_agent.verify`, `personal_agent.revoke`, `personal_agent.connect` (a token or OAuth grant was created) and `personal_agent.suspended`, each with the member as actor and the agent's id in `meta`. No agent name, item, title, host, count or mode. **Admin → Agents** has one line, *Personal agents: n across m members*, which opens a per-member count. An admin can't tell whether a member's agent holds one test key or two hundred passwords, and can't read, list or revoke it: an organisation that needs that control switches personal agents off and uses organisation agents. A row goes to each organisation the member belongs to, so a person in two organisations discloses "has a personal agent" to both.
@@ -224,6 +246,7 @@ On the **gateway**:
 | `GATEWAY_IDENTITY_KEY_FILE` | | Where the identity key is kept (wrapped under the KEK); created at first start. |
 | `GATEWAY_CACHE_TTL_SECONDS` | 60 | How long an agent's opened key and sync data stay in memory. `0`: a KMS call per request. |
 | `GATEWAY_AGENT_RATE_PER_MINUTE` | 60 | `http_request` calls per agent per minute. |
+| `GATEWAY_WRITE_PER_HOUR` | 20 | `save_secret`, `update_secret` and `http_request` with `capture`, together, per personal agent per hour. |
 | `GATEWAY_MAX_RESPONSE_BYTES` | 4194304 | Response cap, after decompression; longer responses are cut and marked `truncated`. |
 | `GATEWAY_UPSTREAM_TIMEOUT_MS` | 30000 | Total time for an outbound call, redirects included. |
 | `GATEWAY_ALLOW_PRIVATE_CIDRS` | empty | Comma-separated CIDRs an agent may reach over `http`/`https` though private. Self-hosted only; never set on a hosted service. Metadata addresses stay blocked. |
@@ -234,7 +257,7 @@ On the **gateway**:
 
 Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NODE_DEBUG` (undici's debug log prints request paths, which can hold a secret injected into the query) or `NODE_V8_COVERAGE`, any Node flag outside a short allowlist, and starting without `--disable-sigusr1` (SIGUSR1 would open the inspector). The image's command is `--disable-sigusr1 dist/server.js`; run it from source with `npm run dev -w @clane-vault/gateway`, which builds and then runs it the same way. A bad setting prints one line, `{"event":"config_error","msg":…}`, and exits 1. After changing the API's `PUBLIC_URL` (its OAuth issuer), restart the gateway.
 
-**Limits**: `http_request` `GATEWAY_AGENT_RATE_PER_MINUTE` per agent; `list_secrets` 20 a minute per agent; 600 requests a minute per client address; 10 unknown API tokens a minute per address; 20 open MCP sessions per agent (idle ones close after 30 minutes); one call in flight per session; request bodies up to 1 MiB.
+**Limits**: `http_request` `GATEWAY_AGENT_RATE_PER_MINUTE` per agent; writes `GATEWAY_WRITE_PER_HOUR` per personal agent; `list_secrets` 20 a minute per agent; 600 requests a minute per client address; 10 unknown API tokens a minute per address; 20 open MCP sessions per agent (idle ones close after 30 minutes); one call in flight per session; request bodies up to 1 MiB.
 
 **Errors.** Bodies are `{ "error": "<code>" }`.
 
@@ -259,6 +282,7 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 | 409 | `agent_item_limit` | A personal agent already holds 200 items. |
 | 409 | `team_record` | Giving a personal agent an item in a team folder. |
 | 409 | `already_shared` | Giving a personal agent an item it already holds through another row. |
+| 409 | `not_writable`, `conflict`, `inbox_full` | Gateway to API (`/agent/deposits*`, `/agent/records/:id`): a refused write. Never 401 or 403, which would end the agent. |
 | 429 | `rate_limited` | With `Retry-After`. |
 | 503 | `gateway_unavailable` | The API can't reach the gateway; nothing was created. |
 | 503 | `gateway_identity_changed` | The gateway identity changed; see above. |

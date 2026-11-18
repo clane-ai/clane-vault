@@ -7,11 +7,16 @@ import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setting
 
 // Personal agents, Phase A end to end (docs/design/2026-11-15-personal-agents.md §3): a member (not an admin) enrols an
 // agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
-// by policy; a move into a team folder takes the item away; revoke ends it.
+// by policy; Phase B (§4): the agent saves a secret to the owner's inbox, which the owner keeps, updates one it may update
+// (the owner restores the previous value) and captures a credential an upstream creates; a move into a team folder takes the
+// item away; revoke ends it.
 test.describe.configure({ mode: "serial" });
 
 const PW = "an e2e master password";
 const CANARY = "sk_test_PERSONAL_CANARY";
+const SAVED = "sk_test_SAVED_CANARY";
+const UPDATED = "sk_test_UPDATED_CANARY";
+const CAPTURED = "tok_CAPTURED_CANARY";
 const AGENT_WARNING = "Give agents restricted credentials: a Stripe restricted key, a read-only database user, a scoped token. Never a root or owner credential. What you share here can be read by the gateway and used by whatever drives the agent.";
 const MCP_URL = `http://localhost:${process.env.E2E_GATEWAY_PORT ?? 3002}/mcp`;
 const id = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
@@ -35,6 +40,11 @@ async function mcp(token: string): Promise<Client> {
   await client.connect(new StreamableHTTPClientTransport(new URL(MCP_URL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   return client;
 }
+/** One tool call on a fresh MCP session: its structured result. */
+async function call(token: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const c = await mcp(token);
+  try { return (await c.callTool({ name, arguments: args })).structuredContent as Record<string, unknown>; } finally { await c.close().catch(() => {}); }
+}
 const listSecrets = async (token: string) => { const c = await mcp(token); try { return JSON.stringify(await c.callTool({ name: "list_secrets", arguments: {} })); } finally { await c.close().catch(() => {}); } };
 /**
  * The HTTP status of a tool call on a fresh MCP session: 200 while the agent works, 401 once it is suspended or revoked.
@@ -53,6 +63,8 @@ let token = "";
 test.beforeAll(async ({ browser }: { browser: Browser }) => {
   echo = createServer((req, res) => {
     received.push(req.headers);
+    // An upstream that creates a credential: what `capture` saves.
+    if (req.method === "POST" && req.url === "/token") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ token: CAPTURED }));
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ path: req.url, headers: req.headers }));
   });
   await new Promise<void>((ok) => echo.listen(0, "127.0.0.1", ok));
@@ -71,6 +83,25 @@ test.afterAll(async () => {
   await member?.context().close();
   await new Promise<void>((ok) => echo.close(() => ok()));
 });
+
+async function unlock(p: Page) {
+  await p.reload();
+  await p.getByLabel("Master password").fill(PW);
+  await p.getByRole("button", { name: "Unlock" }).click();
+}
+const fromAgents = (p: Page) => p.getByRole("link", { name: /^From agents/ });
+/** The Personal vault's "No folder" list, then the record titled `title`. */
+async function openRecord(p: Page, title: string) {
+  await p.getByRole("link", { name: /^Vault/ }).click();
+  await p.getByRole("button", { name: /^No folder/ }).click();
+  await p.getByRole("button", { name: new RegExp(title) }).click();
+  await expect(p.getByRole("heading", { name: title })).toBeVisible({ timeout: 30_000 });
+}
+const secretShown = async (p: Page, value: string) => {
+  const details = p.getByRole("complementary", { name: "Record details" });
+  await details.getByRole("button", { name: "Show secret" }).click();
+  await expect(details.getByLabel("Secret", { exact: true })).toHaveText(value, { timeout: 30_000 });
+};
 
 const myAgentRow = (p: Page) => p.getByRole("list", { name: "My agents" }).getByRole("listitem", { name: "My helper" });
 
@@ -161,8 +192,10 @@ async function setPersonalAgents(allowed: boolean) {
   const sw = block.getByRole("switch", { name: "Members may use personal agents" });
   await expect(sw).toBeVisible({ timeout: 30_000 });
   if ((await sw.getAttribute("aria-checked")) !== String(allowed)) await sw.click();
+  // The response, not the toast: the previous save's toast can still be showing.
+  const saved = admin.waitForResponse((r) => r.url().endsWith("/admin/settings/policies/personal-agents") && r.request().method() === "PUT");
   await block.getByRole("button", { name: "Save personal agents" }).click();
-  await expect(admin.getByText("Personal agents policy saved")).toBeVisible({ timeout: 30_000 });
+  expect((await saved).ok()).toBe(true);
 }
 
 test("5. the organisation's policy suspends the agent, and lifts the suspension", async () => {
@@ -178,7 +211,72 @@ test("5. the organisation's policy suspends the agent, and lifts the suspension"
   expect(await listSecrets(token)).toContain("personal/echo");
 });
 
-test("6. moved into a team folder the item leaves the agent; revoke ends it", async () => {
+let saved = "";
+
+test("6. save_secret puts an item in From agents, not in the vault", async () => {
+  const r = await call(token, "save_secret", { title: "Saved by agent", type: "apiKey", fields: { data: { secret: SAVED } } });
+  expect(typeof r.item).toBe("string");
+  saved = r.item as string;
+  await unlock(member);
+  await member.getByRole("link", { name: /^Vault/ }).click();
+  await member.getByRole("button", { name: /^No folder/ }).click();
+  await expect(member.getByRole("button", { name: /Echo/ })).toBeVisible({ timeout: 30_000 });
+  await expect(member.getByRole("button", { name: /Saved by agent/ })).toHaveCount(0);
+  await expect(fromAgents(member)).toHaveText(/From agents\s*1$/, { timeout: 30_000 });
+});
+
+test("7. the owner opens it, sees who saved it, and keeps it", async () => {
+  await fromAgents(member).click();
+  const card = member.getByRole("article", { name: "Saved by agent" });
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  // The agent's name and the name of the token it used (step 3's, the default).
+  await expect(card).toContainText("From My helper · via API token");
+  await card.getByRole("button", { name: "Keep" }).click();
+  await expect(member.getByRole("status").filter({ hasText: "Kept." })).toBeVisible({ timeout: 30_000 });
+  await openRecord(member, "Saved by agent");
+  await expect(member.getByText("Created by agent My helper")).toBeVisible();
+  await secretShown(member, SAVED);
+});
+
+test("8. update_secret needs Agent can update; Restore previous undoes the change", async () => {
+  expect(await call(token, "update_secret", { item: saved, set: { data: { secret: UPDATED } } })).toEqual({ error: "refused", reason: "not_writable" });
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
+  const canUpdate = agents.getByRole("checkbox", { name: "Agent can update this item" });
+  await canUpdate.click(); // controlled: checked once the change is saved
+  await expect(canUpdate).toBeChecked({ timeout: 30_000 });
+  await expect(agents.getByRole("alert")).toHaveCount(0);
+  await member.keyboard.press("Escape");
+
+  const r = await call(token, "update_secret", { item: saved, set: { data: { secret: UPDATED } } });
+  expect(r).toMatchObject({ item: saved, revision: expect.any(Number) });
+  await unlock(member);
+  await openRecord(member, "Saved by agent");
+  const banner = member.getByRole("note", { name: "Changed by agent" });
+  await expect(banner).toContainText("Changed by agent My helper", { timeout: 30_000 });
+  await secretShown(member, UPDATED);
+  await banner.getByRole("button", { name: "Restore previous" }).click();
+  await expect(banner).toHaveCount(0, { timeout: 30_000 });
+  await expect(member.getByRole("complementary", { name: "Record details" }).getByLabel("Secret", { exact: true })).toHaveText(SAVED, { timeout: 30_000 });
+});
+
+test("9. http_request capture saves the upstream's new credential without showing it", async () => {
+  const r = await call(token, "http_request", { item: "personal/echo", method: "POST", url: `http://echo.test:${echoPort}/token`,
+    capture: { from: "/token", title: "Captured", type: "apiKey" } });
+  expect((r.saved as { item?: unknown } | undefined)?.item).toEqual(expect.any(String));
+  expect(JSON.stringify(r)).not.toContain(CAPTURED);
+  await unlock(member);
+  await fromAgents(member).click();
+  const card = member.getByRole("article", { name: "Captured" });
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  // The inbox shows no values: keep it to read its secret.
+  await card.getByRole("button", { name: "Keep" }).click();
+  await expect(member.getByRole("status").filter({ hasText: "Kept." })).toBeVisible({ timeout: 30_000 });
+  await openRecord(member, "Captured");
+  await secretShown(member, CAPTURED);
+});
+
+test("10. moved into a team folder the item leaves the agent; revoke ends it", async () => {
   // A personal record reaches the organisation's space only while it is shared there: share it with the admin, then move it.
   await member.getByRole("link", { name: /^Vault/ }).click();
   await switchSpace(member, { firstOrg: true });
