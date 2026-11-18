@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { agentRevealRequestMessage, b64url, generateKeyPair, openReveal, type MembershipKeys, type SealKeys } from "@clane-vault/crypto";
+import { agentRevealRequestMessage, b64url, generateKeyPair, openReveal, revealFieldsOf, type MembershipKeys, type SealKeys } from "@clane-vault/crypto";
 import type { ApiClient, PersonalAgentSync } from "./apiClient.js";
 import type { AgentPrincipal } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { Identity } from "./identity.js";
-import { revealableItem } from "./items.js";
+import { revealableItem, standingBody } from "./items.js";
 import type { HeldSecrets, Logger } from "./log.js";
 
 export type RevealReason = "reveal_off" | "field" | "denied" | "expired" | "busy" | "not_found";
@@ -40,10 +40,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function requestReveal(d: RevealDeps, p: AgentPrincipal, sync: PersonalAgentSync, keys: MembershipKeys,
   input: { item: string; fields: string[]; reason: string }): Promise<RevealResult> {
   if (d.cfg.reveal === "off" || sync.policy.reveal === "off") return refused("reveal_off"); // no API call (spec §8)
+  const fields = [...new Set(input.fields)].sort();
+  // Standing reveal (spec §5.6): the operator, every policy and the item's own encrypted body all say so. Otherwise the
+  // approval path below runs, so an item can have both.
+  if (d.cfg.reveal === "standing" && sync.policy.reveal === "standing") {
+    const s = await standingBody(sync, keys, input.item, fields, d.log);
+    if (s) {
+      if ("refused" in await d.api.standingReveal(p.accessToken, { recordId: s.recordId, fields })) return refused("reveal_off"); // only a 201 releases values
+      const out = await revealFieldsOf(s.body, fields);
+      const releases = Object.values(out).map((v) => d.held.hold(v));
+      return { fields: out, release: () => { for (const r of releases) r(); } };
+    }
+  }
   const it = await revealableItem(sync, keys, input.item, d.log);
   if (it === undefined) return refused("not_found");
   if (it === "no_stub") return refused("reveal_off");
-  const fields = [...new Set(input.fields)].sort();
   if (fields.some((f) => !it.fields.includes(f))) return refused("field");
   const kp = await generateKeyPair();
   const id = randomUUID(), now = (d.now ?? Date.now)();

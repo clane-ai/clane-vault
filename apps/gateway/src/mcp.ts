@@ -122,7 +122,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
 
   return {
     async listSecrets(p: AgentPrincipal): Promise<SecretListing[] | Refusal> {
-      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log)).catch(ownerKeyChanged);
+      const items = await asAgent(p, (sync, keys) => listItems(sync, keys, d.log,
+        d.cfg.reveal === "standing" && isPersonal(sync) && sync.policy.reveal === "standing")).catch(ownerKeyChanged);
       if (!Array.isArray(items)) return items;
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
         ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}),

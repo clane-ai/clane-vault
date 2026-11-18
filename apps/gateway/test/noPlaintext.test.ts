@@ -23,7 +23,9 @@ const CAPTURED = "ghp_CAPTURED_CANARY_47";
 const ENV = ["sk_live_ENVCANARY1", "sk_live_ENVCANARY2"];
 // A value the owner lets get_secret show: in that tool's response only (spec §8).
 const REVEALED = "acct_REVEALED_CANARY_48";
-const FORMS = [SECRET, ...WRITTEN, CAPTURED, ...ENV, REVEALED].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
+// One read on standing reveal (Phase D): the same rule.
+const STANDING = "wifi_STANDING_CANARY_49";
+const FORMS = [SECRET, ...WRITTEN, CAPTURED, ...ENV, REVEALED, STANDING].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
 const AUD = "http://localhost:3002/mcp";
 
 // performRequest as is, unless a test makes the tool throw (an Error carrying the secret) or raise a real uncaught throw.
@@ -49,7 +51,7 @@ const closers: (() => Promise<void>)[] = [];
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const cfgFor = (apiUrl: string, apiToken: string): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 600, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 300, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "approval", revealPerHour: 10,
+  upstreamTimeoutMs: 300, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "standing", revealPerHour: 10,
 });
 const apiKey = (port: number): RecordBody => ({ v: 2, type: "apiKey", title: "Stripe", data: { secret: SECRET, keyId: "kid" },
   agentPolicy: { v: 1, hosts: [`api.test:${port}`], inject: { kind: "bearer" } } });
@@ -149,6 +151,12 @@ describe("no plaintext anywhere", () => {
     expect(JSON.parse(await mine("get_secret", { item: "personal/shown", fields: ["username"], reason: "check the account" })))
       .toMatchObject({ structuredContent: { fields: { username: REVEALED } } });
     expect(captured.pop()).toContain(REVEALED); // that response, and only it, leaves the check
+    tool.api.personal.setPolicyReveal("standing");
+    await tool.api.personal.addRecord({ v: 2, type: "wifi", title: "Office wifi", password: STANDING,
+      agentReveal: { v: 1, agents: [tool.api.personal.agentId], fields: ["password"] } });
+    expect(JSON.parse(await mine("get_secret", { item: "personal/office-wifi", fields: ["password"], reason: "join the network" })))
+      .toMatchObject({ structuredContent: { fields: { password: STANDING } } });
+    expect(captured.pop()).toContain(STANDING);
 
     await tool("http_request", call("/hang")); // an upstream timeout
     await tool("http_request", call("/echo")); // a scrub hit

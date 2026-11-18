@@ -237,3 +237,19 @@ export async function openReveal(sealed: string, ids: RevealIds, keys: SealKeys)
   if (!o || typeof o !== "object" || Array.isArray(o) || Object.values(o).some((v) => typeof v !== "string")) throw new Error("reveal is invalid");
   return o as Record<string, string>;
 }
+
+/** Standing reveal (spec §5.6), inside the encrypted body: which agents may read which fields without asking. */
+export interface AgentReveal { v: 1; agents: string[]; fields: string[] }
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Unknown keys refused; `agents` 1–20 unique lower-case UUIDs; `fields` through validateRevealFields (returned sorted). */
+export function validateAgentReveal(p: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret" | "data">): AgentReveal {
+  const bad = (m: string): never => { throw new Error(`agent reveal: ${m}`); };
+  if (!p || typeof p !== "object" || Array.isArray(p)) return bad("must be an object");
+  const o = p as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!["v", "agents", "fields"].includes(k)) bad(`unknown key "${k}"`);
+  if (o.v !== 1) bad("unknown version");
+  const agents = o.agents;
+  if (!Array.isArray(agents) || agents.length < 1 || agents.length > 20 || agents.some((a) => typeof a !== "string" || !AGENT_ID.test(a)) || new Set(agents).size !== agents.length)
+    bad("1 to 20 different agents are required");
+  return { v: 1, agents: [...(agents as string[])], fields: validateRevealFields(o.fields, body) };
+}

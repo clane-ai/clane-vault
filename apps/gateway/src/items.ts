@@ -90,7 +90,8 @@ function orgOpener(sync: OrgAgentSync, keys: MembershipKeys) {
  * Summaries in record-id order; `onlyPrefix` decrypts just the records under one handle prefix (collisions never cross prefixes).
  * One record that won't open is skipped and logged; when none opens at all (a dead key), it throws.
  */
-async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, onlyPrefix?: string): Promise<ItemSummary[]> {
+/** `standing`: GATEWAY_REVEAL and every policy say standing, so an item's own agentReveal lists fields readable with no approval. */
+async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, onlyPrefix?: string, standing = false): Promise<ItemSummary[]> {
   const o = opener(sync, keys), used = new Set<string>(), out: ItemSummary[] = [];
   let failed = 0, opened = 0;
   const handleFor = (prefix: string, title: string) => {
@@ -140,13 +141,16 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
       const handle = handleFor(prefix, body.title);
       const p = body.agentPolicy; // only summary fields are kept; the body is dropped here
       const st = isPersonal(sync) && !r.deposit ? await openStub(r.id) : null;
+      // F19: standing reveal is read from the body; it applies to kept records whose agentReveal lists this agent.
+      const sr = standing && isPersonal(sync) && !r.deposit && body.agentReveal?.agents.includes(sync.agentId) ? body.agentReveal.fields : null;
       out.push({ handle, recordId: r.id, title: body.title, type: body.type, hosts: p?.hosts ?? [], inject: p?.inject ?? { kind: "none" }, approval: p?.approval ?? false,
         ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}),
         ...(body.type === "envFile" ? { env_keys: envKeys(body.data?.content ?? "") } : {}),
         ...(p?.secret?.startsWith("env:") ? { env_injects: p.secret.slice(4) } : {}),
         revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), ...("write" in r && r.write ? { can_update: true as const } : {}),
-        ...(isPersonal(sync) && !r.deposit ? { modes: st ? ["use", "reveal"] as ("use" | "reveal")[] : ["use"] as ("use" | "reveal")[] } : {}),
-        ...(st ? { reveal: { fields: st.fields, approval: true } } : {}) });
+        ...(isPersonal(sync) && !r.deposit ? { modes: st || sr ? ["use", "reveal"] as ("use" | "reveal")[] : ["use"] as ("use" | "reveal")[] } : {}),
+        // shortcut: one reveal entry per item; a stub's extra fields aren't listed where standing applies.
+        ...(sr ? { reveal: { fields: sr, approval: false } } : st ? { reveal: { fields: st.fields, approval: true } } : {}) });
     }
   } finally {
     o.close();
@@ -157,8 +161,23 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
 }
 
 /** `keys` come from `AgentKeyCache.use` (or open + release in finally). */
-export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Logger): Promise<ItemSummary[]> {
-  return summarize(sync, keys, log);
+export async function listItems(sync: AgentSync, keys: MembershipKeys, log?: Logger, standing = false): Promise<ItemSummary[]> {
+  return summarize(sync, keys, log, undefined, standing);
+}
+
+/**
+ * Standing reveal: the kept record's body when its own agentReveal lists this agent and every asked field; else null.
+ * The caller zeroes nothing here: the body's strings are plain JavaScript strings, as for http_request.
+ */
+export async function standingBody(sync: PersonalAgentSync, keys: MembershipKeys, item: string, fields: string[], log?: Logger): Promise<{ recordId: string; body: RecordBody } | null> {
+  const hit = await findItem(sync, keys, item, log);
+  const r = hit && !hit.deposit && live(sync).find((x) => x.id === hit.id);
+  if (!r) return null;
+  const o = opener(sync, keys);
+  let body: RecordBody;
+  try { body = await o.body(r); } catch { return null; } finally { o.close(); }
+  const ar = body.agentReveal;
+  return ar && ar.agents.includes(sync.agentId) && fields.every((f) => ar.fields.includes(f)) ? { recordId: r.id, body } : null;
 }
 
 /** `item` is a handle or a record id (a deposit's too). */

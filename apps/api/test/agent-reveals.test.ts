@@ -338,3 +338,25 @@ describe("reveal requests", () => {
     expect(await t.prisma.agentRevealRequest.findUnique({ where: { id: open.id } })).toMatchObject({ status: "expired" });
   });
 });
+
+describe("standing reveal (Phase D)", () => {
+  const standing = (access: string, recordId: string, fields = ["username"]) => agentCall(access, "POST", "/agent/reveals/standing", { recordId, fields });
+
+  it("needs policy standing and a use grant; logs agent.reveal with standing: true", async () => {
+    const { owner, agent, access } = await setup();
+    const r = await record(owner);
+    await setReveal(owner, "standing");
+    expect((await standing(access, r.id)).json()).toEqual({ error: "reveal_off" }); // no grant row
+    const wrapped = await sealPersonalAgentRecordKey(r.recordKey, { ownerUserId: owner.id, agentId: agent.id, recordId: r.id }, b64url.decode(agent.publicKey));
+    expect((await call(owner, "POST", `/records/${r.id}/agent-grants`, { agentId: agent.id, wrappedRecordKey: wrapped })).statusCode).toBe(201);
+    const ok = await standing(access, r.id);
+    expect([ok.statusCode, ok.json()]).toEqual([201, { ok: true }]);
+    const ev = await t.prisma.event.findMany({ where: { action: "agent.reveal" } });
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ orgId: null, actorId: agent.id, recordId: r.id, meta: { fields: ["username"], app: "ci", standing: true } });
+    await setReveal(owner, "approval");
+    const off = await standing(access, r.id);
+    expect([off.statusCode, off.json()]).toEqual([409, { error: "reveal_off" }]);
+    expect((await standing(access, r.id, ["totpSecret"])).statusCode).toBe(400);
+  });
+});

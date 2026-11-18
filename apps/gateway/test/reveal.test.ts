@@ -156,3 +156,52 @@ describe("PendingReveals", () => {
     expect([...k2.privateKey]).toEqual([0]);
   });
 });
+
+describe("standing reveal (Phase D)", () => {
+  const standingBody = (agents: string[], fields = ["username"]): RecordBody => ({ ...login, title: "Wifi", agentReveal: { v: 1, agents, fields } });
+  async function standing(over: Partial<GatewayConfig> = {}, o: { agents?: string[]; policy?: "approval" | "standing"; fields?: string[] } = {}) {
+    const s = await setup({ reveal: "standing", ...over });
+    s.api.personal.setPolicyReveal(o.policy ?? "standing");
+    await s.api.personal.addRecord(standingBody(o.agents ?? [s.api.personal.agentId], o.fields), undefined, true);
+    const ask = { item: "personal/wifi", fields: ["username"], reason: "join" };
+    const paths = () => s.api.personal.writes.map((w) => w.path).filter((x) => x.startsWith("/agent/reveals"));
+    return { ...s, ask, paths };
+  }
+
+  it("all three switches on: the value at once, through /agent/reveals/standing only", async () => {
+    const { tool, ask, paths } = await standing();
+    expect(await tool("get_secret", ask)).toEqual({ fields: { username: "u" } });
+    expect(paths()).toEqual(["/agent/reveals/standing"]);
+    const { secrets } = await tool("list_secrets") as { secrets: Record<string, unknown>[] };
+    expect(secrets.find((x) => x.handle === "personal/wifi")).toMatchObject({ modes: ["use", "reveal"], reveal: { fields: ["username"], approval: false } });
+  });
+
+  it("any one switch off sends it down the approval path (no stub: reveal_off)", async () => {
+    for (const c of [await standing({ reveal: "approval" }), await standing({}, { policy: "approval" }), await standing({}, { agents: [randomUUID()] })]) {
+      expect(await c.tool("get_secret", c.ask)).toEqual({ error: "refused", reason: "reveal_off" });
+      expect(c.paths()).toEqual([]);
+      const { secrets } = await c.tool("list_secrets") as { secrets: Record<string, unknown>[] };
+      expect(secrets.find((x) => x.handle === "personal/wifi")).not.toHaveProperty("reveal");
+    }
+    const f = await standing();
+    expect(await f.tool("get_secret", { ...f.ask, fields: ["password"] })).toEqual({ error: "refused", reason: "reveal_off" });
+    expect(f.paths()).toEqual([]);
+  });
+
+  it("the API refusing: reveal_off and no value", async () => {
+    const { api, tool, ask } = await standing();
+    api.personal.refuseStanding(true);
+    const r = await tool("get_secret", ask);
+    expect(r).toEqual({ error: "refused", reason: "reveal_off" });
+  });
+
+  it("update_secret leaves agentReveal byte for byte", async () => {
+    const { api, tool } = await standing();
+    const id = api.personal.records.at(-1)!.id;
+    const before = JSON.stringify((await api.personal.open(id)).agentReveal);
+    expect(await tool("update_secret", { item: "personal/wifi", set: { password: "new-password-1" } })).toMatchObject({ revision: 2 });
+    const after = await api.personal.open(id);
+    expect(after.password).toBe("new-password-1");
+    expect(JSON.stringify(after.agentReveal)).toBe(before);
+  });
+});

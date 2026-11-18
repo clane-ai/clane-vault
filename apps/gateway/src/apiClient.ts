@@ -45,6 +45,8 @@ export interface ApiClient {
   /** POST /agent/reveals: a 409 with a known reason is a refusal. */
   createReveal(token: string, r: { id: string; recordId: string; fields: string[]; reason: string; requestPublicKey: string; signature: string; expiresAt: string }):
     Promise<{ ok: true } | { refused: "reveal_off" | "busy" | "denied" }>;
+  /** POST /agent/reveals/standing: logged at the API before any value is released; 409 reveal_off refuses. */
+  standingReveal(token: string, r: { recordId: string; fields: string[] }): Promise<{ ok: true } | { refused: "reveal_off" }>;
   /** GET /agent/reveals/:id; a 404 (unknown to the API) is "expired". */
   reveal(token: string, id: string): Promise<{ status: "pending" | "denied" | "expired" } | { status: "approved"; sealed: string }>;
   /** The public issuer from `${API_URL}/.well-known/oauth-authorization-server`: cached once fetched; a failure is retried next call. */
@@ -113,6 +115,12 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
       const e = ((await r.json().catch(() => null)) as { error?: unknown } | null)?.error;
       if (e === "reveal_off" || e === "busy" || e === "denied") return { refused: e };
       throw new Error("API reveal request failed (409)");
+    },
+    async standingReveal(token, b) {
+      const r = await call("/agent/reveals/standing", { method: "POST", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(b) }, false, true);
+      if (r.status !== 409) return { ok: true };
+      if (((await r.json().catch(() => null)) as { error?: unknown } | null)?.error === "reveal_off") return { refused: "reveal_off" };
+      throw new Error("API standing reveal failed (409)");
     },
     async reveal(token, id) {
       const r = await call(`/agent/reveals/${encodeURIComponent(id)}`, { headers: bearer(token) }, false, false, true);

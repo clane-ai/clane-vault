@@ -149,6 +149,23 @@ export const agentRevealAgentRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(201).send({ id: b.id, expiresAt: b.expiresAt });
   });
 
+  /**
+   * Standing reveal (Phase D, spec §5.6): the gateway read fields the owner listed in the item's encrypted body. The API
+   * can't see that list; it only refuses unless every policy says standing and the agent holds the item's key, and logs.
+   * The gateway releases nothing before this 201.
+   */
+  app.post("/agent/reveals/standing", agentOpts, async (req, reply) => {
+    const b = z.object({ recordId: z.string().uuid(), fields: revealFields }).parse(req.body);
+    const a = req.agent;
+    if (!a.ownerUserId || (await personalAgentRules(app.prisma, app.config, a.ownerUserId)).reveal !== "standing") return refuse(reply, "reveal_off");
+    const row = await app.prisma.recordAccess.findFirst({ where: { recordId: b.recordId, holderType: "user", holderId: a.userId, orgId: null, state: "active",
+      record: { ownerId: a.ownerUserId, deletedAt: null } }, select: { record: { select: { folder: { select: { kind: true, orgId: true } } } } } });
+    if (!row || recordOrgOf(row.record) !== null) return refuse(reply, "reveal_off");
+    const via = await connectedApp(app.prisma, a);
+    await logEvent(app.prisma, { actorId: a.userId, action: "agent.reveal", recordId: b.recordId, meta: { fields: b.fields, app: via, standing: true } });
+    return reply.code(201).send({ ok: true });
+  });
+
   app.get("/agent/reveals/:id", agentOpts, async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const a = req.agent;

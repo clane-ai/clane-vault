@@ -40,7 +40,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   type RevealReq = { id: string; recordId: string; fields: string[]; reason: string; requestPublicKey: string; signature: string; expiresAt: string;
     status: "pending" | "approved" | "denied" | "expired" | "delivered"; sealed?: string };
   const reveals: RevealReq[] = [];
-  let policyReveal: "off" | "approval" | "standing" = "off", refuseReveal: string | null = null;
+  let policyReveal: "off" | "approval" | "standing" = "off", refuseReveal: string | null = null, refuseStanding = false;
   let onReveal: ((r: RevealReq) => void | Promise<void>) | null = null;
   const signing = await generateKeyPair("ES256", { extractable: true });
   const jwk = { ...(await exportJWK(signing.publicKey)), alg: "ES256", use: "sig" };
@@ -140,6 +140,11 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   /** POST /agent/reveals and GET /agent/reveals/:id: refusals are 409 { error }; another agent's request is 404. */
   async function agentReveal(req: IncomingMessage, res: ServerResponse, path: string, sub: unknown) {
     if (sub !== personalId) return send(res, 409, { error: "reveal_off" });
+    if (req.method === "POST" && path === "/agent/reveals/standing") {
+      const b = JSON.parse(await read(req)) as Record<string, unknown>;
+      writes.push({ method: "POST", path, body: b });
+      return refuseStanding ? send(res, 409, { error: "reveal_off" }) : send(res, 201, { ok: true });
+    }
     if (req.method === "POST" && path === "/agent/reveals") {
       const b = JSON.parse(await read(req)) as RevealReq;
       writes.push({ method: "POST", path, body: b as unknown as Record<string, unknown> });
@@ -242,6 +247,8 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       stubs, reveals, approveReveal,
       setPolicyReveal(m: "off" | "approval" | "standing") { policyReveal = m; },
       refuseReveal(error: string | null) { refuseReveal = error; },
+      /** POST /agent/reveals/standing answers 409 reveal_off while set. */
+      refuseStanding(v: boolean) { refuseStanding = v; },
       /** Called once the API has answered a new request's POST. */
       onReveal(f: ((r: RevealReq) => void | Promise<void>) | null) { onReveal = f; },
     },
