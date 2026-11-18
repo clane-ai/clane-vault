@@ -143,6 +143,11 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
         <p id="ag-hosts-hint" className={hint}>Press Enter after each host. <code>*.example.com</code> matches subdomains only, never <code>example.com</code> itself or an IP address.</p>
       </div>
 
+      {/* How it is sent, the preview and the limits: the defaults fit most items, so they stay folded. */}
+      {/* An env file has no default entry: the picker must show. */}
+      <details open={env || undefined} className="group flex flex-col gap-4">
+        <summary className="cursor-pointer text-[13px] font-medium text-text-secondary select-none hover:text-text-primary">Advanced: how it's sent, methods, paths</summary>
+        <div className="mt-4 flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
         <span id="ag-kind" className={cn(label, "font-medium")}>Send it as</span>
         <RadioGroup.Root aria-labelledby="ag-kind" value={s.kind} onValueChange={(k) => set({ kind: k as S["kind"] })}
@@ -209,6 +214,8 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
         {ENCODED.test(pathsText) && <p role="status" className="text-[12px] leading-snug text-amber-700 dark:text-amber-500">The gateway always refuses encoded slashes, backslashes and dots (%2f, %5c, %2e) in a path, so requests using them never get through.</p>}
       </div>
       {pathsLocked && <LockLine />}
+        </div>
+      </details>
     </div>
   );
 }

@@ -57,7 +57,7 @@ function Summary({ status, access, onManageAccess }: { status: AgentUseStatus; a
     <section aria-label="Status" className="shrink-0 overflow-hidden rounded-[12px] border border-border-default bg-app">
       <p className="flex items-center gap-2.5 px-4 py-3 text-[13.5px] font-medium text-text-primary">
         <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", statusDot(status))} />
-        <span className="min-w-0 flex-1">{line}</span>
+        <span className="min-w-0 flex-1">{access.length ? `${users === 1 ? "1 agent" : `${users} agents`} can use this item.` : line}</span>
         {onManageAccess && <button type="button" className="shrink-0 text-[13px] font-medium text-[var(--link)] hover:underline" onClick={onManageAccess}>Manage in Share</button>}
       </p>
       {access.length > 0 && (
@@ -106,7 +106,7 @@ function Form({ record, body, access, pathsLocked, onSave, onClose, onManageAcce
           <RecordAvatar title={body.title} kind={body.type} size={36} />
           <div className="min-w-0">
             <SheetTitle className="truncate text-[17px] leading-tight">Agent use: {body.title}</SheetTitle>
-            <SheetDescription className="mt-0.5 text-[12.5px] leading-snug text-text-secondary">Agents send this credential only to these hosts. They never see it.</SheetDescription>
+            <SheetDescription className="mt-0.5 text-[12.5px] leading-snug text-text-secondary">Where agents may use this item, and what they may read.</SheetDescription>
           </div>
         </div>
         <SheetCloseButton className="-mt-1" />

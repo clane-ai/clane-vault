@@ -2,6 +2,12 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## 1.9.3 — 2026-11-18
+
+Upgrading: no migration. Web app only; the server and gateway are unchanged from 1.9.2 (one image tag for both, as always).
+
+- **The Agent use sheet is shorter.** Allowed hosts and *Let the AI see this value* are what shows. How the secret is sent, the request preview, the secret picker, and allowed methods and paths fold under **Advanced** (open by default for an env file, which has no default entry). The status line no longer repeats what the agent list shows, and the copy is cut down.
+
 ## 1.9.2 — 2026-11-18
 
 Upgrading: no migration. Upgrade the server, the gateway and the web app together. **Two defaults change, and both make reading values available without approval:**

@@ -115,6 +115,8 @@ export async function setAgentUse(page: Page, host: string, secret?: string): Pr
   await sheet.getByLabel("Allowed hosts").fill(host);
   await expect(sheet.getByRole("radio", { name: "Bearer" })).toBeChecked();
   if (secret) {
+    const advanced = sheet.locator("details");
+    if (!(await advanced.evaluate((d: HTMLDetailsElement) => d.open))) await advanced.locator("summary").click();
     await sheet.getByRole("combobox", { name: "Secret" }).click();
     await page.getByRole("option", { name: secret, exact: true }).click();
   }

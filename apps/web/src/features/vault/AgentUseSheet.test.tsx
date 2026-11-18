@@ -150,7 +150,7 @@ describe("the request preview", () => {
 describe("the Agent use sheet", () => {
   it("is titled with the item and says what agents can and can't do", () => {
     sheet(bare);
-    expect(screen.getByRole("dialog", { name: "Agent use: Stripe" })).toHaveAccessibleDescription("Agents send this credential only to these hosts. They never see it.");
+    expect(screen.getByRole("dialog", { name: "Agent use: Stripe" })).toHaveAccessibleDescription("Where agents may use this item, and what they may read.");
     expect(save()).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Remove agent use" })).toBeNull();
   });

@@ -136,8 +136,7 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
     <section aria-label="Let the AI see this value" className="flex flex-col gap-2.5">
       <h3 className={eyebrow}>Let the AI see this value</h3>
       <p className="text-[12.5px] leading-snug text-text-secondary">
-        For values an agent has to read itself, like a username or a one-time code. Off until you turn it on. Turning it on is your consent:
-        the agent then reads the fields you choose whenever it needs them, unless you pick <span className="text-text-primary">Ask me each time</span>.
+        Off until you turn it on. Turning it on is your consent: the agent reads the chosen fields when it needs them.
       </p>
       {limit && <p role="note" aria-label="Reading values here" className="rounded-[10px] border border-[var(--orange-tint-border)] bg-orange-tint px-3 py-2 text-[12.5px] leading-snug text-text-primary">{limit}</p>}
       {!offered && agents.length === 0 ? null : agents.length === 0 ? (
