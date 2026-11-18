@@ -78,7 +78,7 @@ export const agentRevealOwnerRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  /** `sealed`: only the approved fields, sealed to the request's one-time key (AAD agent-reveal:<request>:<record>:<agent>) in the owner's browser. */
+  /** `sealed`: only the approved fields, sealed to the request's one-time key (AAD agent-reveal:<request>:<record>:<agent>:<owner tag>) in the owner's browser. */
   app.post("/me/agent-reveals/:id/approve", async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const b = z.object({ sealed: z.string().startsWith("s1.").max(65536) }).parse(req.body);
@@ -114,6 +114,13 @@ export const agentRevealOwnerRoutes: FastifyPluginAsync = async (app) => {
 export const agentRevealAgentRoutes: FastifyPluginAsync = async (app) => {
   const agentOpts = { preHandler: app.requireAgent, config: { rateLimit: { keyGenerator: agentRateKey(app) } } };
   const refuse = (reply: FastifyReply, error: "reveal_off" | "busy" | "denied") => reply.code(409).send({ error });
+  /** The owner's policies allow reveal, and *Can reveal* covers these fields of a Personal, untrashed item the owner holds. */
+  const revealable = async (owner: string, agentId: string, recordId: string, fields: string[]) => {
+    if ((await personalAgentRules(app.prisma, app.config, owner)).reveal === "off") return false;
+    const stub = await app.prisma.agentRevealGrant.findUnique({ where: { recordId_agentId: { recordId, agentId } },
+      select: { fields: true, record: { select: { ownerId: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } });
+    return !!stub && stub.record.ownerId === owner && !stub.record.deletedAt && recordOrgOf(stub.record) === null && fields.every((f) => stub.fields.includes(f));
+  };
 
   app.post("/agent/reveals", agentOpts, async (req, reply) => {
     const b = z.object({ id: z.string().uuid(), recordId: z.string().uuid(), fields: revealFields, reason: z.string().min(1).max(300),
@@ -122,10 +129,7 @@ export const agentRevealAgentRoutes: FastifyPluginAsync = async (app) => {
     const a = req.agent;
     if (!a.ownerUserId) return refuse(reply, "reveal_off"); // organisation agents never read values
     const owner = a.ownerUserId;
-    if ((await personalAgentRules(app.prisma, app.config, owner)).reveal === "off") return refuse(reply, "reveal_off");
-    const stub = await app.prisma.agentRevealGrant.findUnique({ where: { recordId_agentId: { recordId: b.recordId, agentId: a.userId } },
-      select: { fields: true, record: { select: { ownerId: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } });
-    if (!stub || stub.record.ownerId !== owner || stub.record.deletedAt || recordOrgOf(stub.record) !== null || b.fields.some((f) => !stub.fields.includes(f))) return refuse(reply, "reveal_off");
+    if (!await revealable(owner, a.userId, b.recordId, b.fields)) return refuse(reply, "reveal_off");
     const now = Date.now(), exp = new Date(b.expiresAt).getTime();
     const via = await connectedApp(app.prisma, a);
     const r = await app.prisma.$transaction(async (tx) => {
@@ -176,6 +180,8 @@ export const agentRevealAgentRoutes: FastifyPluginAsync = async (app) => {
     if (row.status === "pending") return { status: "pending" };
     if (row.status === "denied") return { status: "denied" };
     if (row.status !== "approved") return { status: "expired" };
+    // M2: Can reveal turned off, the item moved, trashed or the policy changed after Allow: nothing is handed over.
+    if (!await revealable(row.ownerUserId, a.userId, row.recordId, row.fields)) { await expireReveal(app.prisma, id, now, true); return { status: "expired" }; }
     // Delivered exactly once: the reply leaves the database as it is handed over.
     const sealed = await app.prisma.$transaction(async (tx) => {
       const r = await tx.agentRevealRequest.findFirst({ where: { id, status: "approved", expiresAt: { gt: now } }, select: { sealed: true } });

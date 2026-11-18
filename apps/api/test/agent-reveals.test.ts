@@ -277,6 +277,32 @@ describe("reveal requests", () => {
     expect([a.statusCode, a.json()]).toEqual([403, { error: "reveal_disabled" }]);
   });
 
+  it("M2: after Allow, Can reveal off, a trashed item or the policy off expires the request at delivery", async () => {
+    const { owner, agent, access } = await setup();
+    const approved = async () => {
+      const r = await record(owner);
+      await putStub(owner, r, agent);
+      const q = await ask(owner, agent, access, r.id);
+      expect(q.res.statusCode).toBe(201);
+      expect((await approve(owner, q, r.id, agent.id)).json()).toEqual({ ok: true });
+      return { r, q };
+    };
+    const delivered = async (id: string) => {
+      expect((await poll(access, id)).json()).toEqual({ status: "expired" });
+      expect(await t.prisma.agentRevealRequest.findUnique({ where: { id } })).toMatchObject({ status: "expired", sealed: null });
+    };
+    const a = await approved();
+    expect((await call(owner, "DELETE", `/records/${a.r.id}/agent-reveal/${agent.id}`)).statusCode).toBe(204);
+    await delivered(a.q.id);
+    const b = await approved();
+    expect((await call(owner, "DELETE", `/records/${b.r.id}`)).statusCode).toBe(204);
+    await delivered(b.q.id);
+    const c = await approved();
+    await setReveal(owner, "off");
+    await delivered(c.q.id);
+    expect(await t.prisma.event.count({ where: { action: "agent.reveal" } })).toBe(0);
+  });
+
   it("another user sees nothing; a private-locked session is refused", async () => {
     const { owner, agent, access } = await setup();
     const r = await record(owner);

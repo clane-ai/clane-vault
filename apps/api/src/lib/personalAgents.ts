@@ -111,10 +111,11 @@ export async function connectedApp(db: Db, a: FastifyRequest["agent"]): Promise<
 }
 
 /** Claims a pending or approved request past its expiry as expired (sealed nulled) and logs agent.reveal_expired once. */
-export async function expireReveal(db: PrismaClient, id: string, now = new Date()): Promise<boolean> {
+/** `ended`: expire it now although its time has not run out (the item stopped being revealable). */
+export async function expireReveal(db: PrismaClient, id: string, now = new Date(), ended = false): Promise<boolean> {
   return db.$transaction(async (tx) => {
     const r = await tx.agentRevealRequest.findUnique({ where: { id }, select: { agentId: true, recordId: true, fields: true, connectedApp: true } });
-    if (!r || !(await tx.agentRevealRequest.updateMany({ where: { id, status: { in: ["pending", "approved"] }, expiresAt: { lte: now } }, data: { status: "expired", sealed: null } })).count) return false;
+    if (!r || !(await tx.agentRevealRequest.updateMany({ where: { id, status: { in: ["pending", "approved"] }, ...(ended ? {} : { expiresAt: { lte: now } }) }, data: { status: "expired", sealed: null } })).count) return false;
     await logEvent(tx, { actorId: r.agentId, action: "agent.reveal_expired", recordId: r.recordId, meta: { requestId: id, fields: r.fields, app: r.connectedApp } });
     return true;
   });
