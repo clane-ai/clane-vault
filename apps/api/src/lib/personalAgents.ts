@@ -77,19 +77,21 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
   const a = await db.agent.findUniqueOrThrow({ where: { userId: agentUserId },
     select: { ownerUserId: true, publicKey: true, wrappedPrivateKey: true, kekId: true, expiresAt: true, owner: { select: { publicKey: true } } } });
   const ownerUserId = a.ownerUserId!;
-  const [rows, rules, deposits, unkept] = await Promise.all([
+  const [rows, rules, deposits, unkept, stubs] = await Promise.all([
     db.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId, orgId: null, state: "active", record: { ownerId: ownerUserId } }, orderBy: { createdAt: "asc" },
       select: { wrappedRecordKey: true, agentWrite: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
     personalAgentRules(db, cfg, ownerUserId),
     db.agentDeposit.findMany({ where: { agentId: agentUserId }, orderBy: { createdAt: "asc" }, select: { id: true, encBody: true, revision: true, agentSealedKey: true, signature: true } }),
     db.agentDeposit.count({ where: { ownerUserId } }),
+    db.agentRevealGrant.findMany({ where: { agentId: agentUserId, record: { ownerId: ownerUserId, deletedAt: null } }, orderBy: { createdAt: "asc" },
+      select: { sealedStub: true, record: { select: { id: true, folder: { select: { kind: true, orgId: true } } } } } }),
   ]);
   return {
     owner: { userId: ownerUserId, publicKey: a.owner!.publicKey }, // current: the gateway refuses when it no longer matches the attestation
     agentId: agentUserId, publicKey: a.publicKey, wrappedPrivateKey: a.wrappedPrivateKey, kekId: a.kekId, expiresAt: a.expiresAt?.toISOString() ?? null,
     records: rows.filter((r) => recordOrgOf(r.record) === null).map(({ wrappedRecordKey, agentWrite, record: r }) => ({
       id: r.id, encBody: r.encBody, revision: r.revision, wrappedRecordKey: wrappedRecordKey!, write: agentWrite && rules.write, deletedAt: r.deletedAt?.toISOString() ?? null })),
-    reveal: [] as never[], deposits,
+    reveal: rules.reveal === "off" ? [] : stubs.filter((s) => recordOrgOf(s.record) === null).map((s) => ({ recordId: s.record.id, sealedStub: s.sealedStub })), deposits,
     inboxFree: Math.max(0, DEPOSIT_INBOX_LIMIT - unkept), // the limit is the owner's, across all their agents (F2)
     policy: { write: rules.write, reveal: rules.reveal },
   };
@@ -133,6 +135,7 @@ export async function revokePersonalAgent(tx: Db, agentUserId: string, byUserId:
   const held = await tx.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId }, select: { recordId: true }, distinct: ["recordId"] });
   await tx.recordAccess.deleteMany({ where: { holderType: "user", holderId: agentUserId } });
   await tx.agentDeposit.deleteMany({ where: { agentId: agentUserId } }); // unkept ones; kept records are the owner's
+  await tx.agentRevealGrant.deleteMany({ where: { agentId: agentUserId } });
   await tx.agentToken.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.agentGrant.updateMany({ where: { agentId: agentUserId, revokedAt: null }, data: { revokedAt: now } });
   await tx.user.update({ where: { id: agentUserId }, data: { status: "disabled" } });

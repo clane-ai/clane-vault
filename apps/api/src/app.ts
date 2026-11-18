@@ -48,6 +48,7 @@ import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
 import { myAgentRoutes } from "./routes/myAgents.js";
 import { agentGrantRoutes } from "./routes/agentGrants.js";
 import { agentDepositRoutes } from "./routes/agentDeposits.js";
+import { agentRevealOwnerRoutes } from "./routes/agentReveals.js";
 import { sweepAgentWrites } from "./lib/personalAgents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
@@ -171,6 +172,7 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
         await api.register(myAgentRoutes, { prefix: "/me/agents" });
         await api.register(agentGrantRoutes);
         await api.register(agentDepositRoutes);
+        await api.register(agentRevealOwnerRoutes);
       }
     }
   }, { prefix: apiPrefix(opts.config) });

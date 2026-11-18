@@ -376,6 +376,7 @@ model Record {
   links     ShareLink[]
   attachments Attachment[]
   agentOverwrites RecordAgentOverwrite[]
+  agentRevealGrants AgentRevealGrant[]
 }
 
 /// A personal agent's update to a record (spec §5): the body it replaced, so the owner can restore it. The newest 5 per record, for 30 days.
@@ -1005,6 +1006,7 @@ model Agent {
   tokens            AgentToken[]
   grants            AgentGrant[]
   deposits          AgentDeposit[]
+  revealGrants      AgentRevealGrant[]
 
   @@index([orgId])
   @@index([ownerUserId])
@@ -1035,6 +1037,23 @@ model AgentDeposit {
   updatedAt      DateTime @updatedAt
 
   @@index([ownerUserId])
+  @@index([agentId])
+}
+
+/// *Can reveal* on one item for one personal agent (spec §5.3): no record key, only a stub sealed to the agent.
+model AgentRevealGrant {
+  id         String   @id @default(uuid()) @db.Uuid
+  recordId   String   @db.Uuid
+  record     Record   @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  agentId    String   @db.Uuid
+  agent      Agent    @relation(fields: [agentId], references: [userId], onDelete: Cascade)
+  /// s1. to the agent's key: { title, type, fields }. What the gateway enforces.
+  sealedStub String
+  /// The same field names in clear, for the owner's screens. The server sees field names on every request anyway; it cannot widen the sealed stub.
+  fields     String[]
+  createdAt  DateTime @default(now())
+
+  @@unique([recordId, agentId])
   @@index([agentId])
 }
 

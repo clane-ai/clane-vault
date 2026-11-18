@@ -6,6 +6,8 @@ import {
   verifyGatewayMessage, sealPersonalAgentRecordKey, openPersonalAgentRecordKey, generateKeyPair, randomBytes,
   normalizeRecordBody, encryptRecordBody, decryptRecordBody, aeadEncrypt, utf8, type RecordBody,
   sha256B64, agentDepositOwnerAad, agentDepositMessage, agentUpdateMessage, sealDepositKeyToOwner, openDepositKey,
+  REVEAL_REF, validateRevealFields, revealFieldsOf, totpCode, agentRevealRequestMessage, agentRevealAad, personalAgentStubAad,
+  sealRevealStub, openRevealStub, sealReveal, openReveal,
 } from "../src/index.js";
 
 const ok = { v: 1, hosts: ["API.Stripe.com", "*.github.com:8443"], inject: { kind: "bearer" } };
@@ -128,5 +130,51 @@ describe("agent deposits", () => {
     const s = await sealDepositKeyToOwner(rk, { ownerUserId: "u", id: "d" }, kp.publicKey);
     expect(await openDepositKey(s, { ownerUserId: "u", id: "d" }, kp)).toEqual(rk);
     await expect(openDepositKey(s, { ownerUserId: "u", id: "d2" }, kp)).rejects.toThrow();
+  });
+});
+
+describe("agent reveal", () => {
+  const body = { v: 2, type: "login", title: "T", username: "u", password: "p", totpSecret: "JBSWY3DPEHPK3PXP", fields: [{ id: "f1", label: "Acct", kind: "text", value: "42" }, { id: "f2", label: "2FA", kind: "totp", value: "JBSWY3DPEHPK3PXP" }] } as RecordBody;
+  const env = { v: 2, type: "envFile", title: "E", data: { content: "A=1\nB=2\n" } } as RecordBody;
+
+  it("validates field scope", () => {
+    expect(validateRevealFields(["username", "field:f1", "totp"], body)).toEqual(["field:f1", "totp", "username"]);
+    for (const bad of [[], ["totpSecret"], ["username", "username"], ["data.nope"], ["field:zz"], ["a,b"], Array(21).fill("username"), "username", [1], ["field:f2"], ["env:A"]])
+      expect(() => validateRevealFields(bad, body)).toThrow();
+    expect(() => validateRevealFields(["totp"], { type: "login" })).toThrow();
+    expect(validateRevealFields(["env:A"], env)).toEqual(["env:A"]);
+    for (const bad of [["data.content"], ["env:NOPE"]]) expect(() => validateRevealFields(bad, env)).toThrow();
+    expect(REVEAL_REF.test("data.content")).toBe(true); // syntactically; refused per type above
+    expect(REVEAL_REF.test("totpSecret")).toBe(false);
+  });
+
+  it("reveals only named fields with a value, and never the seed", async () => {
+    const out = await revealFieldsOf(body, ["username", "totp", "notes"], 0);
+    expect(out).toEqual({ username: "u", totp: await totpCode("JBSWY3DPEHPK3PXP", 0) });
+    expect(JSON.stringify(out)).not.toContain("JBSWY3DPEHPK3PXP");
+    expect(JSON.stringify(await revealFieldsOf(body, ["field:f2", "totpSecret", "field:f1"], 0))).not.toContain("JBSWY3DPEHPK3PXP");
+    const e = await revealFieldsOf(env, ["env:A", "data.content"]);
+    expect(e).toEqual({ "env:A": "1" });
+    expect(JSON.stringify(e)).not.toMatch(/B|2/);
+  });
+
+  it("builds the messages and AADs", () => {
+    expect(agentRevealRequestMessage({ requestId: "q", ownerUserId: "u", agentId: "a", recordId: "r", fields: ["username", "password"], requestPublicKey: "k", expiresAt: "2026-11-15T10:00:00.000Z" }))
+      .toBe("agent-reveal-request:q:u:a:r:password,username:k:2026-11-15T10:00:00.000Z");
+    expect(agentRevealAad("q", "r", "a")).toBe("agent-reveal:q:r:a");
+    expect(personalAgentStubAad("u", "a", "r")).toBe("personal-agent-stub:u:a:r");
+  });
+
+  it("seals stubs and reveals to one id", async () => {
+    const kp = await generateKeyPair();
+    const ids = { ownerUserId: "u", agentId: "a", recordId: "r" };
+    const stub = { title: "T", type: "login" as const, fields: ["username"] };
+    const s = await sealRevealStub(stub, ids, kp.publicKey);
+    expect(await openRevealStub(s, ids, kp)).toEqual(stub);
+    await expect(openRevealStub(s, { ...ids, recordId: "r2" }, kp)).rejects.toThrow();
+    const rids = { requestId: "q", recordId: "r", agentId: "a" };
+    const r = await sealReveal({ username: "u" }, rids, kp.publicKey);
+    expect(await openReveal(r, rids, kp)).toEqual({ username: "u" });
+    await expect(openReveal(r, { ...rids, requestId: "q2" }, kp)).rejects.toThrow();
   });
 });
