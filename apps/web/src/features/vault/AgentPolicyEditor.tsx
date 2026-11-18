@@ -140,7 +140,7 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
           </div>
           <Button type="button" variant="outline" className="h-10" aria-label="Add host" disabled={!s.draft.trim()} onClick={() => { addHosts(); hostInput.current?.focus(); }}>Add</Button>
         </div>
-        <p id="ag-hosts-hint" className={hint}>Agents send this credential only to these hosts. They never see it. <code>*.example.com</code> matches subdomains only, never <code>example.com</code> itself or an IP address.</p>
+        <p id="ag-hosts-hint" className={hint}>Press Enter after each host. <code>*.example.com</code> matches subdomains only, never <code>example.com</code> itself or an IP address.</p>
       </div>
 
       <div className="flex flex-col gap-1.5">

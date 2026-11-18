@@ -53,7 +53,7 @@ function Summary({ status, access, onManageAccess }: { status: AgentUseStatus; a
     : !status.startsWith("Use") ? "Agents can't use this item in requests. Reading is on for the fields below."
     : users === 0 ? "Ready, but no agent has this item yet." : `${users === 1 ? "1 agent" : `${users} agents`} can use this item.`;
   return (
-    <section aria-label="Status" className="overflow-hidden rounded-[12px] border border-border-default bg-app">
+    <section aria-label="Status" className="shrink-0 overflow-hidden rounded-[12px] border border-border-default bg-app">
       <p className="flex items-center gap-2.5 px-4 py-3 text-[13.5px] font-medium text-text-primary">
         <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", statusDot(status))} />
         <span className="min-w-0 flex-1">{line}</span>

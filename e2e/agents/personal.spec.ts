@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, settingsPage, switchSpace, totp } from "../helpers";
+import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setAgentUse, settingsPage, switchSpace, totp } from "../helpers";
 
 // Personal agents, Phase A end to end (docs/design/2026-11-15-personal-agents.md §3): a member (not an admin) enrols an
 // agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
@@ -142,14 +142,12 @@ test("2. a Personal API key item, given to the agent at Can use, under the warni
   await newDlg.getByRole("button", { name: "Next" }).click();
   await member.getByLabel("Secret", { exact: true }).and(member.locator("input")).fill(CANARY);
   await member.getByLabel("Key ID", { exact: true }).fill(KEY_ID);
-  const agentUse = member.getByRole("region", { name: "Agent use" });
-  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
-  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
   await member.getByRole("button", { name: "Save" }).click();
   await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
   await member.getByRole("button", { name: /^No folder/ }).click();
   await member.getByRole("button", { name: /Echo/ }).click();
   await expect(member.getByRole("heading", { name: "Echo" })).toBeVisible({ timeout: 30_000 });
+  await setAgentUse(member, `echo.test:${echoPort}`);
 
   await member.getByRole("button", { name: "Share", exact: true }).click();
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
@@ -334,14 +332,7 @@ test("10. a .env file item: entries masked, a byte-identical download, found by 
 
 test("11. the agent sees the keys, never a value, and sends the one entry its Agent use names", async () => {
   await openRecord(member, "Billing env");
-  await member.getByRole("button", { name: "Edit", exact: true }).click();
-  const agentUse = member.getByRole("region", { name: "Agent use" });
-  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
-  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
-  await agentUse.getByRole("combobox", { name: "Secret" }).click();
-  await member.getByRole("option", { name: "STRIPE_KEY", exact: true }).click();
-  await member.getByRole("button", { name: "Save" }).click();
-  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await setAgentUse(member, `echo.test:${echoPort}`, "STRIPE_KEY");
 
   await member.getByRole("button", { name: "Share", exact: true }).click();
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });

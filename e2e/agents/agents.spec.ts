@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test, type Page } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, totp } from "../helpers";
+import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setAgentUse, totp } from "../helpers";
 
 // Agent access end to end (docs/design/2026-10-17-agent-access.md §10): enrol, verify, share, MCP use, scrub, revoke.
 const PW = "an e2e master password";
@@ -81,11 +81,14 @@ test("an admin enrols an agent, shares a record at Use, the agent uses it throug
   await newDlg.getByLabel("Title").fill("Echo");
   await newDlg.getByRole("button", { name: "Next" }).click();
   await page.getByLabel("Secret", { exact: true }).and(page.locator("input")).fill(CANARY);
-  const agentUse = page.getByRole("region", { name: "Agent use" });
-  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
-  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(folderRow).toContainText("1 record", { timeout: 30_000 });
+  // Agent use is the record's own sheet, from its header.
+  const echoRow = page.getByRole("button", { name: /^Echo/ });
+  if (!(await echoRow.isVisible())) await folderRow.click();
+  await echoRow.click();
+  await expect(page.getByRole("heading", { name: "Echo" })).toBeVisible({ timeout: 30_000 });
+  await setAgentUse(page, `echo.test:${echoPort}`);
 
   // 4. Billing bot joins the folder through the people sheet: the warning shows, the permission is locked to Use only.
   await folderRow.hover();
