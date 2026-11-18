@@ -832,3 +832,91 @@ describe("MCP endpoint, personal writes", () => {
     expect(api.personal.writes).toEqual([]);
   });
 });
+
+describe("MCP endpoint, env files", () => {
+  const CONTENT = "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=3000\n";
+  const envFile = (title: string, hosts: string[], secret = "env:STRIPE_KEY", content = CONTENT): RecordBody => ({ v: 2, type: "envFile", title,
+    data: { project: "billing", content }, agentPolicy: { v: 1, hosts, inject: { kind: "bearer" }, secret } });
+  async function personal() {
+    const s = await start();
+    const { client } = await connect(s.url, await s.api.personal.token());
+    const tool = async (name: string, args: Record<string, unknown>) => result(await client.callTool({ name, arguments: args }));
+    return { ...s, client, tool };
+  }
+
+  it("http_request injects the one entry, scrubs it from an echo; a policy naming an empty entry is no_policy", async () => {
+    const { api, tool } = await personal();
+    const seen: http.IncomingHttpHeaders[] = [];
+    const echo = http.createServer((req, res) => { seen.push(req.headers); req.resume(); req.on("end", () => res.end(`you sent ${req.headers.authorization}`)); });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    closers.push(() => new Promise((r) => { echo.closeAllConnections(); echo.close(() => r()); }));
+    const port = (echo.address() as AddressInfo).port;
+    await api.personal.addRecord(envFile("Billing", [`api.test:${port}`]));
+    await api.personal.addRecord(envFile("Empty", [`api.test:${port}`], "env:PORT", "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=\n"));
+    const list = await tool("list_secrets", {});
+    expect(list).toEqual({ secrets: expect.arrayContaining([expect.objectContaining({ handle: "personal/billing", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" })]) });
+    expect(JSON.stringify(list)).not.toContain("sk_live_ENVCANARY1");
+    const r = await tool("http_request", { item: "personal/billing", method: "GET", url: `http://api.test:${port}/v1` });
+    expect(seen[0]!.authorization).toBe("Bearer sk_live_ENVCANARY1");
+    expect(r).toMatchObject({ status: 200, body: "you sent Bearer [clane:redacted]" });
+    expect(JSON.stringify(r)).not.toContain("sk_live_ENVCANARY1");
+    expect(await tool("http_request", { item: "personal/empty", method: "GET", url: `http://api.test:${port}/v1` })).toEqual({ error: "refused", reason: "no_policy" });
+    expect(seen).toHaveLength(1);
+  });
+
+  it("save_secret saves an env file as a deposit; too large or a policy naming a missing entry is invalid with nothing posted", async () => {
+    const { api, tool } = await personal();
+    expect(await tool("save_secret", { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: CONTENT } } })).toEqual({ item: "personal/billing" });
+    expect((await api.personal.open(api.personal.deposits[0]!.id)).data?.content).toBe(CONTENT);
+    const list = await tool("list_secrets", {});
+    expect(list).toEqual({ secrets: [expect.objectContaining({ handle: "personal/billing", deposit: true, env_keys: ["STRIPE_KEY", "PORT"] })] });
+    expect(JSON.stringify(list)).not.toContain("sk_live_ENVCANARY1");
+    const n = api.personal.writes.length;
+    expect(await tool("save_secret", { type: "envFile", title: "Big", fields: { data: { content: `A=${"x".repeat(40 * 1024)}\n` } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("save_secret", { type: "envFile", title: "Nope", fields: { data: { content: CONTENT } },
+      agent_use: { hosts: ["api.test"], inject: { kind: "bearer" }, secret: "env:NOPE" } })).toEqual({ error: "refused", reason: "invalid" });
+    // No whole-file injection.
+    expect(await tool("save_secret", { type: "envFile", title: "Whole", fields: { data: { content: CONTENT } },
+      agent_use: { hosts: ["api.test"], inject: { kind: "bearer" }, secret: "data.content" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret set.env sets entries in place and appends new ones; the policy stays; refusals send no PUT", async () => {
+    const { api, tool, client } = await personal();
+    const id = await api.personal.addRecord(envFile("Billing", ["api.test"]), undefined, true);
+    await api.personal.addRecord(envFile("Locked", ["api.test"]));
+    await api.personal.addRecord({ v: 2, type: "apiKey", title: "Key", data: { secret: "sk_other_1" } }, undefined, true);
+    const before = await api.personal.open(id);
+    expect(await tool("update_secret", { item: "personal/billing", set: { env: { STRIPE_KEY: "sk_live_ENVCANARY2", NEW: "a b" } } })).toEqual({ item: "personal/billing", revision: 2 });
+    const after = await api.personal.open(id);
+    expect(after.data?.content).toBe("STRIPE_KEY=sk_live_ENVCANARY2\nPORT=3000\nNEW='a b'\n");
+    expect(JSON.stringify(after.agentPolicy)).toBe(JSON.stringify(before.agentPolicy));
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/locked", set: { env: { PORT: "1" } } })).toEqual({ error: "refused", reason: "not_writable" });
+    expect(await tool("update_secret", { item: "personal/key", set: { env: { PORT: "1" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/billing", set: { env: { PORT: "1" }, data: { content: "X=1" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/billing", set: { data: { content: "PORT=1\n" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(n);
+    for (const env of [{ "BAD KEY": "1" }, {}]) expect((await client.callTool({ name: "update_secret", arguments: { item: "personal/billing", set: { env } } })).isError).toBe(true);
+  });
+
+  it("a swapped owner key: the env-file save_secret is owner_key_changed with no deposit", async () => {
+    const { api, gw, tool } = await personal();
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(await tool("save_secret", { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: CONTENT } } }))
+      .toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(api.personal.writes).toEqual([]);
+    expect(api.personal.deposits).toEqual([]);
+  });
+
+  it("an organisation session lists exactly two tools and shows env_keys for an env file in a shared folder", async () => {
+    const { api, url } = await start();
+    await api.addFolderRecord("Billing", envFile("Prod", ["api.test"]));
+    const { client } = await connect(url, api.staticToken);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets"]);
+    const r = await client.callTool({ name: "list_secrets", arguments: {} });
+    expect(result(r)).toEqual({ secrets: [expect.objectContaining({ handle: "billing/prod", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" })] });
+    expect(JSON.stringify(r)).not.toContain("sk_live_ENVCANARY1");
+  });
+});

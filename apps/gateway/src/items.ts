@@ -1,5 +1,5 @@
 import {
-  CryptoError, agentSecretOf, basicUsername, decryptFolderName, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, unwrapKey,
+  CryptoError, agentSecretOf, basicUsername, decryptFolderName, envKeys, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, unwrapKey,
   type AgentInject, type AgentMethod, type AgentPolicy, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import { isPersonal, type AgentSync, type OrgAgentSync, type PersonalAgentSync } from "./apiClient.js";
@@ -10,6 +10,8 @@ export interface ItemSummary {
   methods?: AgentMethod[]; paths?: string[];
   /** A personal agent's: an unkept deposit of its own; one it may change with update_secret. */
   revision: number; deposit?: true; can_update?: true;
+  /** An env file's: its keys (never a value), and the one entry its policy injects. */
+  env_keys?: string[]; env_injects?: string;
 }
 /** A personal agent's unkept deposits are listed with its records: the same handles, opened with agentSealedKey. */
 type SyncRecord = (AgentSync["records"][number] | PersonalAgentSync["records"][number]) & { deposit?: true };
@@ -112,6 +114,8 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
       const p = body.agentPolicy; // only summary fields are kept; the body is dropped here
       out.push({ handle, recordId: r.id, title: body.title, type: body.type, hosts: p?.hosts ?? [], inject: p?.inject ?? { kind: "none" }, approval: p?.approval ?? false,
         ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}),
+        ...(body.type === "envFile" ? { env_keys: envKeys(body.data?.content ?? "") } : {}),
+        ...(p?.secret?.startsWith("env:") ? { env_injects: p.secret.slice(4) } : {}),
         revision: r.revision, ...(r.deposit ? { deposit: true as const } : {}), ...("write" in r && r.write ? { can_update: true as const } : {}) });
     }
   } finally {

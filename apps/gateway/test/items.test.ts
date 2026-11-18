@@ -156,3 +156,23 @@ describe("withItem", () => {
     expect(called).toBe(false);
   });
 });
+
+describe("env files", () => {
+  it("are summarised with their keys and the injected entry, never a value; withItem hands f that one entry", async () => {
+    const kek = await fileKek();
+    const papi = await startFakeApi({ kek });
+    try {
+      await papi.personal.addRecord({ v: 2, type: "envFile", title: "Billing", data: { content: "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=3000\n" },
+        agentPolicy: { v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, secret: "env:STRIPE_KEY" } });
+      const psync = await apiClient({ apiUrl: papi.url, apiToken: papi.token }).sync(await papi.personal.token());
+      const pcache = new AgentKeyCache({ ttlMs: 0, kek });
+      const [summary] = await pcache.use(papi.personal.agentId, psync, (k) => listItems(psync, k));
+      expect(summary).toMatchObject({ handle: "personal/billing", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" });
+      expect(JSON.stringify(summary)).not.toContain("sk_live_ENVCANARY1");
+      const secret = await pcache.use(papi.personal.agentId, psync, (k) => withItem(psync, k, "personal/billing", new HeldSecrets(), async (x) => x.secret));
+      expect(secret).toBe("sk_live_ENVCANARY1");
+    } finally {
+      await papi.close();
+    }
+  });
+});

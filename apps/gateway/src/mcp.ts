@@ -4,13 +4,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { AGENT_METHODS, CryptoError, defaultSecretRef, FIELD_KINDS, MAX_FIELD_VALUE, RECORD_TYPES, type AgentMethod, type MembershipKeys, type RecordType } from "@clane-vault/crypto";
+import { AGENT_METHODS, CryptoError, defaultSecretRef, ENV_KEY, FIELD_KINDS, MAX_ENV_BYTES, MAX_FIELD_VALUE, quoteEnvValue, RECORD_TYPES, type AgentMethod, type MembershipKeys, type RecordType } from "@clane-vault/crypto";
 import { ApiRefused, isPersonal, type AgentSync, type ApiClient, type PersonalAgentSync, type UseEvent, type WriteRefused } from "./apiClient.js";
 import { challenge, type AgentPrincipal, type BearerAuth } from "./auth.js";
 import type { GatewayConfig } from "./config.js";
 import type { EventQueue } from "./events.js";
 import { HttpError, readJson, send } from "./http.js";
-import { buildDeposit, buildUpdate, InvalidInput, pointerValue, type SaveInput } from "./deposits.js";
+import { buildDeposit, buildUpdate, InvalidInput, pointerValue, type SaveInput, type UpdateSet } from "./deposits.js";
 import type { Identity } from "./identity.js";
 import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
@@ -33,9 +33,12 @@ export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER
 const IDLE_MS = 30 * MINUTE;
 const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
 
-export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update">;
-/** Personal sessions only: save the credential the upstream creates, at JSON pointer `from`, into `type`'s default secret field. */
-export type CaptureInput = { from: string; title: string; type: RecordType; agent_use?: SaveInput["agent_use"] };
+export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update" | "env_keys" | "env_injects">;
+/**
+ * Personal sessions only: save the credential the upstream creates, at JSON pointer `from`, into `type`'s default secret field;
+ * for an envFile, as the one entry `entry` of a new .env file.
+ */
+export type CaptureInput = { from: string; title: string; type: RecordType; entry?: string; agent_use?: SaveInput["agent_use"] };
 export type HttpRequestInput = OutboundInput & { item: string; capture?: CaptureInput };
 export type Refusal = { error: "refused"; reason: string };
 export type HttpRequestResult = { status: number; headers: Record<string, string>; body: string; truncated?: true;
@@ -94,8 +97,9 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
 
   /** The upstream already made the credential: a failure from here is `capture.refused`, never a lost response. ApiRefused still ends the agent. */
   async function saveCaptured(p: AgentPrincipal, sync: PersonalAgentSync, keys: MembershipKeys, c: CaptureInput, value: string) {
-    const ref = defaultSecretRef(c.type)!; // the input schema allows only types that have one
-    const fields = ref === "password" ? { password: value } : { data: { [ref.slice(5)]: value } };
+    const ref = defaultSecretRef(c.type)!; // the input schema allows only types that have one, or envFile with an entry
+    const fields = c.type === "envFile" ? { data: { content: `${c.entry}=${quoteEnvValue(value)}\n`, fileName: ".env" } }
+      : ref === "password" ? { password: value } : { data: { [ref.slice(5)]: value } };
     try {
       const r = await deposit(p, sync, keys, { title: c.title, type: c.type, fields, ...(c.agent_use ? { agent_use: c.agent_use } : {}) });
       return "refused" in r ? { capture: { refused: r.refused } } : { saved: r };
@@ -116,7 +120,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
       if (!Array.isArray(items)) return items;
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
         ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}),
-        ...(i.deposit ? { deposit: i.deposit } : {}), ...(i.can_update ? { can_update: i.can_update } : {}) }));
+        ...(i.deposit ? { deposit: i.deposit } : {}), ...(i.can_update ? { can_update: i.can_update } : {}),
+        ...(i.env_keys ? { env_keys: i.env_keys } : {}), ...(i.env_injects ? { env_injects: i.env_injects } : {}) }));
     },
 
     /** A deposit in the owner's inbox. Policy and inbox are checked on the sync before anything is built or sent. */
@@ -133,7 +138,7 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
     },
 
     /** The agent's own unkept deposit, or a record with write. A given revision must be the current one. */
-    async updateSecret(p: AgentPrincipal, input: { item: string; set: NonNullable<SaveInput["fields"]>; revision?: number }): Promise<{ item: string; revision: number } | Refusal> {
+    async updateSecret(p: AgentPrincipal, input: { item: string; set: UpdateSet; revision?: number }): Promise<{ item: string; revision: number } | Refusal> {
       return asPersonal(p, async (sync, keys) => {
         // Nothing to set would write a no-op revision.
         if (Object.values(input.set).every((v) => v === undefined || (typeof v === "object" && Object.keys(v).length === 0))) return refused("invalid");
@@ -242,10 +247,16 @@ const saveSecretInput = {
 const captureInput = z.strictObject({
   from: z.string().max(256),
   title: saveSecretInput.title,
-  type: saveSecretInput.type.refine((t) => defaultSecretRef(t) !== null, "a type with a default secret field"),
+  type: saveSecretInput.type.refine((t) => t === "envFile" || defaultSecretRef(t) !== null, "a type with a default secret field, or envFile"),
+  entry: z.string().regex(ENV_KEY).optional(),
   agent_use: saveSecretInput.agent_use,
-});
-const updateSecretInput = { item: z.string().max(200), set: fieldsInput, revision: z.number().int().min(1).optional() };
+}).refine((c) => (c.type === "envFile") === (c.entry !== undefined), "entry is required for envFile and only for envFile");
+const updateSecretInput = {
+  item: z.string().max(200),
+  set: z.strictObject({ ...fieldsInput.shape, env: z.record(z.string().regex(ENV_KEY), z.string().max(MAX_ENV_BYTES))
+    .refine((x) => Object.keys(x).length >= 1 && Object.keys(x).length <= 50, "1 to 50 entries").optional() }),
+  revision: z.number().int().min(1).optional(),
+};
 
 interface Session { agentId: string; transport: WebStandardStreamableHTTPServerTransport; busy: boolean; timer?: NodeJS.Timeout }
 /** One per HTTP request, handed to the tools through the transport's authInfo. */
@@ -284,7 +295,8 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
     : onHttpRequest(input, extra));
   if (!personal) return server;
   server.registerTool("save_secret", {
-    description: "Saves a credential already in the conversation as a new item in the owner's inbox (they keep or delete it). Returns its handle.",
+    description: "Saves a credential already in the conversation as a new item in the owner's inbox (they keep or delete it). Returns its handle. "
+      + "For a .env file use type envFile with fields.data.content; you have then seen its values, so prefer capture for a value an API returns.",
     inputSchema: saveSecretInput,
   }, (input, extra) => run(extra, (p) => tools.saveSecret(p, input as SaveInput)));
   server.registerTool("update_secret", {

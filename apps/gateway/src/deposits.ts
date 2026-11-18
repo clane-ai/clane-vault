@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-  aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, MAX_FIELD_VALUE, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
-  sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8, verifyGatewayMessage,
+  aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, envEntries, MAX_FIELD_VALUE, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
+  sealDepositKeyToOwner, setEnvEntry, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8, verifyGatewayMessage,
   type AgentInject, type FieldKind, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { PersonalAgentSync } from "./apiClient.js";
@@ -19,9 +19,18 @@ export type BuiltDeposit = { id: string; type: "login" | "item"; encBody: string
 /** The vault's rules refuse the body: the tool answers `invalid`. Carries no value. */
 export class InvalidInput extends Error { override name = "InvalidInput"; constructor() { super("invalid"); } }
 
-/** Holds every value of password, data.* and custom fields; the returned function releases them all. */
-function holdValues(held: HeldSecrets, b: Pick<RecordBody, "password" | "data" | "fields">): () => void {
-  const vs = [b.password, ...Object.values(b.data ?? {}), ...(b.fields ?? []).map((f) => f.value)].filter((v): v is string => !!v);
+/** An env file's entries shorter than this are not held: scrubbing "3000" or "true" from every log line would mangle them (spec §10.6). */
+export const ENV_HOLD_MIN = 8;
+export type UpdateSet = NonNullable<SaveInput["fields"]> & { env?: Record<string, string> };
+
+/**
+ * Holds every value of password, data.* (an env file's whole text among them) and custom fields, and an env file's (or `env`'s)
+ * entry values of ENV_HOLD_MIN or more; the returned function releases them all.
+ */
+function holdValues(held: HeldSecrets, b: Pick<RecordBody, "password" | "data" | "fields"> & { type?: RecordType; env?: Record<string, string> }): () => void {
+  const entries = [...(b.type === "envFile" ? envEntries(b.data?.content ?? "").map((e) => e.value) : []), ...Object.values(b.env ?? {})]
+    .filter((v) => v.length >= ENV_HOLD_MIN);
+  const vs = [b.password, ...Object.values(b.data ?? {}), ...(b.fields ?? []).map((f) => f.value), ...entries].filter((v): v is string => !!v);
   const releases = vs.map((v) => held.hold(v));
   return () => { for (const r of releases) r(); };
 }
@@ -82,12 +91,13 @@ export async function buildDeposit(sync: PersonalAgentSync, keys: MembershipKeys
 }
 
 /**
- * A deposit must carry this gateway's own d1 over its body at its revision (CryptoError otherwise). Decrypts, applies `set` to username/password/url/notes/data only (data keys merge), leaves everything else (agentPolicy among it)
+ * A deposit must carry this gateway's own d1 over its body at its revision (CryptoError otherwise). Decrypts, applies `set` to username/password/url/notes/data only (data keys merge;
+ * `env` sets an env file's entries with setEnvEntry, in its key order), leaves everything else (agentPolicy among it)
  * as decrypted, re-encrypts under the same key, signs for `revision + 1` (d1 for a deposit, u1 for a record).
  * Returns `revision` as given: what the API is sent, the revision the write replaces. Old and new values are held until it returns.
  */
 export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys, identity: Identity, target: { kind: "deposit" | "record"; id: string; revision: number },
-  set: NonNullable<SaveInput["fields"]>, held: HeldSecrets): Promise<{ encBody: string; revision: number; signature: string }> {
+  set: UpdateSet, held: HeldSecrets): Promise<{ encBody: string; revision: number; signature: string }> {
   const { id } = target, ownerUserId = sync.owner.userId, agentId = sync.agentId;
   const d = sync.deposits.find((x) => x.id === id), r = sync.records.find((x) => x.id === id);
   const row = target.kind === "deposit" ? d && { encBody: d.encBody, sealed: d.agentSealedKey } : r && { encBody: r.encBody, sealed: r.wrappedRecordKey };
@@ -96,13 +106,22 @@ export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys,
   if (d && target.kind === "deposit" && !(await verifyGatewayMessage(d.signature, "d1", agentDepositMessage({ ownerUserId, ownerPublicKey: sync.owner.publicKey, agentId, id,
     revision: d.revision, encBodyHash: await sha256B64(d.encBody) }), identity))) throw new CryptoError("bad_envelope");
   const releaseNew = holdValues(held, set);
-  let releaseOld = () => {};
+  let releaseOld = () => {}, releaseAfter = () => {};
   const recordKey = await openPersonalAgentRecordKey(row.sealed, { ownerUserId, agentId, recordId: id }, keys);
   try {
     const before = await readForUpdate(id, row.encBody, recordKey);
     releaseOld = holdValues(held, before);
-    const { data, ...top } = set;
-    const after = normalized({ ...before, ...top, ...(data ? { data: { ...before.data, ...data } } : {}) });
+    const { data, env, ...top } = set;
+    // set.env edits the file's text entry by entry; it can't be combined with replacing that text.
+    if (env && (before.type !== "envFile" || data?.content !== undefined)) throw new InvalidInput();
+    let merged = { ...before.data, ...data };
+    if (env) {
+      let content = merged.content ?? "";
+      try { for (const [k, v] of Object.entries(env)) content = setEnvEntry(content, k, v); } catch { throw new InvalidInput(); }
+      merged = { ...merged, content };
+    }
+    const after = normalized({ ...before, ...top, ...(data || env ? { data: merged } : {}) });
+    releaseAfter = holdValues(held, after);
     const encBody = await encryptRecordBody(id, after, recordKey);
     const m = { ownerUserId, agentId, id, revision: target.revision + 1, encBodyHash: await sha256B64(encBody) };
     const signature = target.kind === "deposit"
@@ -111,6 +130,7 @@ export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys,
     return { encBody, revision: target.revision, signature };
   } finally {
     recordKey.fill(0);
+    releaseAfter();
     releaseOld();
     releaseNew();
   }

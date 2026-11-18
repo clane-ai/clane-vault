@@ -5,7 +5,7 @@ import {
   type MembershipKeys, type RecordBody,
 } from "@clane-vault/crypto";
 import { apiClient, type PersonalAgentSync } from "../src/apiClient.js";
-import { buildDeposit, buildUpdate, InvalidInput } from "../src/deposits.js";
+import { buildDeposit, buildUpdate, ENV_HOLD_MIN, InvalidInput } from "../src/deposits.js";
 import { loadOrCreateIdentity, type Identity } from "../src/identity.js";
 import { AgentKeyCache } from "../src/keys.js";
 import { HeldSecrets } from "../src/log.js";
@@ -103,5 +103,25 @@ describe("buildUpdate", () => {
     const id = await api.personal.addRecord(before, undefined, true);
     await resync();
     await expect(buildUpdate(sync, keys, identity, { kind: "record", id, revision: 1 }, { data: { secret: "x" } }, new HeldSecrets())).rejects.toBeInstanceOf(InvalidInput);
+  });
+});
+
+describe("env files", () => {
+  it("buildDeposit and buildUpdate hold the whole text and every entry value of ENV_HOLD_MIN or more, old and new", async () => {
+    expect(ENV_HOLD_MIN).toBe(8);
+    const held = new HeldSecrets();
+    const sign = identity.signMessage;
+    const seen: string[] = [];
+    const content = "LONG=long_value_1\nSHORT=abc\n";
+    const probe = `v1=long_value_1 short=abc v2=long_value_2 file=${content}`;
+    const spy: Identity = { ...identity, signMessage: (t, m) => { seen.push(held.redact(probe)); return sign(t, m); } };
+    const d = await buildDeposit(sync, keys, spy, { title: "E", type: "envFile", fields: { data: { content } } }, held);
+    expect(seen[0]).not.toContain("long_value_1");
+    expect(seen[0]).not.toContain(content);
+    expect(seen[0]).toContain("short=abc"); // shorter than ENV_HOLD_MIN: not held
+    const s2 = { ...sync, deposits: [{ id: d.id, encBody: d.encBody, revision: 1, agentSealedKey: d.agentSealedKey, signature: d.signature }] };
+    await buildUpdate(s2, keys, spy, { kind: "deposit", id: d.id, revision: 1 }, { env: { NEW: "long_value_2" } }, held);
+    expect(seen[1]).not.toMatch(/long_value_1|long_value_2/);
+    expect(held.redact(probe)).toBe(probe);
   });
 });

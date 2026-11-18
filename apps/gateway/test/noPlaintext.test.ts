@@ -19,7 +19,9 @@ const SECRET = "sk_live_PLAINTEXT_CANARY_42";
 const WRITTEN = ["sk_live_SAVE_CANARY_43", "sk_live_UPDATE_CANARY_44", "pw_RECORD_CANARY_45", "cf_FIELD_CANARY_46"];
 // A credential the upstream creates and http_request's capture saves.
 const CAPTURED = "ghp_CAPTURED_CANARY_47";
-const FORMS = [SECRET, ...WRITTEN, CAPTURED].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
+// Env-file entry values the agent saves and sets (spec §10).
+const ENV = ["sk_live_ENVCANARY1", "sk_live_ENVCANARY2"];
+const FORMS = [SECRET, ...WRITTEN, CAPTURED, ...ENV].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
 const AUD = "http://localhost:3002/mcp";
 
 // performRequest as is, unless a test makes the tool throw (an Error carrying the secret) or raise a real uncaught throw.
@@ -125,11 +127,17 @@ describe("no plaintext anywhere", () => {
       .toMatchObject({ structuredContent: { error: "refused", reason: "invalid" } });
     expect((await tool.api.personal.open(tool.api.personal.deposits[0]!.id)).data?.secret).toBe(WRITTEN[1]); // the writes did happen
 
+    // An env file saved, then one entry set.
+    expect(JSON.parse(await mine("save_secret", { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: `STRIPE_KEY=${ENV[0]}\nPORT=3000\n` } } })))
+      .toMatchObject({ structuredContent: { item: "personal/billing" } });
+    expect(JSON.parse(await mine("update_secret", { item: "personal/billing", set: { env: { STRIPE_KEY: ENV[1] } } }))).toMatchObject({ structuredContent: { revision: 2 } });
+    expect((await tool.api.personal.open(tool.api.personal.deposits[1]!.id)).data?.content).toBe(`STRIPE_KEY=${ENV[1]}\nPORT=3000\n`);
+
     // A capture: the upstream answers with a new credential, which is saved and scrubbed from the response.
     await tool.api.personal.addRecord({ ...apiKey(port), title: "Creator" });
     expect(JSON.parse(await mine("http_request", { item: "personal/creator", method: "POST", url: `http://api.test:${port}/create`, body: "{}",
       capture: { from: "/token", title: "Captured", type: "apiKey" } }))).toMatchObject({ structuredContent: { saved: { item: "personal/captured" } } });
-    expect((await tool.api.personal.open(tool.api.personal.deposits[1]!.id)).data?.secret).toBe(CAPTURED);
+    expect((await tool.api.personal.open(tool.api.personal.deposits[2]!.id)).data?.secret).toBe(CAPTURED);
 
     await tool("http_request", call("/hang")); // an upstream timeout
     await tool("http_request", call("/echo")); // a scrub hit

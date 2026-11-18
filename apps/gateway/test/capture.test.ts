@@ -36,6 +36,7 @@ async function upstream() {
       const created = JSON.stringify({ id: 7, token: CANARY });
       if (req.url === "/fail") res.writeHead(500).end(created);
       else if (req.url === "/echo") res.writeHead(201).end(JSON.stringify({ headers: { Authorization: req.headers.authorization } }));
+      else if (req.url === "/envtok") res.writeHead(201).end(JSON.stringify({ token: "tok env CANARY" }));
       else if (req.url === "/short") res.writeHead(201).end(JSON.stringify({ token: "ghp_123" }));
       else if (req.url === "/big") res.writeHead(201, { "x-created-token": CANARY }).end(JSON.stringify({ token: CANARY, pad: "x".repeat(4096) }));
       else res.writeHead(201, { "content-type": "application/json" }).end(created);
@@ -177,6 +178,26 @@ describe("http_request capture", () => {
     // Without capture an organisation agent's http_request is unchanged.
     const { capture: _c, ...plain } = req();
     expect((await org("http_request", { ...plain, item: "ops/github-admin" })).out).toMatchObject({ status: 201 });
+  });
+});
+
+describe("http_request capture, env files", () => {
+  it("saves the value as one entry of a new .env file; the model never sees it", async () => {
+    const { api, tool, req } = await setup();
+    const { out, text } = await tool("http_request", req("/envtok", { from: "/token", title: "Deploy", type: "envFile", entry: "DEPLOY_TOKEN" }));
+    expect(out).toMatchObject({ status: 201, saved: { item: "personal/deploy" } });
+    expect(text).not.toContain("tok env CANARY");
+    const body = await api.personal.open(api.personal.deposits[0]!.id);
+    expect(body).toMatchObject({ type: "envFile", title: "Deploy", data: { content: "DEPLOY_TOKEN='tok env CANARY'\n", fileName: ".env" } });
+    for (const b of api.bodies) expect(b).not.toContain("tok env CANARY");
+  });
+
+  it("type envFile without entry, and entry with another type, are input errors with nothing sent", async () => {
+    const { up, tool, req, capture } = await setup();
+    expect((await tool("http_request", req("/envtok", { from: "/token", title: "Deploy", type: "envFile" }))).r.isError).toBe(true);
+    expect((await tool("http_request", req("/envtok", { ...capture, entry: "DEPLOY_TOKEN" }))).r.isError).toBe(true);
+    expect((await tool("http_request", req("/envtok", { from: "/token", title: "Deploy", type: "envFile", entry: "BAD KEY" }))).r.isError).toBe(true);
+    expect(up.seen).toEqual([]);
   });
 });
 
