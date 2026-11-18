@@ -1,5 +1,6 @@
 import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { z } from "zod";
+import type { Config } from "../config.js";
 import type { Entitlements } from "./plans.js";
 
 /**
@@ -46,6 +47,19 @@ export const policySchema = z.object({
   ipAllowlist: z.array(cidr).max(100).default([]),
   /** Break-glass: the owner reaches the org from anywhere even with an allowlist (logged). Only the owner changes it. */
   ownerBreakGlass: z.boolean().default(true),
+  /**
+   * Personal agents of this organisation's members (docs/design/2026-11-15-personal-agents.md). Unlike every other policy
+   * it reaches into the Personal space, and it applies on every plan: the strictest of a person's organisations wins.
+   */
+  personalAgents: z.object({
+    allowed: z.boolean().default(true),
+    /** Most personal agents a member may have (null: the plan's allowance and the ceiling only). */
+    maxPerMember: z.number().int().min(1).max(20).nullable().default(null),
+    /** Agents may save and update items. */
+    write: z.boolean().default(true),
+    /** Whether the owner may let an agent see a field value: never, only after they approve each time, or standing. */
+    reveal: z.enum(["off", "approval", "standing"]).default("approval"),
+  }).prefault({}),
 }).strict();
 export type Policies = z.infer<typeof policySchema>;
 
@@ -67,20 +81,36 @@ function policyPart(stored: unknown): unknown {
   return rest;
 }
 
+/** The stored personal-agents block, field by field: a corrupt field takes its default and never discards the others (an off switch stays off). */
+function readPersonalAgents(v: unknown): Policies["personalAgents"] {
+  const shape = policySchema.shape.personalAgents.unwrap().shape;
+  const o = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(shape) as (keyof typeof shape)[]) {
+    const f = shape[k].safeParse(o[k]);
+    out[k] = f.success ? f.data : shape[k].parse(undefined);
+  }
+  return out as Policies["personalAgents"];
+}
+
 /**
  * Stored policies (validated on write); a row that somehow fails validation falls back field by field, never open.
  * Given the org's entitlements, a plan without policy editing reads the defaults (the stored JSON stays untouched).
  */
 export function readPolicies(stored: unknown, ent?: Pick<Entitlements, "features">): Policies {
-  if (ent && !ent.features.policyEdit) return DEFAULT_POLICIES;
   const raw = policyPart(stored);
+  // A plan without policy editing reads the defaults, except the personal-agents block: it has no plan gate (it is
+  // what lets any organisation protect its members' accounts from a gateway).
+  if (ent && !ent.features.policyEdit) {
+    return { ...DEFAULT_POLICIES, personalAgents: readPersonalAgents(raw && typeof raw === "object" ? (raw as Record<string, unknown>).personalAgents : undefined) };
+  }
   const r = policySchema.safeParse(raw ?? {});
   if (r.success) return r.data;
   // Corrupt JSON: keep restrictions we can read and fail closed on the allowlist.
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(policySchema.shape) as (keyof Policies)[]) {
-    const f = policySchema.shape[k].safeParse(o[k]);
+    const f = k === "personalAgents" ? { success: true, data: readPersonalAgents(o[k]) } : policySchema.shape[k].safeParse(o[k]);
     if (f.success) out[k] = f.data;
   }
   const p = { ...DEFAULT_POLICIES, ...out } as Policies;
@@ -89,11 +119,14 @@ export function readPolicies(stored: unknown, ent?: Pick<Entitlements, "features
 }
 
 /** What every member's client reads with the org list (the allowlist itself stays with admins). */
-export function clientPolicies(p: Policies) {
+export function clientPolicies(p: Policies, cfg: Pick<Config, "agents">) {
   return {
     autoLockMinutes: p.autoLockMinutes, minPasswordLength: p.minPasswordLength, minPasswordScore: p.minPasswordScore,
     links: p.links, attachments: p.attachments, offlineAllowed: p.offlineAllowed, extensionAllowed: p.extensionAllowed, breachCheckAllowed: p.breachCheckAllowed,
     ipRestricted: p.ipAllowlist.length > 0,
+    personalAgents: p.personalAgents,
+    /** Whether this server has personal agents at all (agent access on and PERSONAL_AGENTS not off). */
+    personalAgentsEnabled: !!cfg.agents?.personalAgents,
   };
 }
 export type ClientPolicies = ReturnType<typeof clientPolicies>;

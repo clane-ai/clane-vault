@@ -229,6 +229,26 @@ describe("VaultPage", () => {
     });
   });
 
+  // Personal space: the section is for personal agents, so it follows /me/agents (404 when they are off on this server).
+  describe.each([[404, false], [200, true]])("Agent use in the Personal space when /me/agents answers %i", (status, shown) => {
+    it(shown ? "is in the editor" : "is hidden from the editor", async () => {
+      const back = inPersonal();
+      server.use(
+        http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [] })),
+        http.get("/api/v1/me/agents", () => status === 404 ? HttpResponse.json({ error: "not_found" }, { status })
+          : HttpResponse.json({ agents: [], allowance: { used: 0, allowed: 20 }, rules: { allowed: true }, gateway: null })),
+      );
+      renderPage(<VaultScreen />);
+      await userEvent.click(await screen.findByRole("button", { name: "New" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Record" }));
+      await userEvent.type(await screen.findByLabelText("Title"), "Stripe{Enter}");
+      await screen.findByRole("heading", { name: "New login" });
+      if (shown) expect(await screen.findByRole("region", { name: "Agent use" })).toBeInTheDocument();
+      else { await new Promise((r) => setTimeout(r, 100)); expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull(); }
+      back();
+    });
+  });
+
   it("asks for the gateway once: a 404 is not retried, and a window focus doesn't refetch it", async () => {
     let calls = 0;
     server.use(http.get("/api/v1/org/agents/gateway", () => { calls++; return HttpResponse.json({ error: "not_found" }, { status: 404 }); }));

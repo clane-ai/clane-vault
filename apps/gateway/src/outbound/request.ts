@@ -12,6 +12,8 @@ export type OutboundOutcome =
 export interface OutboundCtx {
   policy: AgentPolicy; secret: string; username: string; cfg: Pick<GatewayConfig, "maxResponseBytes" | "upstreamTimeoutMs">;
   allow: Cidr[]; resolve: Resolver; onConnect?: (address: string) => void;
+  /** Called once, on the final untruncated response, with the body before scrubbing; a returned value is scrubbed like the secret. */
+  capture?: (body: string, status: number) => string | null;
   /** Test only: trust this CA for a self-signed upstream. */
   ca?: string;
 }
@@ -135,19 +137,23 @@ export async function performRequest(input: OutboundInput, ctx: OutboundCtx): Pr
       if (codings && method !== "HEAD" && codings.trim().toLowerCase() !== "identity" && !codings.toLowerCase().split(",").every((c) => DECODED.has(c.trim())))
         throw new Error("undecoded content-encoding");
       const capped = await readCapped(res.body, ctx.cfg.maxResponseBytes);
-      const lowVariants = variants.map((v) => v.toLowerCase());
+      const raw = capped.buf.toString("utf8");
+      const captured = capped.truncated ? null : ctx.capture?.(raw, res.status) ?? null;
+      // A captured value is scrubbed everywhere too, but only the injected secret's hits count as a reflection.
+      const all = captured ? [...variants, ...variantsOf(captured)] : variants;
+      const lowVariants = variants.map((v) => v.toLowerCase()), lowAll = all.map((v) => v.toLowerCase());
       let hits = 0;
       const outHeaders = new Map<string, string>();
       for (const [k, v] of res.headers) {
         if (k === "content-encoding" || k === "content-length") continue;
         if (lowVariants.some((v) => k.includes(v))) { hits++; continue; } // a header name can't be redacted, so it is dropped
-        const s = scrub(v, variants);
-        hits += s.hits;
-        outHeaders.set(k, outHeaders.has(k) ? `${outHeaders.get(k)}, ${s.text}` : s.text); // set-cookie comes once per value
+        if (lowAll.some((v) => k.includes(v))) continue;
+        hits += scrub(v, variants).hits;
+        const text = scrub(v, all).text;
+        outHeaders.set(k, outHeaders.has(k) ? `${outHeaders.get(k)}, ${text}` : text); // set-cookie comes once per value
       }
-      const s = scrub(capped.buf.toString("utf8"), variants);
-      hits += s.hits;
-      let text = s.text;
+      hits += scrub(raw, variants).hits;
+      let text = scrub(raw, all).text;
       if (capped.truncated) {
         const c = cutTail(text, variants);
         text = c.text;

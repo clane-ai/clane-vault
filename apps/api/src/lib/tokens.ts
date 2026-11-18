@@ -64,20 +64,24 @@ export function agentSigningKey(a: AgentConfig) {
   return k;
 }
 
-export async function signAgentAccess(cfg: Config, p: { agentId: string; orgId: string; grant: string }): Promise<{ token: string; expiresIn: 900 }> {
+/** Exactly one of `orgId` (an organisation agent: claim `org`) and `ownerUserId` (a personal agent: claim `owner`). */
+export async function signAgentAccess(cfg: Config, p: { agentId: string; orgId: string | null; ownerUserId?: string | null; grant: string }): Promise<{ token: string; expiresIn: 900 }> {
+  if (!p.orgId === !p.ownerUserId) throw new Error("an agent token names exactly one of an organisation and an owner");
   const { priv, jwk } = await agentSigningKey(cfg.agents!);
-  const token = await new SignJWT({ scope: "agent", org: p.orgId, grant: p.grant }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
+  const token = await new SignJWT({ scope: "agent", ...(p.orgId ? { org: p.orgId } : { owner: p.ownerUserId! }), grant: p.grant }).setProtectedHeader({ alg: "ES256", kid: jwk.kid })
     .setSubject(p.agentId).setAudience(cfg.agents!.gatewayPublicUrl).setIssuer(cfg.publicUrl).setJti(randomUUID())
     .setIssuedAt().setExpirationTime("15m").sign(priv);
   return { token, expiresIn: 900 };
 }
 
-/** ES256 only (an HS256 person token never passes), audience and issuer checked. Throws otherwise. */
-export async function verifyAgentAccess(cfg: Config, token: string): Promise<{ sub: string; org: string; grant: string; jti: string }> {
+/** ES256 only (an HS256 person token never passes), audience and issuer checked, exactly one of `org` and `owner`. Throws otherwise. */
+export async function verifyAgentAccess(cfg: Config, token: string): Promise<{ sub: string; org: string | null; owner: string | null; grant: string; jti: string }> {
   const { pub } = await agentSigningKey(cfg.agents!);
   const { payload: p } = await jwtVerify(token, pub, { algorithms: ["ES256"], audience: cfg.agents!.gatewayPublicUrl, issuer: cfg.publicUrl });
-  if (p.scope !== "agent" || typeof p.sub !== "string" || typeof p.org !== "string" || typeof p.grant !== "string" || typeof p.jti !== "string") throw new Error("not an agent token");
-  return { sub: p.sub, org: p.org, grant: p.grant, jti: p.jti };
+  const org = typeof p.org === "string" ? p.org : null, owner = typeof p.owner === "string" ? p.owner : null;
+  if (p.scope !== "agent" || typeof p.sub !== "string" || !org === !owner || (p.org ?? null) !== org || (p.owner ?? null) !== owner
+    || typeof p.grant !== "string" || typeof p.jti !== "string") throw new Error("not an agent token");
+  return { sub: p.sub, org, owner, grant: p.grant, jti: p.jti };
 }
 
 /** What /.well-known/jwks.json publishes: the gateway verifies agent access tokens with it. */

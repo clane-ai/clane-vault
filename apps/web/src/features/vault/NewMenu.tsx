@@ -1,10 +1,10 @@
-import { Dices, FileLock2, FileUp, FolderPlus, Plus, Users } from "lucide-react";
+import { Dices, FileKey, FileLock2, FileUp, FolderPlus, Plus, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-/** `record` opens the New record dialog (Login or Secure note is picked there); `team` is a shared (team) folder. */
-export type NewKind = "record" | "folder" | "team" | "generate" | "import";
+/** `record` opens the New record dialog (Login or Secure note is picked there), `env` the same with .env file chosen; `team` is a shared (team) folder. */
+export type NewKind = "record" | "env" | "folder" | "team" | "generate" | "import";
 
 export const menuTitle = "px-2.5 pt-1.5 pb-1 font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase";
 
@@ -31,6 +31,9 @@ export function NewMenu({ onNew, team = true, compact = false, recordHint }: { o
         <DropdownMenuLabel className={menuTitle}>Create New</DropdownMenuLabel>
         <DropdownMenuItem disabled={!!recordHint} aria-label="Record" aria-describedby={recordHint ? "new-record-hint" : undefined} onSelect={() => onNew("record")}>
           <FileLock2 /><span>Record{recordHint && <ItemHint id="new-record-hint">{recordHint}</ItemHint>}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!!recordHint} aria-label=".env file" aria-describedby={recordHint ? "new-env-hint" : undefined} onSelect={() => onNew("env")}>
+          <FileKey /><span>.env file{recordHint && <ItemHint id="new-env-hint">{recordHint}</ItemHint>}</span>
         </DropdownMenuItem>
         {!team && <DropdownMenuItem onSelect={() => onNew("folder")}><FolderPlus />Folder</DropdownMenuItem>}
         <DropdownMenuItem disabled={!team} aria-label="Shared Folder" aria-describedby={team ? undefined : "new-team-hint"} onSelect={() => onNew("team")}>

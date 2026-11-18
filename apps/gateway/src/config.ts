@@ -4,6 +4,12 @@ import { parseCidrs } from "./outbound/ssrf.js";
 export interface GatewayConfig {
   apiUrl: string; apiToken: string; publicUrl: string; kek: string; identityKeyFile: string; cacheTtlSeconds: number; agentRatePerMinute: number;
   maxResponseBytes: number; upstreamTimeoutMs: number; allowPrivateCidrs: string[]; port: number; internalPort: number; internalHost: string; trustProxy: number;
+  /** save_secret and update_secret (and capture) per agent per hour. */
+  writePerHour: number;
+  /** get_secret (spec §5): off (default), approval per reveal, or standing reveal too. */
+  reveal: "off" | "approval" | "standing";
+  /** New get_secret requests per agent per hour. */
+  revealPerHour: number;
 }
 
 const blank = (v: unknown) => (v === "" ? undefined : v);
@@ -23,6 +29,9 @@ const schema = z.object({
   INTERNAL_PORT: int(3003, 1),
   INTERNAL_HOST: z.preprocess(blank, z.string().default("0.0.0.0")),
   TRUST_PROXY: int(0),
+  GATEWAY_WRITE_PER_HOUR: int(20, 1),
+  GATEWAY_REVEAL: z.preprocess(blank, z.enum(["off", "approval", "standing"]).default("off")),
+  GATEWAY_REVEAL_PER_HOUR: int(10, 1),
 });
 
 const LOCAL = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -55,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     apiUrl: e.API_URL, apiToken: e.GATEWAY_API_TOKEN, publicUrl: e.PUBLIC_URL, kek: e.GATEWAY_KEK, identityKeyFile: e.GATEWAY_IDENTITY_KEY_FILE,
     cacheTtlSeconds: e.GATEWAY_CACHE_TTL_SECONDS, agentRatePerMinute: e.GATEWAY_AGENT_RATE_PER_MINUTE, maxResponseBytes: e.GATEWAY_MAX_RESPONSE_BYTES,
     upstreamTimeoutMs: e.GATEWAY_UPSTREAM_TIMEOUT_MS, allowPrivateCidrs: cidrs,
-    port: e.PORT, internalPort: e.INTERNAL_PORT, internalHost: e.INTERNAL_HOST, trustProxy: e.TRUST_PROXY,
+    port: e.PORT, internalPort: e.INTERNAL_PORT, internalHost: e.INTERNAL_HOST, trustProxy: e.TRUST_PROXY, writePerHour: e.GATEWAY_WRITE_PER_HOUR,
+    reveal: e.GATEWAY_REVEAL, revealPerHour: e.GATEWAY_REVEAL_PER_HOUR,
   };
 }

@@ -91,6 +91,9 @@ model User {
   /// Demo mode (docs/demo.md): a throwaway sandbox account, hard-deleted with everything it holds at this time. Null for
   /// every real account. Only DEMO_MODE=true instances make them, and those refuse to start with any account without it.
   demoExpiresAt     DateTime?
+  /// Email me when an agent asks for a secret (spec §5.3); at most one such email per 10 minutes.
+  agentRevealEmail     Boolean   @default(true)
+  agentRevealEmailedAt DateTime?
   createdAt         DateTime   @default(now())
   sessions          Session[]
   /// Account key generation: a scoped admin recovery replaces the user key and account key pair and bumps it
@@ -112,7 +115,10 @@ model User {
   /// agent: a machine member (docs/agents.md). No password, 2FA or email delivery: authHash, kdfSalt, wrappedUserKey and
   /// wrappedPrivateKey are "" and kdfParams {}. publicKey is the agent's one key (also its MembershipKey).
   kind              UserKind   @default(person)
-  agent             Agent?
+  agent             Agent?     @relation("agentUser")
+  /// Personal agents this person owns (docs/design/2026-11-15-personal-agents.md).
+  personalAgents    Agent[]    @relation("personalAgents")
+  agentDeposits     AgentDeposit[]
 
   @@index([demoExpiresAt])
   @@index([kind])
@@ -367,9 +373,29 @@ model Record {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   deletedAt DateTime?
+  /// The personal agent whose deposit the owner kept as this record (provenance only). No relation: it outlives the agent.
+  createdByAgentId String? @db.Uuid
   access    RecordAccess[]
   links     ShareLink[]
   attachments Attachment[]
+  agentOverwrites RecordAgentOverwrite[]
+  agentRevealGrants AgentRevealGrant[]
+}
+
+/// A personal agent's update to a record (spec §5): the body it replaced, so the owner can restore it. The newest 5 per record, for 30 days.
+model RecordAgentOverwrite {
+  id          String    @id @default(uuid()) @db.Uuid
+  recordId    String    @db.Uuid
+  record      Record    @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  agentId     String    @db.Uuid
+  prevEncBody String
+  newRevision Int
+  /// u1.<gatewayKeyId>.<sig> over the body written at newRevision
+  signature   String
+  ackedAt     DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([recordId])
 }
 
 model RecordAccess {
@@ -386,6 +412,8 @@ model RecordAccess {
   orgId            String?     @db.Uuid
   org              Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   state            AccessState @default(active)
+  /// A personal agent's row: the owner allowed it to update the record (PATCH /records/:id/agent-grants/:agentId only).
+  agentWrite       Boolean     @default(false)
   createdAt        DateTime    @default(now())
 
   @@unique([recordId, holderType, holderId])
@@ -953,9 +981,12 @@ model ServerSecretCheck {
 /// One row per agent member (1:1 with its User). The private key exists only inside the gateway's KMS envelope.
 model Agent {
   userId            String       @id @db.Uuid
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orgId             String       @db.Uuid
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user              User         @relation("agentUser", fields: [userId], references: [id], onDelete: Cascade)
+  /// Exactly one of orgId (an organisation agent) and ownerUserId (a personal agent) is set (CHECK in the migration).
+  orgId             String?      @db.Uuid
+  org               Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  ownerUserId       String?      @db.Uuid
+  owner             User?        @relation("personalAgents", fields: [ownerUserId], references: [id], onDelete: Cascade)
   createdById       String       @db.Uuid
   publicKey         String       @unique
   /// "k1.<kekId>.<wrappedDek>.<v1. envelope>": the X25519 private key under a per-agent DEK, the DEK under the gateway's
@@ -977,8 +1008,92 @@ model Agent {
   createdAt         DateTime     @default(now())
   tokens            AgentToken[]
   grants            AgentGrant[]
+  deposits          AgentDeposit[]
+  revealGrants      AgentRevealGrant[]
+  revealRequests    AgentRevealRequest[]
+  /// Three denials in ten minutes: no reveal requests until then.
+  revealPausedUntil DateTime?
 
   @@index([orgId])
+  @@index([ownerUserId])
+}
+
+/// An item a personal agent wrote, signed by the gateway: not a record until the owner's browser keeps it (spec §4).
+model AgentDeposit {
+  /// Becomes Record.id on Keep (the body's AAD binds it).
+  id             String   @id @db.Uuid
+  ownerUserId    String   @db.Uuid
+  owner          User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  agentId        String   @db.Uuid
+  agent          Agent    @relation(fields: [agentId], references: [userId], onDelete: Cascade)
+  /// Coarse, as Record.type: "login" or "item".
+  type           String
+  /// aeadEncrypt(recordKey, body, "record-body:<id>")
+  encBody        String
+  revision       Int      @default(1)
+  /// s1. to the owner's account public key (AAD agent-deposit-owner:<ownerUserId>:<id>)
+  ownerSealedKey String
+  /// s1. to the agent's public key (AAD personal-agent-record:<ownerUserId>:<agentId>:<id>)
+  agentSealedKey String
+  /// d1.<gatewayKeyId>.<sig> over the body at `revision`
+  signature      String
+  /// The token label or OAuth client name the agent wrote through.
+  connectedApp   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ownerUserId])
+  @@index([agentId])
+}
+
+/// *Can reveal* on one item for one personal agent (spec §5.3): no record key, only a stub sealed to the agent.
+model AgentRevealGrant {
+  id         String   @id @default(uuid()) @db.Uuid
+  recordId   String   @db.Uuid
+  record     Record   @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  agentId    String   @db.Uuid
+  agent      Agent    @relation(fields: [agentId], references: [userId], onDelete: Cascade)
+  /// s1. to the agent's key: { title, type, fields }. What the gateway enforces.
+  sealedStub String
+  /// The same field names in clear, for the owner's screens. The server sees field names on every request anyway; it cannot widen the sealed stub.
+  fields     String[]
+  createdAt  DateTime @default(now())
+
+  @@unique([recordId, agentId])
+  @@index([agentId])
+}
+
+enum AgentRevealStatus {
+  pending
+  approved
+  denied
+  expired
+  delivered
+}
+
+/// One get_secret waiting for the owner (spec §5.3). The reply is sealed to a one-time key the gateway holds in memory.
+model AgentRevealRequest {
+  /// Generated by the gateway; part of the signed message.
+  id               String            @id @db.Uuid
+  agentId          String            @db.Uuid
+  agent            Agent             @relation(fields: [agentId], references: [userId], onDelete: Cascade)
+  ownerUserId      String            @db.Uuid
+  recordId         String            @db.Uuid
+  fields           String[]
+  /// Written by the agent; shown to the owner as such.
+  reason           String
+  requestPublicKey String
+  /// q1.<gatewayKeyId>.<sig> over agent-reveal-request:...
+  signature        String
+  connectedApp     String
+  status           AgentRevealStatus @default(pending)
+  /// s1. to requestPublicKey, from approval until delivery or expiry.
+  sealed           String?
+  expiresAt        DateTime
+  createdAt        DateTime          @default(now())
+
+  @@index([ownerUserId, status])
+  @@index([agentId, status])
 }
 
 /// Static bearer token for API/SDK clients: the token itself is shown once; only its hash is kept.

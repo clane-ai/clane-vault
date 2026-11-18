@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, Dices, Eye, EyeOff, Folder, Pencil, RotateCcw, Share2, Trash2, Users, X } from "lucide-react";
-import { totpCode, totpSecondsLeft, typeLabel } from "@clane-vault/crypto";
+import { totpCode, totpSecondsLeft, typeLabel, type RecordBody } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/time";
@@ -8,10 +8,53 @@ import { OneTimeLinkButton } from "@/features/links/OneTimeLinkButton";
 import type { StrengthScore } from "@/lib/strength";
 import { reasonLine, strengthForScore, strengthOf, type AttentionReason } from "./attention";
 import { CopyButton } from "./CopyButton";
+import { EnvDiff, EnvPanelSection } from "./EnvFile";
 import { RecordAvatar } from "./RecordAvatar";
 import { displayValue, isSecretField, last4, lowerFirst, shownFields, TYPE_ICON, type ShownField } from "./recordKinds";
 import { StrengthMeter } from "./StrengthMeter";
 import type { VaultRecord } from "./types";
+import { ConflictError, OverwriteKeyError } from "./useVault";
+
+/** *Changed by agent*: the agent's newest change nobody saved over yet, with Restore previous (the body before it). */
+function AgentChangeBanner({ change, onRestore, onAck, envContent, previousBody }: { change: NonNullable<VaultRecord["agentChange"]>; onRestore?: () => Promise<unknown>; onAck?: () => Promise<unknown>;
+  /** An env file's current text: with `previousBody`, the banner lists the keys the change added, changed or removed. */ envContent?: string; previousBody?: () => Promise<RecordBody> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [previous, setPrevious] = useState<string | null>(null);
+  const load = envContent !== undefined ? previousBody : undefined;
+  // Loaded once per change (the parent passes a new function every render); a failure just leaves the keys out.
+  useEffect(() => {
+    let alive = true;
+    setPrevious(null);
+    load?.().then((b) => { if (alive) setPrevious(b.data?.content ?? ""); }, () => undefined);
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [change.at, change.signature, !!load]);
+  // It stays until the owner acts: Looks right (ack), Restore previous (restore, then ack), or their own save.
+  const run = async (fn: () => Promise<unknown>, failed: string) => {
+    setBusy(true); setError(null);
+    try { await fn(); }
+    catch (e) { setError(e instanceof OverwriteKeyError || e instanceof ConflictError ? e.message : failed); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div role="note" aria-label="Changed by agent" className="flex flex-col gap-2 rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+      <p className="flex items-start gap-2 text-[13.5px] text-text-primary">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+        <span>{change.signed === false ? "Changed, but not signed by the gateway" : `Changed by agent ${change.agentName}`} <span className="text-text-secondary" title={new Date(change.at).toLocaleString()}>{relativeTime(change.at)}</span>
+          {change.signed === null && <span className="block text-[12.5px] text-text-secondary">This device hasn't verified your gateway, so the change wasn't checked.</span>}</span>
+      </p>
+      {envContent !== undefined && previous !== null && <div className="pl-6"><EnvDiff before={previous} after={envContent} /></div>}
+      {(onRestore || onAck) && (
+        <div className="flex flex-wrap gap-2">
+          {onRestore && <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(onRestore, "Couldn't restore the previous version. Try again.")}><RotateCcw className="size-3.5" />Restore previous</Button>}
+          {onAck && <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(onAck, "Couldn't save that. Try again.")}>Looks right</Button>}
+        </div>
+      )}
+      {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
+    </div>
+  );
+}
 
 /** One row of the fields card: label (104px) · value · actions. */
 function Row({ label, children, actions }: { label: string; children: React.ReactNode; actions?: React.ReactNode }) {
@@ -57,7 +100,7 @@ function FieldValue({ f, shown }: { f: ShownField; shown: boolean }) {
   return <span aria-label={f.label} className={f.mono || f.format ? MONO : "text-[14px] break-words text-text-primary"}>{text}</span>;
 }
 
-export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf }: {
+export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious, onAckAgentChange, previousBody }: {
   record: VaultRecord; folderName: string | null; teamFolder?: boolean; onClose: () => void; onEdit: () => void; onTrash: () => void; onRestore?: () => void; onPurge?: () => void;
   /** Opens the share sheet (record owners only; its "One-time link" tab makes links). */ onShare?: () => void;
   /** Needs-attention reasons for this record, if any. */ reasons?: AttentionReason[];
@@ -65,6 +108,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   /** Extra sections under the fields (who can open it, activity). */ children?: React.ReactNode;
   /** The Files section (features/attachments), right under the fields and notes, for every record type. */ files?: React.ReactNode;
   /** Scores the vault already worked out (usePasswordScores): opening a record then scores nothing. */ scoreOf?: (pw: string) => StrengthScore | undefined;
+  /** *Changed by agent* → Restore previous and Looks right (owners). */ onRestorePrevious?: () => Promise<unknown>; onAckAgentChange?: () => Promise<unknown>;
+  /** The body before the agent's change (useVault.previousBody): an env file's banner shows which keys changed. */ previousBody?: () => Promise<RecordBody>;
 }) {
   // Revealed secret fields (by field id); every record opens with all of them hidden.
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
@@ -78,7 +123,9 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   // "Use only" (spec §5.6): the app never shows any secret field (password, card number, CVV, keys…), but Copy still
   // works. A soft limit, not a cryptographic one.
   const useOnly = record.permission === "use";
-  const fields = useMemo(() => (b ? shownFields(b) : []), [b]);
+  // An env file's text is shown as its entries (EnvPanelSection), not as one Contents row.
+  const env = b?.type === "envFile";
+  const fields = useMemo(() => (b ? shownFields(b).filter((f) => !(env && f.id === "t:content")) : []), [b, env]);
   const pw = b?.password;
   const strength = useMemo(() => { if (!pw) return null; const s = scoreOf?.(pw); return s === undefined ? strengthOf(pw) : strengthForScore(pw, s); }, [pw, scoreOf]);
 
@@ -141,6 +188,10 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
               </div>
             )}
 
+            {!record.deleted && record.agentChange && <AgentChangeBanner change={record.agentChange} onRestore={record.permission === "owner" ? onRestorePrevious : undefined}
+              onAck={record.permission === "owner" ? onAckAgentChange : undefined} envContent={env ? b.data?.content ?? "" : undefined}
+              previousBody={record.permission === "owner" ? previousBody : undefined} />}
+
             {!record.deleted && reasons && reasons.length > 0 && (
               <div role="note" aria-label="Needs attention" className="flex flex-col gap-2.5 rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3">
                 <p className="flex items-start gap-2 text-[13.5px] text-text-primary"><AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />{reasonLine(reasons)}</p>
@@ -174,6 +225,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
               </div>
             )}
 
+            {env && b.data?.content && <EnvPanelSection key={record.id} content={b.data.content} fileName={b.data.fileName} title={b.title} useOnly={useOnly} />}
+
             {b.notes && (
               <section className="flex flex-col gap-2" aria-label="Notes">
                 <h3 className="font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase">Notes</h3>
@@ -187,6 +240,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
 
             <p className="border-t border-border-default pt-4 font-mono text-[11.5px] text-text-tertiary">
               <span title={new Date(record.updatedAt).toLocaleString()}>Changed {relativeTime(record.updatedAt) || "—"}</span>
+              {record.createdByAgent && <span className="block">Created by agent {record.createdByAgent.name}{record.createdByAgent.at && ` on ${new Date(record.createdByAgent.at).toLocaleDateString()}`}</span>}
             </p>
           </>
         )}

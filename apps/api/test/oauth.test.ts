@@ -2,14 +2,14 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { decodeJwt, exportPKCS8, generateKeyPair as joseKeyPair } from "jose";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
-import { createTestAgent } from "./agentHelpers.js";
+import { createTestAgent, createTestPersonalAgent } from "./agentHelpers.js";
 import { startFakeGateway } from "./fakeGateway.js";
 import { sweepOAuthClients } from "../src/routes/oauth.js";
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
 const GW = "https://gw.test/mcp";
-const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: GW, gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
+const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: GW, gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false, personalAgents: true };
 const t = await makeTestApp({ agents });
 const based = await makeTestApp({ agents, publicUrl: "https://vault.test/app", basePath: "/app" });
 const off = await makeTestApp({});
@@ -155,6 +155,53 @@ describe("authorize", () => {
     const c = await consent(owner, clientId, agent.id);
     expect(`${c.to.origin}${c.to.pathname}`).toBe(CB);
     expect([c.to.searchParams.get("state"), c.to.searchParams.get("iss"), c.code.length >= 43]).toEqual(["st1", t.config.publicUrl, true]);
+  });
+});
+
+describe("consent by a personal agent's owner", () => {
+  it("a member lists and authorises their own verified personal agent without X-Org-Id; the token carries owner", async () => {
+    const clientId = await register();
+    const member = await createActiveUser(t, { role: "member" });
+    const pa = await createTestPersonalAgent(t, { ownerUserId: member.id, verified: true });
+    await createTestPersonalAgent(t, { ownerUserId: member.id }); // unverified: not listed
+    const info = await call(member, "GET", `/oauth/authorize/info?${infoQuery({ client_id: clientId, code_challenge: pkce().challenge })}`, undefined, {});
+    expect(info.json().agents).toEqual([{ id: pa.id, name: "Personal agent", orgId: null, orgName: null, personal: true }]);
+    const k = pkce();
+    const p = await call(member, "POST", "/oauth/authorize", { clientId, redirectUri: CB, codeChallenge: k.challenge, codeChallengeMethod: "S256", agentId: pa.id }, {});
+    expect(p.statusCode).toBe(200);
+    const r = await exchange(clientId, new URL(p.json().redirectTo).searchParams.get("code")!, k.verifier);
+    expect(r.statusCode).toBe(200);
+    const claims = decodeJwt(r.json().access_token);
+    expect(claims).toMatchObject({ sub: pa.id, owner: member.id });
+    expect(claims).not.toHaveProperty("org");
+    expect(await t.prisma.event.findFirst({ where: { action: "agent.grant" } })).toMatchObject({ orgId: null, actorId: member.id, targetUserId: pa.id });
+    expect(await t.prisma.event.findMany({ where: { action: "personal_agent.connect" }, select: { orgId: true, actorId: true, meta: true } }))
+      .toEqual([{ orgId: member.orgId, actorId: member.id, meta: { agentId: pa.id } }]);
+    expect((await sync(r.json().access_token)).statusCode).toBe(200);
+  });
+
+  it("someone else's personal agent is 400 invalid_request and not listed", async () => {
+    const clientId = await register();
+    const [a, b] = [await createActiveUser(t, { role: "owner" }), await createActiveUser(t)];
+    const theirs = await createTestPersonalAgent(t, { ownerUserId: b.id, verified: true });
+    const info = await call(a, "GET", `/oauth/authorize/info?${infoQuery({ client_id: clientId, code_challenge: pkce().challenge })}`, undefined, {});
+    expect(info.json().agents).toEqual([]);
+    for (const h of [{}, orgHeader(a)]) {
+      const p = await call(a, "POST", "/oauth/authorize", { clientId, redirectUri: CB, codeChallenge: pkce().challenge, codeChallengeMethod: "S256", agentId: theirs.id }, h);
+      expect([p.statusCode, p.json().error]).toEqual([400, "invalid_request"]);
+    }
+    expect(await t.prisma.agentOAuthCode.count()).toBe(0);
+  });
+
+  it("with personal agents disallowed by an organisation, not listed and 403 personal_agents_disabled", async () => {
+    const clientId = await register();
+    const member = await createActiveUser(t, { role: "member" });
+    const pa = await createTestPersonalAgent(t, { ownerUserId: member.id, verified: true });
+    await t.prisma.organization.update({ where: { id: member.orgId }, data: { policies: { personalAgents: { allowed: false } } } });
+    const info = await call(member, "GET", `/oauth/authorize/info?${infoQuery({ client_id: clientId, code_challenge: pkce().challenge })}`, undefined, {});
+    expect(info.json().agents).toEqual([]);
+    const p = await call(member, "POST", "/oauth/authorize", { clientId, redirectUri: CB, codeChallenge: pkce().challenge, codeChallengeMethod: "S256", agentId: pa.id }, {});
+    expect([p.statusCode, p.json().error]).toEqual([403, "personal_agents_disabled"]);
   });
 });
 

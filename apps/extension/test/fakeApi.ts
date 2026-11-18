@@ -20,7 +20,9 @@ export async function fakeApi() {
   const acct = await createAccount(PASSWORD, FAST_KDF);
   const user = { id: "u-1", email: EMAIL, name: "Ana" };
   const records: Rec[] = [];
-  const s = { access: "a0", refresh: "r0", seq: 0, requireCode: true, ssoOrg: null as string | null, calls: [] as { method: string; path: string; search: string; body: unknown; headers: Record<string, string>; url: string }[] };
+  const s = { access: "a0", refresh: "r0", seq: 0, requireCode: true, ssoOrg: null as string | null, calls: [] as { method: string; path: string; search: string; body: unknown; headers: Record<string, string>; url: string }[],
+    /** GET /me/agent-reveals: what it lists, or a 404 (feature off) / 403 (private-locked). */
+    reveals: { status: 200 as 200 | 403 | 404, requests: [] as { id: string; recordId: string; reason: string; agentName: string }[] } };
   const orgs: { id: string; name: string; slug: string; role: string; isDefault: boolean; policies?: Record<string, unknown> }[] =
     [{ id: ORG, name: "Acme", slug: "acme", role: "member", isDefault: true }, { id: ORG2, name: "Beta", slug: "beta", role: "member", isDefault: false }];
 
@@ -95,6 +97,7 @@ export async function fakeApi() {
     const org = headers["x-org-id"];
     if (org && s.ssoOrg === org) return json(403, { error: "sso_required", orgId: org });
     if (path === "/auth/totp/step-up") return json(200, { ok: true });
+    if (path === "/me/agent-reveals") return s.reveals.status === 200 ? json(200, { requests: s.reveals.requests, paused: [] }) : json(s.reveals.status, { error: s.reveals.status === 404 ? "not_found" : "totp_step_up_required" });
     if (path === "/sync") {
       // Spaces: no X-Org-Id = Personal (my own records); ?space=org = that org's only; X-Org-Id alone = both (older clients).
       const orgOnly = url.searchParams.get("space") === "org";
@@ -145,6 +148,8 @@ export function fakePlatform(fetch: typeof globalThis.fetch, tabs: Record<number
   const clock = { t: 1_800_000_000_000 };
   const fills: { tabId: number; origin: string; username: string | null; password: string | null }[] = [];
   const alarms: number[] = [];
+  const badges: string[] = [], notes: { id: string; message: string }[] = [];
+  let revealChecks = 0;
   let clipboardClears = 0;
   const p: Platform & { session: ReturnType<typeof memoryKV>; local: ReturnType<typeof memoryKV> } = {
     session: memoryKV(), local: memoryKV(), fetch, now: () => clock.t,
@@ -152,6 +157,9 @@ export function fakePlatform(fetch: typeof globalThis.fetch, tabs: Record<number
     fill: async (tabId, origin, username, password): Promise<FillResult> => { fills.push({ tabId, origin, username, password }); return { ok: true, filled: ["username", "password"] }; },
     armAutoLock: (m) => { alarms.push(m); },
     scheduleClipboardClear: () => { clipboardClears++; },
+    setBadge: (t) => { badges.push(t); },
+    notify: (id, message) => { notes.push({ id, message }); },
+    scheduleRevealCheck: () => { revealChecks++; },
   };
-  return { p, clock, fills, alarms, tabs, clipboardClears: () => clipboardClears };
+  return { p, clock, fills, alarms, tabs, badges, notes, clipboardClears: () => clipboardClears, revealChecks: () => revealChecks };
 }

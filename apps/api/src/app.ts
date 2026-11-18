@@ -45,6 +45,11 @@ import { DEMO_SWEEP_INTERVAL_MS, sweepExpiredDemos } from "./lib/demo.js";
 import { gatewayClient, GatewayIdentityChanged, GatewayUnavailable, type GatewayClient } from "./lib/gateway.js";
 import { AgentLimitError } from "./lib/agents.js";
 import { agentAdminRoutes, orgAgentRoutes } from "./routes/agents.js";
+import { myAgentRoutes } from "./routes/myAgents.js";
+import { agentGrantRoutes } from "./routes/agentGrants.js";
+import { agentDepositRoutes } from "./routes/agentDeposits.js";
+import { agentRevealAgentRoutes, agentRevealOwnerRoutes } from "./routes/agentReveals.js";
+import { sweepAgentWrites } from "./lib/personalAgents.js";
 import { registerAgent } from "./plugins/agent.js";
 import { agentApiRoutes } from "./routes/agentApi.js";
 import { authServerMetadata, oauthRoutes, sweepOAuthClients } from "./routes/oauth.js";
@@ -163,6 +168,13 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
       await api.register(orgAgentRoutes);
       await api.register(agentApiRoutes);
       await api.register(oauthRoutes);
+      if (opts.config.agents.personalAgents) {
+        await api.register(myAgentRoutes, { prefix: "/me/agents" });
+        await api.register(agentGrantRoutes);
+        await api.register(agentDepositRoutes);
+        await api.register(agentRevealOwnerRoutes);
+        await api.register(agentRevealAgentRoutes);
+      }
     }
   }, { prefix: apiPrefix(opts.config) });
   if (opts.config.agents) {
@@ -184,6 +196,8 @@ export async function buildApp(opts: { config: Config; prisma: PrismaClient; log
     opts.prisma.m365Connect.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     opts.prisma.agentOAuthCode.deleteMany({ where: { expiresAt: { lt: old } } }).catch((e: unknown) => app.log.error(e));
     sweepOAuthClients(opts.prisma).catch((e: unknown) => app.log.error(e));
+    // Unkept agent deposits after 90 days (spec §4.3).
+    if (opts.config.agents?.personalAgents) sweepAgentWrites(opts.prisma).catch((e: unknown) => app.log.error(e));
     // Attachments: abandoned uploads (24 h), removed files and purged S3 objects (docs/attachments.md).
     sweeper.run().catch((e: unknown) => app.log.error(e));
   }, SWEEP_INTERVAL_MS);

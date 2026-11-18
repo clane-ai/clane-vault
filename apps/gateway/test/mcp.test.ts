@@ -1,9 +1,10 @@
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RecordBody } from "@clane-vault/crypto";
+import { b64url, encryptRecordBody, generateKeyPair as generateX25519, randomBytes, sealPersonalAgentRecordKey, type RecordBody } from "@clane-vault/crypto";
 import { generateKeyPair, SignJWT } from "jose";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -28,7 +29,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); })
 
 const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> = {}): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, ...over,
+  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10, ...over,
 });
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
@@ -145,6 +146,15 @@ describe("bearerAuth", () => {
       (async () => Response.json({ issuer: "http://localhost:3001/app" })) as unknown as typeof fetch).issuer()).toBe("http://localhost:3001/app");
   });
 
+  it("a personal agent's JWT (owner, no org) verifies; one with both org and owner is refused", async () => {
+    const { api } = await fake();
+    const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
+    const jwt = await api.personal.token();
+    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.personal.agentId, orgId: null, ownerUserId: api.personal.ownerId, accessToken: jwt, exp: expect.any(Number) });
+    for (const t of [await api.personal.token({ org: api.agent.orgId }), await api.personal.token({ owner: undefined }), await api.personal.token({ owner: 7 })])
+      expect(await auth(`Bearer ${t}`)).toBeNull();
+  });
+
   it("a well-formed ES256 JWT with an unknown kid is refused (null), not 503", async () => {
     const { api } = await fake();
     const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
@@ -158,7 +168,7 @@ describe("bearerAuth", () => {
     const { api } = await fake();
     const auth = bearerAuth(cfgFor(api.url, api.token), apiClient({ apiUrl: api.url, apiToken: api.token }));
     const jwt = await api.issueToken({ grant: "an-agent-grant-id" });
-    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.agent.id, orgId: api.agent.orgId, accessToken: jwt, exp: expect.any(Number) });
+    expect(await auth(`Bearer ${jwt}`)).toEqual({ agentId: api.agent.id, orgId: api.agent.orgId, ownerUserId: null, accessToken: jwt, exp: expect.any(Number) });
     expect(api.tokenCalls).toBe(0);
   });
 
@@ -230,7 +240,7 @@ describe("RateLimiter", () => {
 });
 
 describe("EventQueue", () => {
-  const p: AgentPrincipal = { agentId: "a1", orgId: "o", accessToken: "tok", exp: 0 };
+  const p: AgentPrincipal = { agentId: "a1", orgId: "o", ownerUserId: null, accessToken: "tok", exp: 0 };
   const ev = (n: number): UseEvent => ({ at: String(n), action: "use", host: "h", method: "GET" });
   it("keeps the newest 200 per agent and sends them with the agent's token", async () => {
     const sent: [string, UseEvent[]][] = [];
@@ -283,9 +293,10 @@ describe("agentTools", () => {
     const log = createLogger(held, (l) => lines.push(l));
     const keys = new AgentKeyCache({ ttlMs: ttlSeconds * 1000, kek });
     const syncs = new SyncCache({ ttlMs: ttlSeconds * 1000, api: client });
-    const tools = agentTools({ cfg, keys, syncs, events: new EventQueue(client, log), log, held, resolve });
+    const identity = await loadOrCreateIdentity(join(tempDir(), "identity.json"), kek);
+    const tools = agentTools({ cfg, api: client, keys, syncs, events: new EventQueue(client, log), log, held, resolve, identity });
     const p = (await bearerAuth(cfg, client)(`Bearer ${api.staticToken}`))!;
-    return { api, keys, syncs, tools, p, lines };
+    return { api, keys, syncs, tools, p, lines, identity };
   }
 
   it("list_secrets gives handles and summary fields, never a secret or a record id", async () => {
@@ -323,23 +334,23 @@ describe("agentTools", () => {
   });
 
   it("an item that won't decrypt is not_found", async () => {
-    const { api, keys, p } = await setup();
+    const { api, keys, p, identity } = await setup();
     const id = await api.addFolderRecord("Payments", apiKey("Stripe", ["api.test"]));
     const client = apiClient({ apiUrl: api.url, apiToken: api.token });
     const good = await client.sync(p.accessToken);
     const bad = { ...good, records: good.records.map((r) => ({ ...r, encBody: r.encBody.slice(0, -8) + "AAAAAAAA" })) };
     const syncs = { get: async () => bad, drop: () => {} } as unknown as SyncCache;
-    const tools = agentTools({ cfg: cfgFor(api.url, api.token), keys, syncs, events: new EventQueue(client, quiet), log: quiet, held: new HeldSecrets(), resolve });
+    const tools = agentTools({ cfg: cfgFor(api.url, api.token), api: client, identity, keys, syncs, events: new EventQueue(client, quiet), log: quiet, held: new HeldSecrets(), resolve });
     expect(await tools.httpRequest(p, { item: id, method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "not_found" });
   });
 
   it("an unexpected error before the item opens is upstream_error, logged by class only", async () => {
-    const { api, keys, syncs, p, lines } = await setup();
+    const { api, keys, syncs, p, lines, identity } = await setup();
     await api.addFolderRecord("Payments", apiKey("Stripe", ["api.test"]));
     const client = apiClient({ apiUrl: api.url, apiToken: api.token });
     const held = { hold: () => { throw new TypeError(`odd ${SECRET}`); }, redact: (s: string) => s } as unknown as HeldSecrets;
     const log = createLogger(new HeldSecrets(), (l) => lines.push(l));
-    const tools = agentTools({ cfg: cfgFor(api.url, api.token), keys, syncs, events: new EventQueue(client, quiet), log, held, resolve });
+    const tools = agentTools({ cfg: cfgFor(api.url, api.token), api: client, identity, keys, syncs, events: new EventQueue(client, quiet), log, held, resolve });
     expect(await tools.httpRequest(p, { item: "payments/stripe", method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "upstream_error" });
     expect(lines.some((l) => l.includes('"class":"TypeError"'))).toBe(true);
     expect(lines.join("\n")).not.toContain(SECRET);
@@ -482,6 +493,16 @@ describe("MCP route gate", () => {
     expect((await post(url, call("list_secrets"), api.staticToken)).status).toBe(429);
   });
 
+  it("the 21st write in an hour is 429 with Retry-After; save_secret and update_secret share the window", async () => {
+    const { api, url } = await start();
+    const t = await api.personal.token();
+    for (let i = 0; i < 20; i++) expect((await post(url, call(i % 2 ? "save_secret" : "update_secret", i), t)).status).not.toBe(429);
+    const r = await post(url, call("save_secret"), t);
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(60); // the window is an hour
+    expect((await post(url, call("list_secrets"), t)).status).not.toBe(429);
+  });
+
   it("DELETE /internal/agents/:id drops the agent's key and sync caches", async () => {
     const { api, gw, int } = await start();
     const k = vi.spyOn(gw.keys, "drop"), s = vi.spyOn(gw.syncs, "drop");
@@ -511,6 +532,59 @@ describe("MCP endpoint", () => {
     const r = await client.callTool({ name: "list_secrets", arguments: {} });
     expect(result(r)).toEqual({ secrets: [expect.objectContaining({ handle: "payments/stripe", hosts: ["api.test"] })] });
     expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it("the agent skill names the tools, arguments and refusal reasons the gateway has", async () => {
+    const SKILL = readFileSync(join(import.meta.dirname, "../../../skills/clane-vault/SKILL.md"), "utf8");
+    const named = (kind: "Organisation" | "Personal") =>
+      [...SKILL.match(new RegExp(`^${kind} agents: (.+)$`, "m"))![1]!.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).sort();
+    const { api, url } = await start();
+    const org = (await (await connect(url, api.staticToken)).client.listTools()).tools;
+    const personal = (await (await connect(url, await api.personal.token())).client.listTools()).tools;
+    expect(named("Organisation")).toEqual(org.map((t) => t.name).sort());
+    expect(named("Personal")).toEqual(personal.map((t) => t.name).sort()); // five names after Phase C
+    for (const t of personal) for (const arg of Object.keys(t.inputSchema.properties ?? {})) expect(SKILL, `${t.name}.${arg}`).toContain("`" + arg + "`");
+    // RefuseReason (outbound/ssrf.ts), the reasons mcp.ts and items.ts return, the write reasons, and capture.refused's internal_error.
+    for (const reason of ["not_found", "no_policy", "host", "scheme", "ssrf", "method", "path", "timeout", "request_too_large", "upstream_error", "busy",
+      "owner_key_changed", "not_kept", "invalid", "not_writable", "conflict", "inbox_full", "internal_error",
+      "reveal_off", "field", "denied", "expired", "unverified"]) expect(SKILL).toContain("`" + reason + "`");
+  });
+
+  it("a personal agent: personal/ handles, the credential injected and scrubbed; a swapped owner key refuses both tools with no outbound call", async () => {
+    const { api, gw, url } = await start();
+    const seen: http.IncomingHttpHeaders[] = [];
+    const echo = http.createServer((req, res) => { seen.push(req.headers); req.resume(); req.on("end", () => res.end(`you sent ${req.headers.authorization}`)); });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    closers.push(() => new Promise((r) => { echo.closeAllConnections(); echo.close(() => r()); }));
+    const port = (echo.address() as AddressInfo).port;
+    const id = await api.personal.addRecord(apiKey("Echo", [`api.test:${port}`]));
+    const { client } = await connect(url, await api.personal.token());
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["get_secret", "http_request", "list_secrets", "save_secret", "update_secret"]);
+    expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "personal/echo", hosts: [`api.test:${port}`] })] });
+    const args = { item: "personal/echo", method: "GET", url: `http://api.test:${port}/v1` };
+    const r = result(await client.callTool({ name: "http_request", arguments: args }));
+    expect(seen[0]!.authorization).toBe(`Bearer ${SECRET}`);
+    expect(r).toMatchObject({ status: 200, body: "you sent Bearer [clane:redacted]" });
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+    expect(api.events).toEqual(expect.arrayContaining([expect.objectContaining({ action: "use", recordId: id })]));
+
+    api.events.length = 0;
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(result(await client.callTool({ name: "http_request", arguments: args }))).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(seen).toHaveLength(1);
+    expect(api.events).toEqual([{ at: expect.any(String), action: "refused", host: "api.test", method: "GET", reason: "owner_key_changed" }]);
+    expect(gw.keys.has(api.personal.agentId)).toBe(false);
+  });
+
+  it("an organisation agent has no write tools: save_secret is an unknown tool", async () => {
+    const { api, url } = await start();
+    const { client } = await connect(url, api.staticToken);
+    const r = await client.callTool({ name: "save_secret", arguments: { title: "x", type: "note" } }).catch((e: unknown) => ({ isError: true, thrown: String(e) }));
+    expect(r.isError).toBe(true);
+    expect(JSON.stringify(r)).toMatch(/not found/i);
+    expect(api.personal.writes).toEqual([]);
   });
 
   it("two connects with one static token make one exchange", async () => {
@@ -667,5 +741,199 @@ describe("MCP endpoint", () => {
     expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(await r.json()).toEqual({ error: "rate_limited" });
     await connect(url, api.staticToken); // a cache hit still works
+  });
+});
+
+describe("MCP endpoint, personal writes", () => {
+  const login = (title: string, password: string): RecordBody => ({ v: 2, type: "login", title, username: "bot", password,
+    agentPolicy: { v: 1, hosts: ["api.test"], inject: { kind: "basic" } } });
+  async function personal(over: Partial<GatewayConfig> = {}) {
+    const s = await start(over);
+    const { client } = await connect(s.url, await s.api.personal.token());
+    const tool = async (name: string, args: Record<string, unknown>) => result(await client.callTool({ name, arguments: args }));
+    return { ...s, client, tool };
+  }
+
+  it("save_secret makes a deposit the owner opens; list_secrets shows it as a deposit; http_request on it is not_kept", async () => {
+    const { api, tool } = await personal();
+    const r = await tool("save_secret", { title: "New Key", type: "apiKey", fields: { data: { secret: "sk_new_1" } }, agent_use: { hosts: ["api.test"], inject: { kind: "bearer" } } });
+    expect(r).toEqual({ item: "personal/new-key" });
+    const [d] = api.personal.deposits;
+    expect(await api.personal.open(d!.id)).toMatchObject({ title: "New Key", data: { secret: "sk_new_1" } });
+    expect(await tool("list_secrets", {})).toEqual({ secrets: [expect.objectContaining({ handle: "personal/new-key", deposit: true, can_update: true })] });
+    expect(await tool("http_request", { item: "personal/new-key", method: "GET", url: "https://api.test/" })).toEqual({ error: "refused", reason: "not_kept" });
+  });
+
+  it("update_secret on its own deposit bumps the revision at the API; a stale revision is conflict without a call", async () => {
+    const { api, tool } = await personal();
+    await tool("save_secret", { title: "Dep", type: "login", fields: { password: "p1" } });
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p2" } })).toEqual({ item: "personal/dep", revision: 2 });
+    expect(api.personal.deposits[0]!.revision).toBe(2);
+    expect((await api.personal.open(api.personal.deposits[0]!.id)).password).toBe("p2");
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p3" }, revision: 1 })).toEqual({ error: "refused", reason: "conflict" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret on a deposit whose key and body the API swapped (its own key, sealed to the agent) is not_found with no PUT", async () => {
+    const { api, tool } = await personal();
+    await tool("save_secret", { title: "Dep", type: "login", fields: { password: "p1" } });
+    const d = api.personal.deposits[0]!, fake = randomBytes(32);
+    d.encBody = await encryptRecordBody(d.id, { v: 2, type: "login", title: "Dep", password: "p1" }, fake);
+    d.agentSealedKey = await sealPersonalAgentRecordKey(fake, { ownerUserId: api.personal.ownerId, agentId: api.personal.agentId, recordId: d.id },
+      b64url.decode(api.personal.publicKey));
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p2" } })).toEqual({ error: "refused", reason: "not_found" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret on a record: without write it is not_writable with no PUT; with write the stored body has the new password", async () => {
+    const { api, tool } = await personal();
+    await api.personal.addRecord(login("Locked", "old_1"));
+    const id = await api.personal.addRecord(login("Open", "old_2"), undefined, true);
+    expect(await tool("update_secret", { item: "personal/locked", set: { password: "x" } })).toEqual({ error: "refused", reason: "not_writable" });
+    expect(api.personal.writes).toEqual([]);
+    expect(await tool("update_secret", { item: "personal/open", set: { password: "new_2" } })).toEqual({ item: "personal/open", revision: 2 });
+    expect(api.personal.writes.map((w) => `${w.method} ${w.path}`)).toEqual([`PUT /agent/records/${id}`]);
+    expect((await api.personal.open(id)).password).toBe("new_2");
+    expect(await tool("list_secrets", {})).toEqual({ secrets: expect.arrayContaining([expect.objectContaining({ handle: "personal/open", can_update: true })]) });
+    expect(await tool("update_secret", { item: "personal/nope", set: { password: "x" } })).toEqual({ error: "refused", reason: "not_found" });
+    expect(await tool("update_secret", { item: "personal/open", set: { data: { nope: "x" } } })).toEqual({ error: "refused", reason: "invalid" });
+  });
+
+  it("a stored body the strict read would change is invalid with no PUT: an invalid policy, an unknown field; a v1 body updates", async () => {
+    const { api, tool } = await personal();
+    const bad = { ...login("Bad Policy", "p"), agentPolicy: { v: 1, hosts: [], inject: { kind: "bearer" } } } as unknown as RecordBody;
+    await api.personal.addRecord(bad, undefined, true, true);
+    await api.personal.addRecord({ ...login("Newer", "p"), agentReveal: { fields: ["password"] } } as unknown as RecordBody, undefined, true, true);
+    const v1 = await api.personal.addRecord({ type: "login", title: "Old", username: "bot", password: "p" }, undefined, true, true);
+    expect(await tool("update_secret", { item: "personal/bad-policy", set: { password: "x" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/newer", set: { password: "x" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toEqual([]);
+    expect(await tool("update_secret", { item: "personal/old", set: { password: "x" } })).toEqual({ item: "personal/old", revision: 2 });
+    expect(await api.personal.open(v1)).toMatchObject({ v: 2, title: "Old", username: "bot", password: "x" });
+  });
+
+  it("update_secret with nothing to set is invalid with no call; save_secret never answers conflict", async () => {
+    const { api, tool } = await personal();
+    await api.personal.addRecord(login("Open", "p"), undefined, true);
+    for (const set of [{}, { data: {} }]) expect(await tool("update_secret", { item: "personal/open", set })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toEqual([]);
+    api.personal.refuseWrites("conflict");
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "internal_error" });
+  });
+
+  it("refusals: policy write off and an empty inbox without a call; the API's 409 inbox_full; an invalid body", async () => {
+    const { api, tool } = await personal({ cacheTtlSeconds: 0 });
+    api.personal.setPolicyWrite(false);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "not_writable" });
+    api.personal.setPolicyWrite(true);
+    api.personal.setInboxFree(0);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "inbox_full" });
+    expect(api.personal.writes).toEqual([]);
+    api.personal.setInboxFree(null);
+    api.personal.refuseWrites("inbox_full");
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "n" } })).toEqual({ error: "refused", reason: "inbox_full" });
+    api.personal.refuseWrites(null);
+    expect(await tool("save_secret", { title: "A", type: "note", fields: { notes: "x".repeat(60 * 1024) } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(1);
+  });
+
+  it("a swapped owner key: save_secret and update_secret answer owner_key_changed and the API receives no write", async () => {
+    const { api, gw, tool } = await personal();
+    await api.personal.addRecord(login("Open", "old"), undefined, true);
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(await tool("save_secret", { title: "A", type: "login", fields: { password: "p" } })).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(await tool("update_secret", { item: "personal/open", set: { password: "p" } })).toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(api.personal.writes).toEqual([]);
+  });
+});
+
+describe("MCP endpoint, env files", () => {
+  const CONTENT = "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=3000\n";
+  const envFile = (title: string, hosts: string[], secret = "env:STRIPE_KEY", content = CONTENT): RecordBody => ({ v: 2, type: "envFile", title,
+    data: { project: "billing", content }, agentPolicy: { v: 1, hosts, inject: { kind: "bearer" }, secret } });
+  async function personal() {
+    const s = await start();
+    const { client } = await connect(s.url, await s.api.personal.token());
+    const tool = async (name: string, args: Record<string, unknown>) => result(await client.callTool({ name, arguments: args }));
+    return { ...s, client, tool };
+  }
+
+  it("http_request injects the one entry, scrubs it from an echo; a policy naming an empty entry is no_policy", async () => {
+    const { api, tool } = await personal();
+    const seen: http.IncomingHttpHeaders[] = [];
+    const echo = http.createServer((req, res) => { seen.push(req.headers); req.resume(); req.on("end", () => res.end(`you sent ${req.headers.authorization}`)); });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    closers.push(() => new Promise((r) => { echo.closeAllConnections(); echo.close(() => r()); }));
+    const port = (echo.address() as AddressInfo).port;
+    await api.personal.addRecord(envFile("Billing", [`api.test:${port}`]));
+    await api.personal.addRecord(envFile("Empty", [`api.test:${port}`], "env:PORT", "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=\n"));
+    const list = await tool("list_secrets", {});
+    expect(list).toEqual({ secrets: expect.arrayContaining([expect.objectContaining({ handle: "personal/billing", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" })]) });
+    expect(JSON.stringify(list)).not.toContain("sk_live_ENVCANARY1");
+    const r = await tool("http_request", { item: "personal/billing", method: "GET", url: `http://api.test:${port}/v1` });
+    expect(seen[0]!.authorization).toBe("Bearer sk_live_ENVCANARY1");
+    expect(r).toMatchObject({ status: 200, body: "you sent Bearer [clane:redacted]" });
+    expect(JSON.stringify(r)).not.toContain("sk_live_ENVCANARY1");
+    expect(await tool("http_request", { item: "personal/empty", method: "GET", url: `http://api.test:${port}/v1` })).toEqual({ error: "refused", reason: "no_policy" });
+    expect(seen).toHaveLength(1);
+  });
+
+  it("save_secret saves an env file as a deposit; too large or a policy naming a missing entry is invalid with nothing posted", async () => {
+    const { api, tool } = await personal();
+    expect(await tool("save_secret", { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: CONTENT } } })).toEqual({ item: "personal/billing" });
+    expect((await api.personal.open(api.personal.deposits[0]!.id)).data?.content).toBe(CONTENT);
+    const list = await tool("list_secrets", {});
+    expect(list).toEqual({ secrets: [expect.objectContaining({ handle: "personal/billing", deposit: true, env_keys: ["STRIPE_KEY", "PORT"] })] });
+    expect(JSON.stringify(list)).not.toContain("sk_live_ENVCANARY1");
+    const n = api.personal.writes.length;
+    expect(await tool("save_secret", { type: "envFile", title: "Big", fields: { data: { content: `A=${"x".repeat(40 * 1024)}\n` } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("save_secret", { type: "envFile", title: "Nope", fields: { data: { content: CONTENT } },
+      agent_use: { hosts: ["api.test"], inject: { kind: "bearer" }, secret: "env:NOPE" } })).toEqual({ error: "refused", reason: "invalid" });
+    // No whole-file injection.
+    expect(await tool("save_secret", { type: "envFile", title: "Whole", fields: { data: { content: CONTENT } },
+      agent_use: { hosts: ["api.test"], inject: { kind: "bearer" }, secret: "data.content" } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret set.env sets entries in place and appends new ones; the policy stays; refusals send no PUT", async () => {
+    const { api, tool, client } = await personal();
+    const id = await api.personal.addRecord(envFile("Billing", ["api.test"]), undefined, true);
+    await api.personal.addRecord(envFile("Locked", ["api.test"]));
+    await api.personal.addRecord({ v: 2, type: "apiKey", title: "Key", data: { secret: "sk_other_1" } }, undefined, true);
+    const before = await api.personal.open(id);
+    expect(await tool("update_secret", { item: "personal/billing", set: { env: { STRIPE_KEY: "sk_live_ENVCANARY2", NEW: "a b" } } })).toEqual({ item: "personal/billing", revision: 2 });
+    const after = await api.personal.open(id);
+    expect(after.data?.content).toBe("STRIPE_KEY=sk_live_ENVCANARY2\nPORT=3000\nNEW='a b'\n");
+    expect(JSON.stringify(after.agentPolicy)).toBe(JSON.stringify(before.agentPolicy));
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/locked", set: { env: { PORT: "1" } } })).toEqual({ error: "refused", reason: "not_writable" });
+    expect(await tool("update_secret", { item: "personal/key", set: { env: { PORT: "1" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/billing", set: { env: { PORT: "1" }, data: { content: "X=1" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(await tool("update_secret", { item: "personal/billing", set: { data: { content: "PORT=1\n" } } })).toEqual({ error: "refused", reason: "invalid" });
+    expect(api.personal.writes).toHaveLength(n);
+    for (const env of [{ "BAD KEY": "1" }, {}]) expect((await client.callTool({ name: "update_secret", arguments: { item: "personal/billing", set: { env } } })).isError).toBe(true);
+  });
+
+  it("a swapped owner key: the env-file save_secret is owner_key_changed with no deposit", async () => {
+    const { api, gw, tool } = await personal();
+    api.personal.setOwnerPublicKey(b64url.encode((await generateX25519()).publicKey));
+    gw.keys.drop(api.personal.agentId); gw.syncs.drop(api.personal.agentId);
+    expect(await tool("save_secret", { type: "envFile", title: "Billing", fields: { data: { project: "billing", content: CONTENT } } }))
+      .toEqual({ error: "refused", reason: "owner_key_changed" });
+    expect(api.personal.writes).toEqual([]);
+    expect(api.personal.deposits).toEqual([]);
+  });
+
+  it("an organisation session lists exactly two tools and shows env_keys for an env file in a shared folder", async () => {
+    const { api, url } = await start();
+    await api.addFolderRecord("Billing", envFile("Prod", ["api.test"]));
+    const { client } = await connect(url, api.staticToken);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets"]);
+    const r = await client.callTool({ name: "list_secrets", arguments: {} });
+    expect(result(r)).toEqual({ secrets: [expect.objectContaining({ handle: "billing/prod", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" })] });
+    expect(JSON.stringify(r)).not.toContain("sk_live_ENVCANARY1");
   });
 });

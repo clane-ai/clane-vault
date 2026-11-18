@@ -33,7 +33,8 @@ async function refresh(): Promise<boolean> {
   return refreshing;
 }
 
-async function request<T>(method: string, path: string, body?: unknown, org?: string | null): Promise<T> {
+/** `quiet`: a step-up refusal is thrown to the caller only, never raised app-wide (a background poll). */
+async function request<T>(method: string, path: string, body?: unknown, org?: string | null, quiet = false): Promise<T> {
   let res = await raw(method, path, body, org);
   if (res.status === 401 && !path.startsWith("/auth/")) {
     if (await refresh()) res = await raw(method, path, body, org);
@@ -45,7 +46,7 @@ async function request<T>(method: string, path: string, body?: unknown, org?: st
   if (res.status === 403 && (data as { error?: string } | null)?.error === "org_forbidden" && (org === undefined || org === orgId)) orgForbidden();
   // The org requires its single sign-on and this session didn't come from it: the app offers "Sign in with <org> SSO".
   // The session skipped the authenticator code (trusted IdP MFA): other orgs and the private vault need a TOTP step-up.
-  if (res.status === 403 && (data as { error?: string } | null)?.error === "totp_step_up_required") stepUpRequired();
+  if (res.status === 403 && !quiet && (data as { error?: string } | null)?.error === "totp_step_up_required") stepUpRequired();
   if (res.status === 403 && (data as { error?: string } | null)?.error === "sso_required") { const o = (data as { orgId?: string }).orgId ?? (org === undefined ? orgId : org); if (o) ssoRequired(o); }
   if (!res.ok) throw new ApiError(res.status, (data as { error?: string } | null)?.error ?? "server_error", data);
   return data as T;
@@ -127,6 +128,8 @@ export const api = {
   /** Pins the requests to the org that's active right now. */
   pinned: (): OrgApi => forOrg(orgId),
   get: <T>(p: string) => request<T>("GET", p),
+  /** A background GET outside any org: a 403 step-up refusal is the caller's to handle (it stops the poll), not the app's. */
+  poll: <T>(p: string) => request<T>("GET", p, undefined, null, true),
   post: <T>(p: string, b?: unknown) => request<T>("POST", p, b ?? {}),
   put: <T>(p: string, b: unknown) => request<T>("PUT", p, b),
   patch: <T>(p: string, b: unknown) => request<T>("PATCH", p, b),

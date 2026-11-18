@@ -11,7 +11,7 @@ sign-on organisations that choose it, the provider's two-step check.
 a server with three attached files, a software licence and Wi-Fi networks](docs/images/vault.webp)
 
 - Shared folders with Edit, View or Use only access per person or group, and a Personal space for each person.
-- 14 record types, such as logins, payment cards, bank accounts, servers, databases, SSH and API keys, Wi-Fi,
+- 15 record types, such as logins, payment cards, bank accounts, servers, databases, SSH and API keys, Wi-Fi,
   licences and identity documents, with custom fields. The record type is encrypted; the server sees only whether a
   record is a login or another item.
 - Encrypted file attachments up to 100 MB each, with in-app preview for images, PDFs and text.

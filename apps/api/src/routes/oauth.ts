@@ -1,11 +1,14 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { logEvent } from "../lib/events.js";
+import { reqMeta, revokeGrant } from "../lib/agentAdmin.js";
 import { agentJwks, hashToken, signAgentAccess, splitRefresh } from "../lib/tokens.js";
 import { fromGateway } from "../plugins/agent.js";
+import { isPrivateLocked } from "../lib/privateLock.js";
+import { logLifecycle, personalAgentRules } from "../lib/personalAgents.js";
 
 const STATIC = /^cvat_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_[A-Za-z0-9_-]{43}$/;
 type Form = Record<string, string | undefined>;
@@ -67,7 +70,6 @@ export function refreshGenOf(cfg: Config, grantId: string, current: number, secr
 }
 
 const isUuid = (s: unknown): s is string => typeof s === "string" && z.string().uuid().safeParse(s).success;
-export const reqMeta = (req: FastifyRequest) => ({ ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) });
 
 /** https, or http on loopback (native and CLI clients); never a fragment. */
 function redirectAllowed(raw: string): boolean {
@@ -81,20 +83,6 @@ function redirectAllowed(raw: string): boolean {
 export const grantableAgent = (now: Date): Prisma.AgentWhereInput =>
   ({ revokedAt: null, verifiedAt: { not: null }, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], user: { status: "active" } });
 
-/** Ends a live grant once (the claim logs and drops the gateway's cache); a second call does nothing. */
-export async function revokeGrant(app: FastifyInstance, where: Prisma.AgentGrantWhereInput, ev: { actorId?: string; reason?: string; req: FastifyRequest }): Promise<boolean> {
-  const g = await app.prisma.agentGrant.findFirst({ where: { ...where, revokedAt: null }, select: { id: true, agentId: true, agent: { select: { orgId: true } } } });
-  if (!g) return false;
-  const done = await app.prisma.$transaction(async (tx) => {
-    if ((await tx.agentGrant.updateMany({ where: { id: g.id, revokedAt: null }, data: { revokedAt: new Date() } })).count !== 1) return false;
-    await logEvent(tx, { orgId: g.agent.orgId, actorId: ev.actorId, action: "agent.grant_revoke", targetUserId: g.agentId,
-      meta: { grantId: g.id, ...(ev.reason ? { reason: ev.reason } : {}) }, ...reqMeta(ev.req) });
-    return true;
-  });
-  // Preflight #11: the gateway forgets its cached keys now rather than in 60 s (best effort).
-  if (done) app.gateway.dropAgent(g.agentId).catch(() => undefined);
-  return done;
-}
 type Grant = (req: FastifyRequest, reply: FastifyReply, form: Form) => Promise<unknown>;
 
 /** OAuth for agents (docs/agents.md), RFC 6749 error bodies. Registered only when agents are on. */
@@ -138,19 +126,39 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const rows = await app.prisma.agent.findMany({ where: { ...grantableAgent(new Date()),
       org: { memberships: { some: { userId: req.auth.userId, status: "active", role: { in: ["owner", "admin"] } } } } },
       orderBy: { createdAt: "asc" }, select: { userId: true, orgId: true, user: { select: { name: true } }, org: { select: { name: true } } } });
-    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org.name })) };
+    // The caller's own personal agents, unless the session is confined to one organisation or the rules say no.
+    const personal = !isPrivateLocked(req) && (await personalAgentRules(app.prisma, app.config, req.auth.userId)).allowed
+      ? await app.prisma.agent.findMany({ where: { ...grantableAgent(new Date()), ownerUserId: req.auth.userId }, orderBy: { createdAt: "asc" }, select: { userId: true, user: { select: { name: true } } } })
+      : [];
+    return { client: { name: c.name }, issuer: app.config.publicUrl, agents: [
+      ...rows.map((a) => ({ id: a.userId, name: a.user.name, orgId: a.orgId, orgName: a.org?.name ?? null })),
+      ...personal.map((a) => ({ id: a.userId, name: a.user.name, orgId: null, orgName: null, personal: true })),
+    ] };
   });
 
-  /** Consent by an owner or admin of the agent's org (X-Org-Id, so that org's SSO and IP policies apply). */
-  app.post("/oauth/authorize", { config: PER_MINUTE, preHandler: [app.requireAuth, app.orgAdmin] }, async (req, reply) => {
+  /**
+   * Consent by an owner or admin of the agent's org (X-Org-Id, so that org's SSO and IP policies apply), or for a
+   * personal agent by its owner (no organisation context).
+   */
+  app.post("/oauth/authorize", { config: PER_MINUTE, preHandler: app.requireAuth }, async (req, reply) => {
     const b = z.object({ clientId: z.string(), redirectUri: z.string(), codeChallenge: z.string().regex(CHALLENGE), codeChallengeMethod: z.literal("S256"),
       state: z.string().max(1000).optional(), resource: z.string().optional(), agentId: z.string().uuid() }).parse(req.body);
     const c = await clientFor(b.clientId, b.redirectUri);
     if (typeof c === "string") return reply.code(400).send({ error: c });
     if (badResource(b.resource)) return reply.code(400).send({ error: "invalid_target" });
     const now = new Date();
-    const a = await app.prisma.agent.findFirst({ where: { userId: b.agentId, orgId: req.org!.id, revokedAt: null, user: { status: "active" } }, select: { verifiedAt: true, expiresAt: true } });
+    const a = await app.prisma.agent.findFirst({ where: { userId: b.agentId, revokedAt: null, user: { status: "active" } }, select: { verifiedAt: true, expiresAt: true, orgId: true, ownerUserId: true } });
     if (!a) return reply.code(400).send({ error: "invalid_request" });
+    if (a.ownerUserId) {
+      if (a.ownerUserId !== req.auth.userId) return reply.code(400).send({ error: "invalid_request" });
+      if (isPrivateLocked(req)) return reply.code(403).send({ error: "totp_step_up_required" });
+      const rules = await personalAgentRules(app.prisma, app.config, req.auth.userId);
+      if (!rules.allowed) return reply.code(403).send({ error: "personal_agents_disabled", orgId: rules.blockedByOrgId ?? undefined });
+    } else {
+      await app.orgAdmin(req, reply);
+      if (reply.sent) return reply;
+      if (a.orgId !== req.org!.id) return reply.code(400).send({ error: "invalid_request" });
+    }
     if (a.expiresAt && a.expiresAt <= now) return reply.code(403).send({ error: "agent_expired" });
     if (!a.verifiedAt) return reply.code(403).send({ error: "agent_unverified" });
     const code = randomBytes(32).toString("base64url");
@@ -186,12 +194,12 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const now = new Date();
     const row = id ? await app.prisma.agentToken.findFirst({
       where: { id, revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], agent: { revokedAt: null, user: { status: "active" } } },
-      select: { id: true, tokenHash: true, agentId: true, agent: { select: { orgId: true } } },
+      select: { id: true, tokenHash: true, agentId: true, agent: { select: { orgId: true, ownerUserId: true } } },
     }) : null;
     const presented = Buffer.from(hashToken(form.token), "hex"), stored = Buffer.from(row?.tokenHash ?? "", "hex");
     if (!row || stored.length !== presented.length || !timingSafeEqual(stored, presented)) return reply.code(400).send({ error: "invalid_grant" });
     await app.prisma.agentToken.update({ where: { id: row.id }, data: { lastUsedAt: now } });
-    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: row.agent.orgId, grant: row.id });
+    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: row.agent.orgId, ownerUserId: row.agent.ownerUserId, grant: row.id });
     return { access_token: token, token_type: "Bearer", expires_in: expiresIn };
   };
   const invalidGrant = (reply: FastifyReply) => reply.code(400).send({ error: "invalid_grant" });
@@ -210,17 +218,18 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     if (!pkceOk || row.expiresAt <= now || row.clientId !== clientId || row.redirectUri !== redirectUri) return invalidGrant(reply);
     const client = await app.prisma.agentOAuthClient.findUnique({ where: { id: row.clientId }, select: { name: true } });
     const refresh = refreshFor(app.config, id, 0);
-    const orgId = await app.prisma.$transaction(async (tx) => {
+    const agent = await app.prisma.$transaction(async (tx) => {
       // Single use: of two concurrent exchanges only one claims the code.
       if ((await tx.agentOAuthCode.updateMany({ where: { codeHash, usedAt: null }, data: { usedAt: now } })).count !== 1) return null;
-      const a = await tx.agent.findFirst({ where: { userId: row.agentId, ...grantableAgent(now) }, select: { orgId: true } });
+      const a = await tx.agent.findFirst({ where: { userId: row.agentId, ...grantableAgent(now) }, select: { orgId: true, ownerUserId: true } });
       if (!a || !client) return null;
       await tx.agentGrant.create({ data: { id, agentId: row.agentId, clientId: row.clientId, grantedById: row.grantedById, refreshHash: refresh.hash, expiresAt: new Date(now.getTime() + GRANT_TTL_MS) } });
-      await logEvent(tx, { orgId: a.orgId, actorId: row.grantedById, action: "agent.grant", targetUserId: row.agentId, meta: { clientName: client.name, grantId: id }, ...reqMeta(req) });
-      return a.orgId;
+      await logEvent(tx, { orgId: a.orgId ?? undefined, actorId: row.grantedById, action: "agent.grant", targetUserId: row.agentId, meta: { clientName: client.name, grantId: id }, ...reqMeta(req) });
+      if (a.ownerUserId) await logLifecycle(tx, a.ownerUserId, "connect", row.agentId);
+      return a;
     });
-    if (!orgId) return invalidGrant(reply);
-    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId, grant: id });
+    if (!agent) return invalidGrant(reply);
+    const { token, expiresIn } = await signAgentAccess(app.config, { agentId: row.agentId, orgId: agent.orgId, ownerUserId: agent.ownerUserId, grant: id });
     return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refresh.token };
   };
 
@@ -236,7 +245,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     // client_id is a uuid column: anything else would be a database error, not a refusal.
     if (!p || !isUuid(form.client_id)) return invalidGrant(reply);
     const load = () => app.prisma.agentGrant.findFirst({ where: { id: p.sessionId, clientId: form.client_id },
-      select: { id: true, agentId: true, refreshGen: true, rotatedAt: true, revokedAt: true, expiresAt: true, agent: { select: { orgId: true } } } });
+      select: { id: true, agentId: true, refreshGen: true, rotatedAt: true, revokedAt: true, expiresAt: true, agent: { select: { orgId: true, ownerUserId: true } } } });
     type Row = NonNullable<Awaited<ReturnType<typeof load>>>;
     const live = async (g: Row) => !g.revokedAt && g.expiresAt > new Date()
       && !!(await app.prisma.agent.findFirst({ where: { userId: g.agentId, ...grantableAgent(new Date()) }, select: { userId: true } }));
@@ -245,7 +254,7 @@ export const oauthRoutes: FastifyPluginAsync = async (app) => {
     const gen = refreshGenOf(app.config, g.id, g.refreshGen, p.secret);
     if (gen === null) return invalidGrant(reply); // a stranger's guess never ends someone's grant
     const sign = async (r: Row, refreshToken: string) => {
-      const { token, expiresIn } = await signAgentAccess(app.config, { agentId: r.agentId, orgId: r.agent.orgId, grant: r.id });
+      const { token, expiresIn } = await signAgentAccess(app.config, { agentId: r.agentId, orgId: r.agent.orgId, ownerUserId: r.agent.ownerUserId, grant: r.id });
       return { access_token: token, token_type: "Bearer", expires_in: expiresIn, refresh_token: refreshToken };
     };
     if (gen === g.refreshGen) {

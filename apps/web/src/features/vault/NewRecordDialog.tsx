@@ -25,8 +25,8 @@ export const startFolder = (folders: VaultFolder[], folderId: string | null | un
  * Step one of a new record (Keeper's "New Record"): where it goes, what kind it is and its title. Next hands these to
  * the full editor; nothing is created until the editor saves.
  */
-export function NewRecordDialog({ open, folders, folderId, noFolder = true, onNext, onCancel }: {
-  open: boolean; folders: VaultFolder[];
+export function NewRecordDialog({ open, folders, folderId, noFolder = true, type = "login", onNext, onCancel }: {
+  open: boolean; folders: VaultFolder[]; /** The type chosen to start with. */ type?: RecordType;
   /** "No folder" is a location (Personal); in an organisation records go into its shared folders. */ noFolder?: boolean;
   /** The folder open in the vault list: the default location. */ folderId?: string | null;
   onNext: (start: NewRecordStart) => void; onCancel: () => void;
@@ -34,14 +34,14 @@ export function NewRecordDialog({ open, folders, folderId, noFolder = true, onNe
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
       {/* Remounted on every open: it starts from the folder open now, with an empty title. */}
-      {open && <NewRecordForm folders={folders} folderId={startFolder(folders, folderId, noFolder)} noFolder={noFolder} onNext={onNext} onCancel={onCancel} />}
+      {open && <NewRecordForm folders={folders} folderId={startFolder(folders, folderId, noFolder)} noFolder={noFolder} type={type} onNext={onNext} onCancel={onCancel} />}
     </Dialog>
   );
 }
 
-function NewRecordForm({ folders, folderId, noFolder, onNext, onCancel }: { folders: VaultFolder[]; folderId: string | null; noFolder: boolean; onNext: (s: NewRecordStart) => void; onCancel: () => void }) {
+function NewRecordForm({ folders, folderId, noFolder, type: startType, onNext, onCancel }: { folders: VaultFolder[]; folderId: string | null; noFolder: boolean; type: RecordType; onNext: (s: NewRecordStart) => void; onCancel: () => void }) {
   const [folder, setFolder] = useState<string | null>(folderId);
-  const [type, setType] = useState<RecordType>("login");
+  const [type, setType] = useState<RecordType>(startType);
   const [title, setTitle] = useState("");
   const titleRef = useRef<HTMLInputElement>(null);
   const live = folders.filter(canFileInto);

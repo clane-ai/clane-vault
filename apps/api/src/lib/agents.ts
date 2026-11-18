@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import type { Config } from "../config.js";
 import type { Db } from "./access.js";
+import type { GatewayIdentityInfo } from "./gateway.js";
 import { orgEntitlements } from "./plans.js";
 import { lockSeats } from "./seats.js";
 
@@ -40,3 +41,35 @@ export async function agentAttestations(db: Db, agentIds: string[]): Promise<Map
   const rows = await db.agent.findMany({ where: { userId: { in: agentIds } }, select: { userId: true, attestation: true } });
   return new Map(rows.map((r) => [r.userId, { attestation: r.attestation, gatewayKeyId: r.attestation.split(".")[1] ?? "" }]));
 }
+
+/** "<tag>.<keyId>.<sig>": Ed25519 over `message` by the pinned gateway identity (packages/crypto verifyGatewayMessage, which the API can't load at runtime). */
+export function gatewaySigned(sig: string, tag: "g1" | "d1" | "u1" | "q1", message: string, identity: GatewayIdentityInfo): boolean {
+  const [t, keyId, s, ...rest] = sig.split(".");
+  if (t !== tag || rest.length || !s || keyId !== identity.keyId) return false;
+  try {
+    return verify(null, Buffer.from(message, "utf8"), createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: identity.publicKey }, format: "jwk" }), Buffer.from(s, "base64url"));
+  } catch { return false; }
+}
+
+/** An organisation agent's attestation: "agent-key:<orgId>:<agentId>:<publicKey>". */
+export const attestationOk = (att: string, ids: { orgId: string; agentId: string; publicKey: string }, identity: GatewayIdentityInfo): boolean =>
+  gatewaySigned(att, "g1", `agent-key:${ids.orgId}:${ids.agentId}:${ids.publicKey}`, identity);
+
+/** A personal agent's attestation: "personal-agent-key:<ownerUserId>:<ownerPublicKey>:<agentId>:<publicKey>". */
+export const personalAttestationOk = (att: string, i: { ownerUserId: string; ownerPublicKey: string; agentId: string; publicKey: string }, identity: GatewayIdentityInfo): boolean =>
+  gatewaySigned(att, "g1", `personal-agent-key:${i.ownerUserId}:${i.ownerPublicKey}:${i.agentId}:${i.publicKey}`, identity);
+
+/** sha256B64 from @clane-vault/crypto: base64url(SHA-256(UTF-8)). */
+export const sha256B64 = (text: string): string => createHash("sha256").update(text, "utf8").digest("base64url");
+
+/** agentDepositMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const depositMessage = (m: { ownerUserId: string; ownerPublicKey: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
+  `agent-deposit:${m.ownerUserId}:${m.ownerPublicKey}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+
+/** agentUpdateMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const updateMessage = (m: { ownerUserId: string; agentId: string; id: string; revision: number; encBodyHash: string }): string =>
+  `agent-update:${m.ownerUserId}:${m.agentId}:${m.id}:${m.revision}:${m.encBodyHash}`;
+
+/** agentRevealRequestMessage from @clane-vault/crypto (a test pins them byte for byte). */
+export const revealRequestMessage = (m: { requestId: string; ownerUserId: string; agentId: string; recordId: string; fields: string[]; requestPublicKey: string; expiresAt: string }): string =>
+  `agent-reveal-request:${m.requestId}:${m.ownerUserId}:${m.agentId}:${m.recordId}:${[...m.fields].sort().join(",")}:${m.requestPublicKey}:${m.expiresAt}`;

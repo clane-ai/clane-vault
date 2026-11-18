@@ -32,11 +32,15 @@ describe("session security", () => {
     await mockAccount("pw pw pw pw");
     const { result } = renderHook(() => useSession(), { wrapper });
     await act(() => result.current.signIn("sara@clane.ai", "pw pw pw pw", "123456"));
-    const k1 = new Uint8Array(32).fill(7);
+    const k1 = new Uint8Array(32).fill(7), d1 = new Uint8Array(32).fill(7);
     qc.setQueryData(["vault", "u1"], { folders: [], records: [{ recordKey: k1 }] });
+    // From agents: opened deposits hold their record keys and bodies too.
+    qc.setQueryData(["agent-inbox", "u1"], [{ ok: true, recordKey: d1, body: { title: "x" } }]);
     act(() => result.current.lock());
     expect(qc.getQueryData(["vault", "u1"])).toBeUndefined();
     expect(k1.every((b) => b === 0)).toBe(true);
+    expect(qc.getQueryData(["agent-inbox", "u1"])).toBeUndefined();
+    expect(d1.every((b) => b === 0)).toBe(true);
     await act(() => result.current.unlock("pw pw pw pw"));
     const k2 = new Uint8Array(32).fill(7);
     qc.setQueryData(["vault", "u1"], { folders: [], records: [{ recordKey: k2 }] });

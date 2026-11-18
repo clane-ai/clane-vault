@@ -3,6 +3,7 @@ import {
   encryptNewRecord, decryptRecord, randomBytes, type RecordBody, aeadEncrypt, utf8,
   MAX_BODY_BYTES, MAX_CUSTOM_FIELDS, RECORD_TYPES, RECORD_TYPE_DEFS, RECORD_TYPE_GROUPS, serverRecordType, luhnValid, cardBrand, expiryValid, normalizeRecordBody, isSecretKind,
 } from "../src/index.js";
+import { FILE } from "./envFixture.js";
 
 describe("record types (v2 bodies)", () => {
   const userKey = randomBytes(32);
@@ -111,6 +112,13 @@ describe("record types (v2 bodies)", () => {
       expect(f.core).toBeUndefined();
       expect(isSecretKind(f.kind)).toBe(true);
     }
+  });
+
+  it("an env file: the server sees item, the text round-trips verbatim, limits and unknown keys are refused", async () => {
+    expect(serverRecordType({ type: "envFile" })).toBe("item");
+    expect((await rt({ type: "envFile", title: "T", data: { project: "billing", content: FILE } })).data).toEqual({ project: "billing", content: FILE });
+    expect(() => normalizeRecordBody({ type: "envFile", title: "T", data: { content: "A=" + "x".repeat(32_767) } })).toThrow("too large");
+    expect(() => normalizeRecordBody({ type: "envFile", title: "T", data: { nope: "x" } })).toThrow();
   });
 
   it("card helpers: Luhn, brand, expiry", () => {

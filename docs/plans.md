@@ -27,6 +27,11 @@ This is what the server enforces today.
 | Admin account recovery | | no | yes |
 | Risk dashboard | | no | yes |
 | Organisation logo | | no | yes |
+| Personal agents, per person | 1 | 2 | 5 |
+
+Personal agents (`docs/agents.md`) sit outside the organisation's agent bundle: a member's own agents never use up the
+agents the admins plan. A person in several organisations gets the highest allowance among them, then the strictest
+policy cap applies. Self-hosted, up to 20 per person (the hard ceiling).
 
 Seats are active members plus pending invitations, counted once per email address. Disabled members don't count.
 

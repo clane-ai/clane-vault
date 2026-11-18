@@ -86,4 +86,18 @@ describe("RecordPanel", () => {
     expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
     expect(screen.getByText(/Shared by Ana/)).toBeInTheDocument();
   });
+
+  it("an env file changed by an agent lists the changed keys once the previous version loads, never a value", async () => {
+    const env: VaultRecord = { ...record, type: "item", revision: 2,
+      body: { type: "envFile", title: "Billing", data: { project: "billing", fileName: ".env", content: "A=1\nB=3\nC=4\n" } },
+      agentChange: { agentId: "a1", agentName: "My bot", at: "2026-11-16T10:00:00Z", signature: "", signed: true } };
+    const previousBody = vi.fn(async () => ({ type: "envFile" as const, title: "Billing", data: { content: "A=1\nB=2\nD=4\n" } }));
+    render(<RecordPanel record={env} folderName={null} onClose={vi.fn()} onEdit={vi.fn()} onTrash={vi.fn()} previousBody={previousBody} onRestorePrevious={vi.fn()} />);
+    const banner = screen.getByRole("note", { name: "Changed by agent" });
+    await waitFor(() => expect(banner).toHaveTextContent("Changed: B"));
+    expect(banner).toHaveTextContent("Added: C");
+    expect(banner).toHaveTextContent("Removed: D");
+    expect(banner).not.toHaveTextContent("=");
+    expect(previousBody).toHaveBeenCalledTimes(1);
+  });
 });

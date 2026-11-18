@@ -71,8 +71,21 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
     (x.holderType === "user" && x.permission === "owner") || (x.holderType === "folder" && x.holderId === r.folderId && ownedTeams.has(x.holderId)));
   const ownedIds = records.filter(isMine).map((r) => r.id);
   const shares = ownedIds.length
-    ? await db.recordAccess.findMany({ where: { recordId: { in: ownedIds }, holderType: "user", permission: { not: "owner" }, orgId }, select: { recordId: true, holderId: true, permission: true, sealedTo: true } })
+    ? await db.recordAccess.findMany({ where: { recordId: { in: ownedIds }, holderType: "user", permission: { not: "owner" }, orgId }, select: { recordId: true, holderId: true, permission: true, sealedTo: true, agentWrite: true } })
     : [];
+  // The Personal space: rows held by the owner's personal agents are per-item grants (agentGrants), never shares (R9).
+  const personalAgentIds = !orgId && shares.length
+    ? new Set((await db.agent.findMany({ where: { userId: { in: [...new Set(shares.map((s) => s.holderId))] }, ownerUserId: { not: null } }, select: { userId: true } })).map((a) => a.userId))
+    : new Set<string>();
+  // *Can reveal* stubs on my private records: an agent holding only a stub is listed with use false.
+  const stubs = !orgId && ownedIds.length ? await db.agentRevealGrant.findMany({ where: { recordId: { in: ownedIds } }, orderBy: { createdAt: "asc" }, select: { recordId: true, agentId: true, fields: true } }) : [];
+  const agentGrantsOf = (recordId: string) => {
+    const out = shares.filter((s) => s.recordId === recordId && personalAgentIds.has(s.holderId))
+      .map((s) => ({ agentId: s.holderId, use: true, write: s.agentWrite, ...revealOf(recordId, s.holderId) }));
+    for (const s of stubs) if (s.recordId === recordId && !out.some((g) => g.agentId === s.agentId)) out.push({ agentId: s.agentId, use: false, write: false, reveal: s.fields });
+    return out;
+  };
+  const revealOf = (recordId: string, agentId: string) => { const s = stubs.find((x) => x.recordId === recordId && x.agentId === agentId); return s ? { reveal: s.fields } : {}; };
   const shareLive = orgId ? await liveKeys(db, orgId, shares.map((s) => s.holderId)) : new Set<string>();
   // The Personal space: which of my orgs each of my records is shared in (managed there).
   const sharedIn = new Map<string, string[]>();
@@ -86,12 +99,25 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
   // Files on every record in the response: ciphertext metadata only (docs/design/2026-10-12-attachments.md §6.1).
   const files = await readyAttachments(db, attachmentConfig(cfg).enabled ? records.map((r) => r.id) : []);
 
+  // The Personal space: how many agent deposits wait in the inbox (never the deposits: they are not records yet), and
+  // whose kept deposit each record was (provenance; the agent's name is looked up, the column outlives the agent).
+  const personal = !orgId && !locked && !!cfg.agents?.personalAgents;
+  const agentInbox = personal ? await db.agentDeposit.count({ where: { ownerUserId: userId } }) : 0;
+  // *Changed by agent*: the newest unacknowledged overwrite of my record, while nobody has saved it since (newRevision is current).
+  const changes = personal && ownedIds.length ? (await db.recordAgentOverwrite.findMany({ where: { recordId: { in: ownedIds }, ackedAt: null },
+    orderBy: { newRevision: "desc" }, distinct: ["recordId"], select: { recordId: true, agentId: true, newRevision: true, signature: true, createdAt: true } }))
+    .filter((o) => records.find((r) => r.id === o.recordId)!.revision === o.newRevision) : [];
+  const creators = personal ? new Map((await db.user.findMany({ where: { id: { in: [...new Set([...records.flatMap((r) => (r.createdByAgentId ? [r.createdByAgentId] : [])),
+    ...changes.map((o) => o.agentId)])] } }, select: { id: true, name: true } })).map((u) => [u.id, u.name])) : new Map<string, string>();
+  const agentChange = new Map(changes.map((o) => [o.recordId, { agentId: o.agentId, agentName: creators.get(o.agentId) ?? "", at: o.createdAt.toISOString(), signature: o.signature }]));
+
   const membersOf = new Map<string, typeof members>();
   for (const m of members) membersOf.set(m.folderId, [...(membersOf.get(m.folderId) ?? []), m]);
 
   return {
     serverTime: new Date().toISOString(),
     ...(locked && !orgOnly ? { privateLocked: true } : {}),
+    ...(personal ? { agentInbox } : {}),
     ...(orgId ? { orgId, membershipKeys: myKeys } : {}),
     folders: folders.map((f) => ({
       id: f.id, kind: f.kind, encName: f.encName, ownerId: f.ownerId, deletedAt: f.deletedAt?.toISOString() ?? null,
@@ -123,8 +149,11 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         keyFolderId: holder.holderType === "folder" ? holder.holderId : null,
         ...(holder.holderType === "user" && holder.permission !== "owner" ? { sealedTo: holder.sealedTo } : {}),
         ownerId: r.ownerId, ownerName: r.owner.name,
-        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
+        ...(isOwner && !orgId ? { agentGrants: agentGrantsOf(r.id) } : {}),
+        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
+        ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "", at: r.createdAt.toISOString() } } : {}),
+        ...(agentChange.has(r.id) ? { agentChange: agentChange.get(r.id)! } : {}),
         ...(!isOwner && own ? { sharedBy: r.owner.name } : {}),
         attachments: (files.rows.get(r.id) ?? []).map((a) => attachmentView(a, files.names, permission!)),
       };

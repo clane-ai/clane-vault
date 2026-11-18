@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { MembershipKeys, RecordBody } from "@clane-vault/crypto";
-import { apiClient, type AgentSync } from "../src/apiClient.js";
+import { apiClient, type OrgAgentSync } from "../src/apiClient.js";
 import { AgentKeyCache } from "../src/keys.js";
 import { listItems, withItem } from "../src/items.js";
 import { HeldSecrets, type Logger } from "../src/log.js";
@@ -13,7 +13,7 @@ const apiKey = (title: string, secret: string, withPolicy = true): RecordBody =>
 });
 
 let api: Awaited<ReturnType<typeof startFakeApi>>;
-let sync: AgentSync, keys: MembershipKeys, cache: AgentKeyCache;
+let sync: OrgAgentSync, keys: MembershipKeys, cache: AgentKeyCache;
 const ids: Record<string, string> = {};
 const SECRETS = ["sk_pay_1", "sk_ops_2", "ghp_3", "sk_pay_4", "sk_nopol_5"];
 
@@ -26,7 +26,7 @@ beforeAll(async () => {
     agentPolicy: { v: 1, hosts: ["api.github.com"], inject: { kind: "basic" } } });
   ids.pay2 = await api.addFolderRecord("Payments", apiKey("Stripe", "sk_pay_4"));
   ids.nopol = await api.addFolderRecord("Ops", apiKey("Legacy", "sk_nopol_5", false));
-  sync = await apiClient({ apiUrl: api.url, apiToken: api.token }).sync(await api.issueToken());
+  sync = await apiClient({ apiUrl: api.url, apiToken: api.token }).sync(await api.issueToken()) as OrgAgentSync;
   cache = new AgentKeyCache({ ttlMs: 60_000, kek });
   keys = await cache.open(api.agent.id, sync);
 });
@@ -88,6 +88,46 @@ describe("listItems", () => {
   });
 });
 
+describe("listItems, personal agent", () => {
+  it("names items personal/<title>, numbers collisions, and skips a record sealed for another agent", async () => {
+    const kek = await fileKek();
+    const papi = await startFakeApi({ kek });
+    try {
+      const a = await papi.personal.addRecord(apiKey("GitHub", "ghp_p1"));
+      const b = await papi.personal.addRecord(apiKey("GitHub", "ghp_p2"));
+      const foreign = await papi.personal.addRecord(apiKey("Other", "ghp_p3"), papi.agent2.id);
+      const psync = await apiClient({ apiUrl: papi.url, apiToken: papi.token }).sync(await papi.personal.token());
+      const pcache = new AgentKeyCache({ ttlMs: 0, kek });
+      const lines: Record<string, unknown>[] = [];
+      const log: Logger = { info: (f) => lines.push(f), error: (f) => lines.push(f) };
+      const items = await pcache.use(papi.personal.agentId, psync, (k) => listItems(psync, k, log));
+      const [lo, hi] = [a, b].sort();
+      expect(Object.fromEntries(items.map((i) => [i.recordId, i.handle]))).toEqual({ [lo!]: "personal/github", [hi!]: "personal/github-2" });
+      expect(lines).toEqual([{ event: "item_skipped", recordId: foreign, reason: expect.any(String) }]);
+      const held = new HeldSecrets();
+      const seen = await pcache.use(papi.personal.agentId, psync, (k) => withItem(psync, k, "personal/github", held, async (x) => x.recordId));
+      expect(seen).toBe(lo);
+    } finally {
+      await papi.close();
+    }
+  });
+});
+
+describe("listItems, personal agent, nothing it can open", () => {
+  it("records sealed to another agent are skipped: the listing is empty, not an error", async () => {
+    const kek = await fileKek();
+    const papi = await startFakeApi({ kek });
+    try {
+      await papi.personal.addRecord(apiKey("Other", "ghp_p3"), papi.agent2.id);
+      const psync = await apiClient({ apiUrl: papi.url, apiToken: papi.token }).sync(await papi.personal.token());
+      const pcache = new AgentKeyCache({ ttlMs: 0, kek });
+      expect(await pcache.use(papi.personal.agentId, psync, (k) => listItems(psync, k))).toEqual([]);
+    } finally {
+      await papi.close();
+    }
+  });
+});
+
 describe("withItem", () => {
   it("hands f the secret, held while f runs and released after", async () => {
     const held = new HeldSecrets();
@@ -114,5 +154,25 @@ describe("withItem", () => {
     expect(await withItem(sync, keys, "ops/nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
     expect(await withItem(sync, keys, "nope", held, f)).toEqual({ error: "refused", reason: "not_found" });
     expect(called).toBe(false);
+  });
+});
+
+describe("env files", () => {
+  it("are summarised with their keys and the injected entry, never a value; withItem hands f that one entry", async () => {
+    const kek = await fileKek();
+    const papi = await startFakeApi({ kek });
+    try {
+      await papi.personal.addRecord({ v: 2, type: "envFile", title: "Billing", data: { content: "STRIPE_KEY=sk_live_ENVCANARY1\nPORT=3000\n" },
+        agentPolicy: { v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, secret: "env:STRIPE_KEY" } });
+      const psync = await apiClient({ apiUrl: papi.url, apiToken: papi.token }).sync(await papi.personal.token());
+      const pcache = new AgentKeyCache({ ttlMs: 0, kek });
+      const [summary] = await pcache.use(papi.personal.agentId, psync, (k) => listItems(psync, k));
+      expect(summary).toMatchObject({ handle: "personal/billing", type: "envFile", env_keys: ["STRIPE_KEY", "PORT"], env_injects: "STRIPE_KEY" });
+      expect(JSON.stringify(summary)).not.toContain("sk_live_ENVCANARY1");
+      const secret = await pcache.use(papi.personal.agentId, psync, (k) => withItem(psync, k, "personal/billing", new HeldSecrets(), async (x) => x.secret));
+      expect(secret).toBe("sk_live_ENVCANARY1");
+    } finally {
+      await papi.close();
+    }
   });
 });

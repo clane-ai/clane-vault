@@ -9,7 +9,7 @@ import { hashToken, signAgentAccess } from "../src/lib/tokens.js";
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = await exportPKCS8((await joseKeyPair("ES256", { extractable: true })).privateKey);
-const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
+const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false, personalAgents: true };
 const t = await makeTestApp({ agents });
 const hosted = await makeTestApp({ agents, billingMode: "hosted" });
 afterAll(async () => { await Promise.all([t.app.close(), hosted.app.close()]); await fake.close(); });

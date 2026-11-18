@@ -71,6 +71,8 @@ const schema = z.object({
   GATEWAY_API_TOKEN: z.preprocess(blank, z.string().min(32).optional()),
   AGENT_TOKEN_PRIVATE_KEY: z.preprocess(blank, z.string().optional()),
   GATEWAY_ACCEPT_NEW_IDENTITY: z.preprocess(blank, z.enum(["true", "false"]).default("false")),
+  // Personal agents (docs/design/2026-11-15-personal-agents.md): on whenever agent access is; off removes them from this server.
+  PERSONAL_AGENTS: z.preprocess(blank, z.enum(["on", "off"]).default("on")),
 });
 
 export interface BackupConfig {
@@ -110,6 +112,8 @@ export interface AgentConfig {
   tokenPrivateKeyPem: string;
   /** GATEWAY_ACCEPT_NEW_IDENTITY=true: accept and pin a changed gateway identity. */
   acceptNewGatewayIdentity: boolean;
+  /** PERSONAL_AGENTS (default on): people may own agents of their own; off hides and refuses every personal-agent route. */
+  personalAgents: boolean;
 }
 
 export interface Config {
@@ -251,7 +255,7 @@ function agentConfig(e: z.infer<typeof schema>): AgentConfig | undefined {
     if (k.asymmetricKeyType !== "ec" || k.asymmetricKeyDetails?.namedCurve !== "prime256v1") throw new Error();
   } catch { throw new Error("AGENT_TOKEN_PRIVATE_KEY must be a P-256 PKCS#8 PEM (-----BEGIN PRIVATE KEY-----)"); }
   return { gatewayInternalUrl: e.GATEWAY_INTERNAL_URL!, gatewayPublicUrl: e.GATEWAY_PUBLIC_URL!, gatewayApiToken: e.GATEWAY_API_TOKEN!,
-    tokenPrivateKeyPem: pem, acceptNewGatewayIdentity: e.GATEWAY_ACCEPT_NEW_IDENTITY === "true" };
+    tokenPrivateKeyPem: pem, acceptNewGatewayIdentity: e.GATEWAY_ACCEPT_NEW_IDENTITY === "true", personalAgents: e.PERSONAL_AGENTS === "on" };
 }
 
 function attachmentConfig(e: z.infer<typeof schema>): AttachmentConfig {

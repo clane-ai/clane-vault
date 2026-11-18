@@ -1,13 +1,26 @@
 import type { AgentMethod } from "@clane-vault/crypto";
 import { httpsOrLoopback, type GatewayConfig } from "./config.js";
 
-/** GET /agent/sync: the agent's `/sync?space=org` body plus its wrapped key (plan Task 5). Only the fields the gateway reads. */
-export interface AgentSync {
+/** GET /agent/sync for an organisation agent: its `/sync?space=org` body plus its wrapped key (plan Task 5). Only the fields the gateway reads. */
+export interface OrgAgentSync {
   orgId: string; wrappedPrivateKey: string; kekId: string; membershipKeys: { publicKey: string }[]; expiresAt: string | null;
   folders: { id: string; kind: "team" | "private"; encName: string; wrappedFolderKey?: string; sealedTo?: string | null }[];
-  records: { id: string; folderId: string | null; encBody: string; holderType: "user" | "folder"; keyFolderId: string | null; wrappedRecordKey: string; deletedAt: string | null }[];
+  records: { id: string; folderId: string | null; encBody: string; revision: number; holderType: "user" | "folder"; keyFolderId: string | null; wrappedRecordKey: string; deletedAt: string | null }[];
   entitlements: { approvals: boolean };
 }
+/**
+ * GET /agent/sync for a personal agent: its owner (and the owner key the API reports now), its own grants. `wrappedPrivateKey` null: revoked.
+ * `records[].write`: Agent can update and the owner's policies allow writes. `deposits`: this agent's unkept ones. `inboxFree`: the owner's, across agents.
+ */
+export interface PersonalAgentSync {
+  owner: { userId: string; publicKey: string }; agentId: string; publicKey: string; wrappedPrivateKey: string | null; kekId: string; expiresAt: string | null;
+  records: { id: string; encBody: string; revision: number; wrappedRecordKey: string; write: boolean; deletedAt: string | null }[];
+  /** *Can reveal* stubs: { title, type, fields } sealed to the agent; [] when the owner's policies say off. */
+  reveal: { recordId: string; sealedStub: string }[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string; signature: string }[]; inboxFree: number;
+  policy: { write: boolean; reveal: "off" | "approval" | "standing" };
+}
+export type AgentSync = OrgAgentSync | PersonalAgentSync;
+export const isPersonal = (s: AgentSync): s is PersonalAgentSync => "owner" in s;
 export interface UseEvent { at: string; recordId?: string; action: "use" | "refused" | "reflected"; host: string; method: AgentMethod; reason?: string; truncated?: boolean }
 
 export class ApiRefused extends Error {
@@ -17,10 +30,25 @@ export class ApiRefused extends Error {
   }
 }
 
+/** A write the API refused with 409 (a business refusal); 401/403 still throw ApiRefused. */
+export type WriteRefused = { refused: "not_writable" | "conflict" | "inbox_full" };
+const WRITE_REFUSALS: readonly unknown[] = ["not_writable", "conflict", "inbox_full"] satisfies WriteRefused["refused"][];
+type Written = Promise<{ revision: number } | WriteRefused>;
+
 export interface ApiClient {
   sync(accessToken: string): Promise<AgentSync>;
   events(accessToken: string, events: UseEvent[]): Promise<void>;
   exchangeStatic(cvat: string): Promise<{ accessToken: string; expiresIn: number }>;
+  deposit(token: string, d: { id: string; type: "login" | "item"; encBody: string; ownerSealedKey: string; agentSealedKey: string; signature: string }): Written;
+  updateDeposit(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
+  updateRecord(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
+  /** POST /agent/reveals: a 409 with a known reason is a refusal. */
+  createReveal(token: string, r: { id: string; recordId: string; fields: string[]; reason: string; requestPublicKey: string; signature: string; expiresAt: string }):
+    Promise<{ ok: true } | { refused: "reveal_off" | "busy" | "denied" }>;
+  /** POST /agent/reveals/standing: logged at the API before any value is released; 409 reveal_off refuses. */
+  standingReveal(token: string, r: { recordId: string; fields: string[] }): Promise<{ ok: true } | { refused: "reveal_off" }>;
+  /** GET /agent/reveals/:id; a 404 (unknown to the API) is "expired". */
+  reveal(token: string, id: string): Promise<{ status: "pending" | "denied" | "expired" } | { status: "approved"; sealed: string }>;
   /** The public issuer from `${API_URL}/.well-known/oauth-authorization-server`: cached once fetched; a failure is retried next call. */
   issuer(): Promise<string>;
   jwksUrl: URL;
@@ -36,14 +64,25 @@ const codeOf = (j: unknown) => {
 export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetchImpl: typeof fetch = fetch): ApiClient {
   const base = `${cfg.apiUrl.replace(/\/+$/, "")}/api/v1`;
   /** `grantRefusals`: a 400 (OAuth invalid_grant and friends) means the token is no good, as a 401 does. */
-  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false): Promise<Response> {
+  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false, conflicts = false, notFound = false): Promise<Response> {
     const r = await fetchImpl(`${base}${path}`, { ...init, headers: { "x-gateway-token": cfg.apiToken, ...init.headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (r.ok) return r;
+    if (r.ok || (conflicts && r.status === 409) || (notFound && r.status === 404)) return r;
     if (r.status === 401 || r.status === 403 || (grantRefusals && r.status === 400))
       throw new ApiRefused(r.status === 403 ? 403 : 401, codeOf(await r.json().catch(() => null)));
     throw new Error(`API ${path} failed (${r.status})`);
   }
   const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
+  /** A 409 with a known reason is a refusal; any other 409 body is an error like a 500. */
+  async function write(token: string, method: "POST" | "PUT", path: string, body: object): Written {
+    const r = await call(path, { method, headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(body) }, false, true);
+    const j = await r.json().catch(() => null) as { revision?: unknown; error?: unknown } | null;
+    if (r.status === 409) {
+      if (WRITE_REFUSALS.includes(j?.error)) return { refused: j!.error as WriteRefused["refused"] };
+      throw new Error(`API ${method} write failed (409)`);
+    }
+    if (typeof j?.revision !== "number") throw new Error("API write answered without a revision");
+    return { revision: j.revision };
+  }
   let issuer: Promise<string> | undefined;
   // API_URL is origin + base path, and the API serves its metadata at `${basePath}/.well-known/...` (plan Task 12).
   async function fetchIssuer(): Promise<string> {
@@ -66,6 +105,30 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
     },
     async events(accessToken, events) {
       await call("/agent/events", { method: "POST", headers: { ...bearer(accessToken), "content-type": "application/json" }, body: JSON.stringify({ events }) });
+    },
+    deposit: (token, d) => write(token, "POST", "/agent/deposits", d),
+    updateDeposit: (token, id, d) => write(token, "PUT", `/agent/deposits/${encodeURIComponent(id)}`, d),
+    updateRecord: (token, id, d) => write(token, "PUT", `/agent/records/${encodeURIComponent(id)}`, d),
+    async createReveal(token, b) {
+      const r = await call("/agent/reveals", { method: "POST", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(b) }, false, true);
+      if (r.status !== 409) return { ok: true };
+      const e = ((await r.json().catch(() => null)) as { error?: unknown } | null)?.error;
+      if (e === "reveal_off" || e === "busy" || e === "denied") return { refused: e };
+      throw new Error("API reveal request failed (409)");
+    },
+    async standingReveal(token, b) {
+      const r = await call("/agent/reveals/standing", { method: "POST", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(b) }, false, true);
+      if (r.status !== 409) return { ok: true };
+      if (((await r.json().catch(() => null)) as { error?: unknown } | null)?.error === "reveal_off") return { refused: "reveal_off" };
+      throw new Error("API standing reveal failed (409)");
+    },
+    async reveal(token, id) {
+      const r = await call(`/agent/reveals/${encodeURIComponent(id)}`, { headers: bearer(token) }, false, false, true);
+      if (r.status === 404) return { status: "expired" };
+      const j = (await r.json()) as { status?: unknown; sealed?: unknown };
+      if (j.status === "approved" && typeof j.sealed === "string" && j.sealed.startsWith("s1.")) return { status: "approved", sealed: j.sealed };
+      if (j.status === "pending" || j.status === "denied") return { status: j.status };
+      return { status: "expired" };
     },
     async exchangeStatic(cvat) {
       const r = await call("/oauth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },

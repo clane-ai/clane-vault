@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from "zod";
 import { b64url, generateKeyPair } from "@clane-vault/crypto";
 import type { GatewayConfig } from "./config.js";
-import { wrapAgentKey } from "./envelope.js";
+import { wrapAgentKey, wrapPersonalAgentKey } from "./envelope.js";
 import type { Identity } from "./identity.js";
 import type { Kek } from "./kek.js";
 import { safeError, type HeldSecrets, type Logger } from "./log.js";
@@ -16,10 +16,17 @@ import { ADDRESS_PER_MINUTE, clientAddress, mcpHandler } from "./mcp.js";
 import { defaultResolver, type Resolver } from "./outbound/ssrf.js";
 import { RateLimiter } from "./rateLimit.js";
 
-export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number }
+export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number;
+  /** Test hooks: how often get_secret polls the API, and how long one call waits (defaults 2 s and 50 s). */
+  revealPollMs?: number; revealWaitMs?: number }
 
 const MAX_BODY = 16 * 1024;
-const enrolBody = z.object({ agentId: z.string().uuid(), orgId: z.string().uuid() });
+// Exactly one shape: an organisation agent, or a personal agent bound to its owner's 32-byte X25519 key (43 base64url characters).
+const enrolBody = z.union([
+  z.strictObject({ agentId: z.string().uuid(), orgId: z.string().uuid() }),
+  z.strictObject({ agentId: z.string().uuid(), ownerUserId: z.string().uuid(), ownerPublicKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+    .refine((k) => { try { return b64url.encode(b64url.decode(k)) === k; } catch { return false; } }) }), // canonical: one spelling for the key bound into k2 and g1
+]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Promise<{ publicServer: Server; internalServer: Server; close(): Promise<void>; keys: AgentKeyCache; syncs: SyncCache }> {
@@ -31,7 +38,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const auth = bearerAuth(cfg, api, deps.now);
   const limiter = new RateLimiter(deps.now);
   const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter,
-    log, held, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
+    log, held, identity, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs, revealPollMs: deps.revealPollMs, revealWaitMs: deps.revealWaitMs, now: deps.now });
   const mcpPath = new URL(cfg.publicUrl).pathname;
   // RFC 9728: under PUBLIC_URL's path, and by path insertion at the root (`/.well-known/oauth-protected-resource/mcp`).
   const base = mcpPath.replace(/\/+$/, "");
@@ -51,17 +58,23 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
     if (!path.startsWith("/internal/")) return send(res, 404, { error: "not_found" });
     if (!authorised(req)) return send(res, 401, { error: "unauthorized" });
     if (req.method === "GET" && path === "/internal/health")
-      return send(res, 200, { ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey } });
+      return send(res, 200, { ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey }, reveal: cfg.reveal });
     if (req.method === "POST" && path === "/internal/agents") {
       const p = enrolBody.safeParse(await readJson(req, MAX_BODY));
       if (!p.success) return send(res, 400, { error: "invalid_request" });
-      const { agentId, orgId } = p.data;
+      const b = p.data;
       const kp = await generateKeyPair();
       try {
-        const ids = { orgId, agentId, publicKey: b64url.encode(kp.publicKey) };
-        const wrappedPrivateKey = await wrapAgentKey(kek, ids, kp.privateKey);
-        const attestation = await identity.sign(ids);
-        return send(res, 200, { publicKey: ids.publicKey, wrappedPrivateKey, kekId: kek.id, attestation });
+        const publicKey = b64url.encode(kp.publicKey);
+        let wrappedPrivateKey: string, attestation: string;
+        if ("orgId" in b) {
+          const ids = { orgId: b.orgId, agentId: b.agentId, publicKey };
+          [wrappedPrivateKey, attestation] = [await wrapAgentKey(kek, ids, kp.privateKey), await identity.sign(ids)];
+        } else {
+          const ids = { ownerUserId: b.ownerUserId, ownerPublicKey: b.ownerPublicKey, agentId: b.agentId, publicKey };
+          [wrappedPrivateKey, attestation] = [await wrapPersonalAgentKey(kek, ids, kp.privateKey), await identity.signPersonal(ids)];
+        }
+        return send(res, 200, { publicKey, wrappedPrivateKey, kekId: kek.id, attestation });
       } finally {
         kp.privateKey.fill(0);
       }

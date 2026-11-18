@@ -33,6 +33,12 @@ describe("entitlements", () => {
     const now = new Date("2026-11-01T00:00:00Z");
     expect(getEntitlements(on, { ...free, trialEndsAt: new Date(+now + 864e5) }, now).agentLimit).toBe(3);
   });
+  it("sets the per-person allowance of personal agents", () => {
+    const biz = getEntitlements(on, { plan: "business", billingStatus: "active", seatsPaid: 20, trialEndsAt: null });
+    expect([getPersonalEntitlements(on).personalAgentLimit, getEntitlements(on, free).personalAgentLimit, biz.personalAgentLimit, getEntitlements(off, free).personalAgentLimit]).toEqual([1, 2, 5, null]);
+    const now = new Date("2026-11-01T00:00:00Z");
+    expect(getEntitlements(on, { ...free, trialEndsAt: new Date(+now + 864e5) }, now).personalAgentLimit).toBe(2);
+  });
   it("gives a Team org Business features during its trial only", () => {
     const now = new Date("2026-11-01T00:00:00Z"), day = 864e5;
     const trial = getEntitlements(on, { ...free, trialEndsAt: new Date(+now + day) }, now);

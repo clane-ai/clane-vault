@@ -9,18 +9,22 @@ import { Label } from "@/components/ui/label";
 import { SectionPage } from "@/components/SectionLayout";
 import { AgentAttestationError, fingerprintOf, gatewayPinStatus, pinnedGateway, verifyAgentKey } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
+import { useOrgApi, useScope } from "@/lib/scope";
+import { usePeople } from "@/features/vault/useVault";
 import { relativeTime } from "@/lib/time";
 import { Chip } from "@/features/vault/people";
 import type { VaultFolder } from "@/features/vault/types";
 import { AgentConnectSheet } from "./AgentConnectSheet";
 import { AgentVerifyDialog } from "./AgentVerifyDialog";
+import { useCreateMyAgent, useUpdateMyAgent } from "@/features/settings/myAgents";
 import { LockLine } from "./PlanLock";
 import { agentLimitLine, useOrgPlan } from "./plan";
 import { AGENTS_OFF, agentErrorText, agentsOff, gatewayIdentity, PIN_LABEL, STATUS_LABEL, useAgents, useCreateAgent, useGateway, useRevokeAgent, useUpdateAgent, type Agent, type Gateway, type Rotation } from "./agents";
 
 const card = "rounded-[14px] border border-border-default bg-card shadow-[var(--shadow-card)]";
 const mono = "font-mono text-[11.5px] tracking-[.02em] text-text-tertiary";
-type ToVerify = { id: string; name: string; publicKey: string; attestation: string };
+/** `personal`: a personal agent's owner binding, checked by the verify dialog. */
+export type ToVerify = { id: string; name: string; publicKey: string; attestation: string; personal?: { ownerUserId: string; ownerPublicKey: string } };
 
 const useFingerprint = (key: string | undefined) =>
   useQuery({ queryKey: ["fingerprint", key], enabled: !!key, staleTime: Infinity, queryFn: () => fingerprintOf(key!).catch(() => "—") }).data;
@@ -30,13 +34,15 @@ const dateInput = (iso: string | null) => { if (!iso) return ""; const d = new D
 /** The end of the chosen day, local time. */
 const expiryOf = (day: string) => (day ? new Date(`${day}T23:59:59`).toISOString() : null);
 
-/** Name and optional expiry: a new agent (then the verify dialog) or an edit. */
-function AgentForm({ agent, onDone, onClose }: { agent?: Agent; onDone: (created?: ToVerify) => void; onClose: () => void }) {
+/** Name and optional expiry: a new agent (then the verify dialog) or an edit. `personal`: the owner's own agent (Settings → My agents). */
+export function AgentForm({ agent, personal, onDone, onClose }: { agent?: Pick<Agent, "id" | "name" | "expiresAt">; personal?: boolean; onDone: (created?: ToVerify) => void; onClose: () => void }) {
+  const { orgs } = useSession();
   const [name, setName] = useState(agent?.name ?? "");
   const [expiry, setExpiry] = useState(dateInput(agent?.expiresAt ?? null));
   const [error, setError] = useState<string | null>(null);
-  const create = useCreateAgent(), update = useUpdateAgent();
-  const busy = create.isPending || update.isPending;
+  const orgCreate = useCreateAgent(), orgUpdate = useUpdateAgent(), myCreate = useCreateMyAgent(), myUpdate = useUpdateMyAgent();
+  const update = personal ? myUpdate : orgUpdate;
+  const busy = orgCreate.isPending || orgUpdate.isPending || myCreate.isPending || myUpdate.isPending;
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setError(null);
     try {
@@ -45,8 +51,12 @@ function AgentForm({ agent, onDone, onClose }: { agent?: Agent; onDone: (created
         if (Object.keys(changed).length) await update.mutateAsync({ id: agent.id, ...changed });
         onDone();
       }
-      else { const c = await create.mutateAsync({ name: name.trim(), expiresAt: expiryOf(expiry) }); onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation }); }
-    } catch (err) { setError(agentErrorText(err)); }
+      else if (personal) {
+        const c = await myCreate.mutateAsync({ name: name.trim(), expiresAt: expiryOf(expiry) });
+        onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation, personal: { ownerUserId: c.owner.userId, ownerPublicKey: c.owner.publicKey } });
+      }
+      else { const c = await orgCreate.mutateAsync({ name: name.trim(), expiresAt: expiryOf(expiry) }); onDone({ id: c.id, name: c.name, publicKey: c.publicKey, attestation: c.attestation }); }
+    } catch (err) { setError(agentErrorText(err, { orgs, personal })); }
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose(); }}>
@@ -153,6 +163,34 @@ function AgentRow({ agent, gateway, onVerify, onConnect, onEdit, onRevoke }: { a
   );
 }
 
+interface PersonalCount { agents: number; members: number; perMember: { userId: string; count: number }[] }
+/** Members' personal agents, counted only (no agent, name or item): one line, expandable per member. Hidden on a 404 (feature off). */
+function PersonalAgentsCount() {
+  const oapi = useOrgApi();
+  const q = useQuery({ queryKey: ["admin-personal-count", useScope()], retry: false, queryFn: () => oapi.get<PersonalCount>("/admin/agents/personal-count") });
+  const [open, setOpen] = useState(false);
+  if (!q.data) return null;
+  const { agents, members } = q.data;
+  return (
+    <div className="flex flex-col gap-1.5 text-[13.5px] text-text-secondary">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="self-start hover:text-text-primary">
+        Personal agents: {agents} across {members} {members === 1 ? "member" : "members"}
+      </button>
+      {open && <PerMember rows={q.data.perMember} />}
+    </div>
+  );
+}
+function PerMember({ rows }: { rows: PersonalCount["perMember"] }) {
+  const people = usePeople().data;
+  return (
+    <ul aria-label="Personal agents per member" className={`${card} px-3 py-1`}>
+      {rows.map((r) => (
+        <li key={r.userId} className="flex justify-between gap-3 py-1.5"><span className="truncate">{people?.find((p) => p.id === r.userId)?.name ?? "A member"}</span><span className={mono}>{r.count}</span></li>
+      ))}
+    </ul>
+  );
+}
+
 /**
  * Admin → Agents (docs/design/2026-10-17-agent-access.md §4.7): agents that use credentials through the gateway without
  * seeing them. Create, verify both fingerprints, connect, revoke with the folders to rotate.
@@ -178,7 +216,7 @@ export default function AgentsPage({ folders }: { folders: VaultFolder[] }) {
         <p className="text-[13.5px] leading-relaxed text-text-secondary">
           Agents use credentials you share with them through the gateway, without ever seeing them. Share only restricted credentials.
         </p>
-        {agentsOff(q.error) ? <p className="text-[13.5px] text-text-secondary">{AGENTS_OFF}</p> : <div>{action}</div>}
+        {agentsOff(q.error) ? <p className="text-[13.5px] text-text-secondary">{AGENTS_OFF}</p> : <><div>{action}</div><PersonalAgentsCount /></>}
         {agentsOff(q.error) ? null : q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error)}</p>
           : q.data && q.data.length === 0 ? <p className="text-[13.5px] text-text-secondary">No agents yet.</p>
           : q.data && (

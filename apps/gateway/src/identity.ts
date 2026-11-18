@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { link, readFile, unlink, writeFile } from "node:fs/promises";
-import { b64url, CryptoError, gatewayKeyId, generateIdentityKeyPair, signAgentKey } from "@clane-vault/crypto";
+import {
+  b64url, CryptoError, gatewayKeyId, generateIdentityKeyPair, signAgentKey, signGatewayMessage, signPersonalAgentKey, type GatewaySigTag, type PersonalIds,
+} from "@clane-vault/crypto";
 import { EnvelopeError, openWithKek, sealWithKek } from "./envelope.js";
 import type { Kek } from "./kek.js";
 
-export interface Identity { keyId: string; publicKey: string; sign(ids: { orgId: string; agentId: string; publicKey: string }): Promise<string> }
+export interface Identity {
+  keyId: string; publicKey: string;
+  sign(ids: { orgId: string; agentId: string; publicKey: string }): Promise<string>;
+  /** The g1 attestation of a personal agent's key, bound to its owner's key. */
+  signPersonal(ids: PersonalIds): Promise<string>;
+  /** Any gateway message (deposits, updates, reveal requests) with the constructors in @clane-vault/crypto. */
+  signMessage(tag: GatewaySigTag, message: string): Promise<string>;
+}
 
 const CTX = { purpose: "gateway-identity" };
 const aad = (publicKey: string) => `gateway-identity-key:${publicKey}`;
@@ -54,5 +63,6 @@ export async function loadOrCreateIdentity(file: string, kek: Kek): Promise<Iden
     });
   }
   const keyId = await gatewayKeyId(b64url.decode(publicKey));
-  return { keyId, publicKey, sign: (ids) => signAgentKey(pkcs8, keyId, ids) };
+  return { keyId, publicKey, sign: (ids) => signAgentKey(pkcs8, keyId, ids), signPersonal: (ids) => signPersonalAgentKey(pkcs8, keyId, ids),
+    signMessage: (tag, message) => signGatewayMessage(pkcs8, keyId, tag, message) };
 }

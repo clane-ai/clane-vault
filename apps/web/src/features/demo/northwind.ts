@@ -111,6 +111,8 @@ export const NORTHWIND_FOLDERS: NorthwindFolder[] = [
     { type: "Database credentials", title: "Orders database", options: { Type: "PostgreSQL" },
       fields: { Host: "db-01.example.com", Port: "5432", Database: "orders", Username: "app_rw", Password: "Hn4$kW8z@Pc3tF6q" } },
     { type: "API key / secret", title: "Cloudflare API token", fields: { Service: "Cloudflare", "Key ID": "nw-dns-edit", Secret: "cf_9fXq2LmZ7tR4vK8wN3bH6yD1sJ5pG0aE", Endpoint: "https://api.example.com" } },
+    { type: ".env file", title: "Web shop production", fields: { Project: "web-shop", Environment: "production", "File name": ".env.production",
+      Contents: "# web-shop production\nDATABASE_URL=postgres://shop:Vx3kQ8rT1mZ6@db.internal:5432/shop\nPAYMENTS_KEY=nw_pay_7Hq2Lm9Zx4Rt\nPORT=3000\n" } },
     { type: "Login", title: "GitHub org owner", fields: { Username: "northwind-bot", Password: "pF6&zR1x#Mv8sJ3k", Website: "github.com" } },
   ] },
   { name: "Finance", people: [[PRIYA, "Can edit"], [BEA, "Can view"]], records: [

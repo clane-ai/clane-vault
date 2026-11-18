@@ -9,7 +9,8 @@ import * as sessionModule from "@/lib/session";
 import { fingerprintOf, gatewayPinStatus, pinGateway, pinStatus, type GatewayIdentity } from "@/lib/orgKeys";
 import type { VaultFolder } from "@/features/vault/types";
 import AgentsPage from "./AgentsPage";
-import type { Agent } from "./agents";
+import { AGENT_PROMPT, SKILL_INSTALL, type Agent } from "./agents";
+import { copySecret } from "@/lib/clipboard";
 
 vi.mock("@/lib/clipboard", () => ({ copySecret: vi.fn(async () => undefined) }));
 const ORG = { id: "aaaaaaaa-0000-4000-8000-000000000001", name: "Acme", slug: "acme", role: "admin" as const, isDefault: true };
@@ -145,6 +146,14 @@ describe("Admin → Agents", () => {
     expect(snippets).toHaveLength(6);
     for (const s of snippets) expect(s.textContent).toContain(URL_);
     expect(within(sheet).getByRole("region", { name: "Claude API (MCP connector) snippet" }).textContent).toContain("mcp-client-2025-11-20");
+    const prompt = within(sheet).getByRole("region", { name: "Prompt" });
+    expect(within(prompt).getByRole("heading", { name: "Instructions for the model" })).toBeInTheDocument();
+    expect(prompt.textContent).toContain(AGENT_PROMPT.split("\n")[0]);
+    expect(prompt.textContent).toContain(SKILL_INSTALL);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy prompt" }));
+    expect(copySecret).toHaveBeenLastCalledWith(AGENT_PROMPT);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy skill command" }));
+    expect(copySecret).toHaveBeenLastCalledWith(SKILL_INSTALL);
     const grant = within(sheet).getByRole("listitem", { name: "Claude" });
     expect(within(grant).getByText(/Admin, /)).toBeInTheDocument();
     await userEvent.click(within(grant).getByRole("button", { name: "Revoke Claude" }));
@@ -229,5 +238,22 @@ describe("Admin → Agents", () => {
     renderPage();
     expect(await screen.findByText("Available on the Business plan.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
+  });
+
+  it("one line counts members' personal agents, expandable per member; hidden on a 404", async () => {
+    server.use(
+      http.get("/api/v1/admin/agents/personal-count", () => HttpResponse.json({ agents: 7, members: 4, perMember: [{ userId: "u1", count: 4 }, { userId: "u2", count: 1 }] })),
+      http.get("/api/v1/users", () => HttpResponse.json({ users: [{ id: "u1", name: "Sara", email: "s@x", publicKey: "" }] })),
+    );
+    const view = renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "Personal agents: 7 across 4 members" }));
+    const list = await screen.findByRole("list", { name: "Personal agents per member" });
+    expect(await within(list).findByText("Sara")).toBeInTheDocument();
+    expect(within(list).getByText("4")).toBeInTheDocument();
+    view.unmount();
+    server.use(http.get("/api/v1/admin/agents/personal-count", () => HttpResponse.json({ error: "not_found" }, { status: 404 })));
+    renderPage();
+    await screen.findByText("No agents yet.");
+    expect(screen.queryByText(/^Personal agents:/)).toBeNull();
   });
 });

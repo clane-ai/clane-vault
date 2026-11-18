@@ -291,9 +291,15 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
    # Only under a base path:
    location = /.well-known/oauth-authorization-server/vault { proxy_pass http://127.0.0.1:8080; }
    ```
-5. **Publish the gateway fingerprint** to your admins (they compare it when they verify an agent):
+5. **Publish the gateway fingerprint** to your admins (they compare it when they verify an agent), and to everyone who may create a personal agent:
 
        docker compose exec gateway /nodejs/bin/node dist/cli.js identity
+
+**Personal agents** (people's own agents, for their Personal space; `docs/agents.md`, *Personal agents*) are on with agent access. To switch them off for the whole server, set `PERSONAL_AGENTS=off` in `.env` and restart; an organisation can also switch them off for its own members in its policies. With AWS KMS, add `ownerUserId` to the key policy's allowed encryption-context keys before anyone creates one. A personal agent may save items to its owner's *From agents* inbox and update the items it's allowed to, at most `GATEWAY_WRITE_PER_HOUR` (default 20) times an hour; set it in `.env` to change that.
+
+**Letting personal agents read values** is off: `get_secret` answers `reveal_off` until you set `GATEWAY_REVEAL=approval` in `.env` and restart the gateway. Then an owner can mark fields of a Personal item *Can reveal*, and each read waits for the owner to approve it in the web app. A value an agent reads is disclosed to the AI model and its provider for good (`docs/agents.md`, *Letting an agent read a value*; `SECURITY.md`), so decide whether your server offers it at all. `GATEWAY_REVEAL_PER_HOUR` (default 10) caps new requests per agent per hour.
+
+`GATEWAY_REVEAL=standing` also allows **reading without approval**: where every organisation's policy allows it and an owner turns it on for an item, the agent reads those fields whenever it asks, with nobody asked first. Only set it if your users need unattended agents and accept that the AI model then sees those values with no person in the loop.
 
 Rules the gateway checks at start:
 - `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.

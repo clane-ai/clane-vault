@@ -1,7 +1,7 @@
 import {
   b64url, createMembershipKeys, keyFingerprint, ownerRecordKeyFromFolder, resealFolderKeyToMembership, resealRecordShareToMembership, rotateFolderKeySeal,
   rotateRecordShareSeal, sealFolderKeyFor, sealMembershipEscrow, sealOrgFolderKey, sealOrgRecordShare, shareRecordKey, unlockMembershipKeys, unwrapKey,
-  gatewayKeyId, verifyAgentAttestation,
+  gatewayKeyId, publicKeyFromPrivateKey, verifyAgentAttestation, verifyPersonalAgentAttestation,
   type MembershipKeys, type SealKeys, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import type { OrgApi } from "./api";
@@ -107,8 +107,26 @@ export const isAgent = (r: { kind?: string; attestation?: string | null; email?:
   r.kind === "agent" || !!r.attestation || !!r.email?.toLowerCase().endsWith("@agents.invalid");
 
 export interface GatewayIdentity { keyId: string; publicKey: string }
+/** The slot personal agents use where organisation agents use an org id (pinnedGateway, pinGateway, gatewayPinStatus, pinKey). */
+export const PERSONAL_SLOT = "personal";
 /** One fixed slot per signed-in user and org (like the person-key pins): the gateway identity this user accepted on this device. */
 const GATEWAY = (me: string, orgId: string) => storageKey(`cv.gateway.${me}.${orgId}`);
+/** Every gateway identity this browser pinned for the user, in any organisation or the personal slot (this instance's base path only). */
+export function allGatewayPins(me: string): GatewayIdentity[] {
+  const prefix = `cv.gateway.${me}.`, suffix = storageKey("");
+  const out: GatewayIdentity[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith(prefix) || !k.endsWith(suffix)) continue;
+      const slot = k.slice(prefix.length, k.length - suffix.length);
+      if (!slot || slot.includes("@")) continue; // another instance's pin (another base path)
+      const g = pinnedGateway(me, slot);
+      if (g) out.push(g);
+    }
+  } catch { /* private mode */ }
+  return out;
+}
 export function pinnedGateway(me: string, orgId: string): GatewayIdentity | null {
   try {
     const v = JSON.parse(localStorage.getItem(GATEWAY(me, orgId)) ?? "null") as GatewayIdentity | null;
@@ -124,6 +142,15 @@ export function gatewayPinStatus(me: string, orgId: string, identity: GatewayIde
   return !prev ? { status: "new" } : sameGateway(prev, identity) ? { status: "same" } : { status: "changed", previous: prev };
 }
 /**
+ * Personal agents (spec §3.2, "Changed, not New"): "changed" when ANY pin differs from `identity` (previous = that pin), so a
+ * server can't introduce a second gateway for personal agents as if it were new; else "same" when at least one pin exists.
+ */
+export function personalGatewayPinStatus(me: string, identity: GatewayIdentity): { status: "new" | "same" | "changed"; previous?: GatewayIdentity } {
+  const pins = allGatewayPins(me);
+  const differs = pins.find((p) => !sameGateway(p, identity));
+  return differs ? { status: "changed", previous: differs } : pins.length ? { status: "same" } : { status: "new" };
+}
+/**
  * Pins the gateway identity; true only if it was stored now (not already pinned, not private mode). A different identity
  * already pinned is `gateway_changed` unless `repin`: only the admin's verify dialog passes it, after the admin compared
  * both fingerprints with what the gateway operator publishes. The slot is re-read right before writing, with no await in
@@ -134,15 +161,18 @@ export async function pinGateway(me: string, orgId: string, identity: GatewayIde
   const prev = pinnedGateway(me, orgId);
   if (prev && sameGateway(prev, identity)) return false;
   if (prev && !opts.repin) throw new AgentAttestationError("gateway_changed");
+  // The personal slot's first pin is refused too when any organisation pin differs (organisation slots behave as before).
+  if (orgId === PERSONAL_SLOT && !opts.repin && personalGatewayPinStatus(me, identity).status === "changed") throw new AgentAttestationError("gateway_changed");
   try { localStorage.setItem(GATEWAY(me, orgId), JSON.stringify({ keyId: identity.keyId, publicKey: identity.publicKey })); return true; } catch { return false; /* private mode */ }
 }
 
-export type AgentAttestationReason = "missing" | "unpinned" | "gateway_changed" | "invalid";
+export type AgentAttestationReason = "missing" | "unpinned" | "gateway_changed" | "invalid" | "owner";
 const ATTESTATION_MESSAGE: Record<AgentAttestationReason, string> = {
   missing: "The gateway's signature on this agent's key is missing, so nothing was shared. Ask an admin to check the agent.",
   unpinned: "Couldn't confirm the agent gateway's identity, so nothing was shared. Try again, or ask an admin.",
   gateway_changed: "This agent's key was signed by a different gateway than the one this device trusts, so nothing was shared. Ask an admin to check the gateway.",
   invalid: "The gateway did not sign this agent's key, so nothing was shared. Ask an admin to check the agent.",
+  owner: "This agent's key is bound to a different account key than yours, so nothing was shared. Revoke the agent and create it again.",
 };
 /** Sealing to an agent refused: its key isn't attested by the gateway identity pinned on this device. `agentId`: absent when no agent is involved yet. */
 export class AgentAttestationError extends Error {
@@ -156,16 +186,17 @@ export class AgentAttestationError extends Error {
  * action (Agents page). Called only before sealing to an agent, so people-only shares make no request.
  * `pinnedNow`: this call stored the pin (show the fingerprint); false in private mode, where nothing is kept.
  */
-export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string, orgId: string): Promise<{ identity: GatewayIdentity; pinnedNow: boolean }> {
+export async function ensureGatewayPinned(oapi: Pick<OrgApi, "get">, me: string, orgId: string, path = "/org/agents/gateway"): Promise<{ identity: GatewayIdentity; pinnedNow: boolean }> {
   const pinned = pinnedGateway(me, orgId);
   if (pinned) return { identity: pinned, pinnedNow: false };
   let identity: GatewayIdentity;
   try {
-    const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string }>("/org/agents/gateway");
+    const r = await oapi.get<{ identityKeyId?: string; identityPublicKey?: string }>(path); // the personal slot passes /me/agents/gateway
     identity = { keyId: r.identityKeyId ?? "", publicKey: r.identityPublicKey ?? "" };
   } catch { throw new AgentAttestationError("unpinned"); }
   if (!await gatewayConsistent(identity)) throw new AgentAttestationError("unpinned");
-  // Pinned meanwhile: the same identity is fine, another one is gateway_changed (pinGateway never repins here).
+  // Pinned meanwhile: the same identity is fine, another one is gateway_changed (pinGateway never repins here; for the
+  // personal slot it also refuses an identity that differs from any organisation pin).
   return { identity, pinnedNow: await pinGateway(me, orgId, identity) };
 }
 
@@ -181,6 +212,25 @@ export async function verifyAgentKey(me: string, orgId: string, agent: Recipient
   if ((agent.gatewayKeyId && agent.gatewayKeyId !== gw.keyId) || att.split(".")[1] !== gw.keyId) throw new AgentAttestationError("gateway_changed", agent.id);
   const publicKey = agent.membershipKey ?? agent.publicKey;
   if (!await verifyAgentAttestation(att, { orgId, agentId: agent.id, publicKey }, gw)) throw new AgentAttestationError("invalid", agent.id);
+}
+
+/** My account public key (base64url), as my unlocked private key derives it: never the copy the server lists. */
+export const accountPublicKeyOf = async (myPrivateKey: Uint8Array) => b64url.encode(await publicKeyFromPrivateKey(myPrivateKey));
+/** A personal agent's owner binding is me with my current account key (else the gateway holds a key bound to someone else's). */
+export const ownedByMe = async (me: string, owner: { userId: string; publicKey: string }, myPrivateKey: Uint8Array) =>
+  owner.userId === me && owner.publicKey === await accountPublicKeyOf(myPrivateKey).catch(() => null);
+/**
+ * Called before sealing to a personal agent: the owner it is bound to must be me with the key my unlocked private key
+ * derives (else the gateway would hold a key bound to someone else's account key), and the personal pin must have signed
+ * `personal-agent-key:<ownerUserId>:<ownerPublicKey>:<agentId>:<key>`.
+ */
+export async function verifyPersonalAgentKey(me: string, agent: { id: string; publicKey: string; attestation: string }, owner: { userId: string; publicKey: string }, myPrivateKey: Uint8Array): Promise<void> {
+  const gw = pinnedGateway(me, PERSONAL_SLOT);
+  if (!gw) throw new AgentAttestationError("unpinned", agent.id);
+  if (!agent.attestation) throw new AgentAttestationError("missing", agent.id);
+  if (!await ownedByMe(me, owner, myPrivateKey)) throw new AgentAttestationError("owner", agent.id);
+  if (agent.attestation.split(".")[1] !== gw.keyId) throw new AgentAttestationError("gateway_changed", agent.id);
+  if (!await verifyPersonalAgentAttestation(agent.attestation, { ownerUserId: owner.userId, ownerPublicKey: owner.publicKey, agentId: agent.id, publicKey: agent.publicKey }, gw)) throw new AgentAttestationError("invalid", agent.id);
 }
 
 // ---- The membership job ----

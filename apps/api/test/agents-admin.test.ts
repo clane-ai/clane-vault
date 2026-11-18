@@ -8,7 +8,7 @@ import { checkGatewayAtStart, GatewayIdentityChanged, gatewayClient, GatewayUnav
 
 const fake = await startFakeGateway();
 const tokenPrivateKeyPem = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false };
+const agents = { gatewayInternalUrl: fake.url, gatewayPublicUrl: "https://gw.test/mcp", gatewayApiToken: fake.token, tokenPrivateKeyPem, acceptNewGatewayIdentity: false, personalAgents: true };
 const t = await makeTestApp({ agents });
 const hosted = await makeTestApp({ agents, billingMode: "hosted" });
 const off = await makeTestApp({});
@@ -240,7 +240,7 @@ describe("agents off", () => {
 describe("gateway client and the start-up check", () => {
   const warns: string[] = [];
   const log = { warn: (m: string) => { warns.push(m); } };
-  const stub = (h: () => Promise<{ keyId: string; publicKey: string }>): GatewayClient => ({ health: h, createAgentKey: () => Promise.reject(new Error("unused")), dropAgent: () => Promise.resolve() });
+  const stub = (h: () => Promise<{ keyId: string; publicKey: string }>): GatewayClient => ({ health: h, createAgentKey: () => Promise.reject(new Error("unused")), createPersonalAgentKey: () => Promise.reject(new Error("unused")), dropAgent: () => Promise.resolve(), revealMode: () => Promise.resolve("off" as const) });
 
   it("created on first sight, ok after, unreachable warns and starts, changed throws unless accepted", async () => {
     const id = { keyId: "kid-1", publicKey: "pub-1" };

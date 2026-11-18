@@ -47,11 +47,17 @@ export interface SyncRecord {
   ownerId?: string; ownerName?: string; sharedWith?: ShareInfo[]; sharedBy?: string;
   /** Personal space: the orgs this record of mine is shared in (its shares are managed there). */ sharedIn?: string[];
   /** Files (ready ones). Absent from servers before 1.6. */ attachments?: SyncAttachment[];
+  /** Personal space, records I own: my personal agents that were given this item. */ agentGrants?: AgentGrantInfo[];
+  /** Personal space: a kept agent deposit (provenance); `at` is when it was kept. */ createdByAgent?: { id: string; name: string; at?: string };
+  /** Personal space: an agent's change nobody has saved over or acknowledged yet; `signature` is the gateway's u1 over the current body. */
+  agentChange?: { agentId: string; agentName: string; at: string; signature: string };
 }
+export interface AgentGrantInfo { agentId: string; use: boolean; write: boolean; reveal?: string[] }
 /** `privateLocked`: the session skipped the authenticator code (an org's trusted IdP MFA): own private items are left out until a step-up. */
 /** Membership key material (wrapped under my user key) for the active org: what opens what is sealed to me there. */
 export interface MembershipKeyRow { publicKey: string; wrappedPrivateKey: string; state: "current" | "retiring" }
-export interface SyncResponse { folders: SyncFolder[]; records: SyncRecord[]; serverTime: string; privateLocked?: boolean; orgId?: string; membershipKeys?: MembershipKeyRow[] }
+export interface SyncResponse { folders: SyncFolder[]; records: SyncRecord[]; serverTime: string; privateLocked?: boolean; orgId?: string; membershipKeys?: MembershipKeyRow[];
+  /** Personal space with personal agents: deposits waiting in From agents. */ agentInbox?: number }
 
 export interface VaultFolder {
   id: string; name: string; kind: "private" | "team"; deleted: boolean;
@@ -64,6 +70,10 @@ export interface VaultRecord {
   ownerId?: string; ownerName?: string; sharedWith?: ShareInfo[]; sharedBy?: string;
   /** Personal space: the orgs this record of mine is shared in (its shares are managed there). */ sharedIn?: string[];
   /** Files on the record, still encrypted: names and keys are opened on demand (features/attachments). */ attachments?: SyncAttachment[];
+  /** Personal space: my personal agents that were given this item. */ agentGrants?: AgentGrantInfo[];
+  createdByAgent?: SyncRecord["createdByAgent"];
+  /** `signed`: the pinned gateway signed the current body (null: no gateway pinned on this device, so not checked). */
+  agentChange?: SyncRecord["agentChange"] & { signed: boolean | null };
 }
 
 export const PERMISSION_LABEL: Record<Permission, string> = { owner: "Owner", edit: "Can edit", view: "Can view", use: "Use only" };

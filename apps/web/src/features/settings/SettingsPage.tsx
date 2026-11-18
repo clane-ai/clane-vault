@@ -2,7 +2,7 @@ import { spacePrefix } from "@/lib/paths";
 import { useState, type FormEvent } from "react";
 import { Link, Navigate } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, HeartPulse, KeyRound, LifeBuoy, MonitorSmartphone, Puzzle, ShieldAlert, ShieldCheck, Smartphone, UserRound } from "lucide-react";
+import { Bot, Download, HeartPulse, KeyRound, LifeBuoy, MonitorSmartphone, Puzzle, ShieldAlert, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { LockLine } from "@/features/admin/PlanLock";
@@ -28,6 +28,10 @@ import { useInstallPrompt } from "@/pwa/install";
 import type { SettingsSection } from "@/lib/paths";
 import { DeviceSection } from "./DeviceSection";
 import { ExtensionSection } from "./ExtensionSection";
+import { MyAgentsSection } from "./MyAgentsSection";
+import { useMyAgents } from "./myAgents";
+import { agentsOff } from "@/features/admin/agents";
+import type { VaultRecord } from "@/features/vault/types";
 
 const card = "rounded-[14px] border border-border-default bg-card p-4 shadow-[var(--shadow-card)]";
 const h2 = "font-display text-[15px] font-semibold tracking-[-0.01em] text-text-primary";
@@ -311,28 +315,34 @@ export function AdminRecoverySection() {
   );
 }
 
-/** The Settings sub-navigation: personal sections only, the same for everyone. */
-export function settingsNav(noKit: boolean): NavGroup[] {
+/** The Settings sub-navigation: personal sections only, the same for everyone. `agents`: personal agents are on for this server. */
+export function settingsNav(noKit: boolean, agents = false): NavGroup[] {
   return [{ label: "Your account", items: [
     { id: "account", label: "Account", icon: UserRound, to: "/settings/account", dot: noKit },
     { id: "security", label: "Security", icon: ShieldCheck, to: "/settings/security" },
     { id: "device", label: "This device", icon: MonitorSmartphone, to: "/settings/device" },
     { id: "extension", label: "Browser extension", icon: Puzzle, to: "/settings/extension" },
     { id: "health", label: "Password health", icon: HeartPulse, to: "/settings/health" },
+    ...(agents ? [{ id: "agents", label: "My agents", icon: Bot, to: "/settings/agents" }] : []),
   ] }];
 }
 
 /**
  * Settings (/settings/*): every user's own sections beside a sub-navigation; admin pages live under /admin.
- * `health`: the vault's password health page (it needs the decrypted vault, which the shell holds).
+ * `health`: the vault's password health page (it needs the decrypted vault, which the shell holds). `records`: the vault's
+ * records, to name the items My agents lists.
  */
-export function SettingsArea({ section, mobile, health }: { section: SettingsSection | null; mobile: boolean; health: React.ReactNode }) {
+export function SettingsArea({ section, mobile, health, records, privateLocked = false }: { section: SettingsSection | null; mobile: boolean; health: React.ReactNode; records: VaultRecord[]; privateLocked?: boolean }) {
   const noKit = useSecurity().data?.recoveryKit === null;
+  // A 404 (agent access or personal agents off) hides My agents. Not asked while private-locked (`privateLocked`): its
+  // 403 would set the app-wide step-up flag, which replaces the vault with the step-up panel; the item shows after the step-up.
+  const agents = useMyAgents(!privateLocked);
+  const agentsOn = agents.isSuccess || (agents.isError && !agentsOff(agents.error));
   if (section === null && !mobile) return <Navigate to="/settings/account" replace />;
   return (
-    <SectionLayout title="Settings" base="/settings" groups={settingsNav(noKit)} active={section} mobile={mobile}>
+    <SectionLayout title="Settings" base="/settings" groups={settingsNav(noKit, agentsOn)} active={section} mobile={mobile}>
       {section === "account" ? <AccountSettings /> : section === "security" ? <SecuritySettings /> : section === "device" ? <DeviceSettings />
-        : section === "extension" ? <ExtensionSettings /> : section === "health" ? health : null}
+        : section === "extension" ? <ExtensionSettings /> : section === "health" ? health : section === "agents" ? <MyAgentsSection records={records} privateLocked={privateLocked} /> : null}
     </SectionLayout>
   );
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { generatePassword, type RecordBody } from "@clane-vault/crypto";
+import { generatePassword, type RecordBody, type RecordType } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ImportSheet } from "@/features/import/ImportSheet";
@@ -25,6 +25,9 @@ import { useOrgApi } from "@/lib/scope";
 import { useSpacePaths } from "@/lib/space";
 import { planMessage, useLocked } from "@/features/admin/plan";
 import { agentsOff, useGateway } from "@/features/admin/agents";
+import { useMyAgents } from "@/features/settings/myAgents";
+import { grantStandingAgents, standingOn } from "./AgentRevealEditor";
+import { liveAgents } from "./RecordAgentsSection";
 
 type Editing = ({ mode: "create" } & NewRecordStart) | { mode: "edit"; id: string; newPassword?: string } | null;
 
@@ -32,7 +35,7 @@ export default function VaultScreen() {
   const v = useVault();
   const [editing, setEditing] = useState<Editing>(null);
   // New Record (step one: location, type, title), opened at a folder; Next opens the editor with them.
-  const [newRecordAt, setNewRecordAt] = useState<{ folderId: string | null } | null>(null);
+  const [newRecordAt, setNewRecordAt] = useState<{ folderId: string | null; type?: RecordType } | null>(null);
   // The folder open in the vault list: + New → Record starts there.
   const [folderId, setFolderId] = useState<string | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
@@ -46,12 +49,16 @@ export default function VaultScreen() {
   // The plan is readable by owners and admins; for plain members the server cannot enforce Business-only policy fields (they are ciphertext).
   // Agents off answers 404 (members can read this); a 503 or any other error keeps the section.
   const gw = useGateway(!!org, true);
+  // In Personal the section is for personal agents: /me/agents answers 404 when they are off on this server.
+  const mine = useMyAgents(!org && !offline && !v.privateLocked);
   const pathsLocked = useLocked("agentPathPolicy", !!org && org.role !== "member");
   // Bulk migration (Keeper with shared folders and people) is an org admin's: Import lives in Personal, so it offers the
   // organisation the user administers.
   const migrateOrg = org ? (org.role !== "member" ? org : null) : orgs.find((o) => o.role !== "member") ?? null;
   const recordHint = team && !v.isLoading && !v.folders.some(canFileInto) ? "Create a shared folder first" : undefined;
   const current = editing?.mode === "edit" ? v.records.find((r) => r.id === editing.id) : undefined;
+  // Reading without approval: the owner's Personal items only, with the gateway and every policy at standing.
+  const standing = !org && standingOn(mine.data) && editing?.mode === "edit" && current?.permission === "owner" && !current.sharedBy && !!current.recordKey;
   // Files picked for a record that doesn't exist yet: uploaded right after its first save (docs/attachments.md).
   const [queue, setQueue] = useState<File[]>([]);
   const oapi = useOrgApi();
@@ -66,13 +73,15 @@ export default function VaultScreen() {
     }
     setQueue(next);
   };
+  // An env file's editor reads a dropped file as its contents (EnvFileField), so the sheet doesn't take drops as attachments.
+  const editingType = editing?.mode === "create" ? editing.type : current?.body?.type;
   const editorDrop = useFileDrop({
     canDrop: editing?.mode === "create" ? limits.uploadsAllowed : recordDrop.canDrop, title: editing?.mode === "create" ? editing.title : current?.body?.title,
-    onFiles: editing?.mode === "create" ? addToQueue : recordDrop.onFiles, disabled: !editing || !limits.enabled || offline,
+    onFiles: editing?.mode === "create" ? addToQueue : recordDrop.onFiles, disabled: !editing || !limits.enabled || offline || editingType === "envFile",
   });
   const closeEditor = () => { setEditing(null); setQueue([]); };
 
-  const onNew = (k: NewKind, at: string | null = folderId) => (k === "folder" ? setFolderOpen(true) : k === "team" ? setTeamOpen(true) : k === "generate" ? setGenOpen(true) : k === "import" ? setImportOpen(true) : setNewRecordAt({ folderId: at }));
+  const onNew = (k: NewKind, at: string | null = folderId) => (k === "folder" ? setFolderOpen(true) : k === "team" ? setTeamOpen(true) : k === "generate" ? setGenOpen(true) : k === "import" ? setImportOpen(true) : setNewRecordAt({ folderId: at, ...(k === "env" ? { type: "envFile" as const } : {}) }));
   // "Generate new password" (Needs attention) opens the editor with a fresh password; the panel offers it to editors only.
   const initial = current?.body && editing?.mode === "edit" && editing.newPassword ? { ...current.body, password: editing.newPassword, passwordChangedAt: new Date().toISOString() } : current?.body ?? undefined;
 
@@ -90,6 +99,8 @@ export default function VaultScreen() {
       }
       else if (current) {
         await v.updateRecord(current, body);
+        // Reading without approval needs the agent to hold the item's key, as Can use does.
+        if (standing) await grantStandingAgents(current, body, liveAgents(mine.data?.agents), v.grantAgent);
         // Moving re-wraps the record key for the target folder (team folders) or drops the folder wrap (private).
         if (folderId !== current.folderId && current.permission === "owner") await v.moveRecord(current, folderId);
         toast.success("Saved");
@@ -117,13 +128,14 @@ export default function VaultScreen() {
           {editing && (
             <RecordEditor key={editing.mode === "edit" ? `${editing.id}-${current?.revision}` : "new"} TitleAs={SheetTitle}
               mode={editing.mode} type={editing.mode === "create" ? editing.type : (current?.body?.type ?? "login")}
-              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={team && !agentsOff(gw.error) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
+              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={(team ? !agentsOff(gw.error) : !!mine.data) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
+              standingReveal={standing ? { agents: liveAgents(mine.data?.agents) } : undefined}
               onSave={save} onCancel={closeEditor}
               files={!limits.enabled || offline ? undefined : editing.mode === "create" ? <QueuedFiles queue={queue} onChange={setQueue} /> : current?.body ? <EditorFiles record={current} /> : undefined} />
           )}
         </SheetContent>
       </Sheet>
-      <NewRecordDialog open={!!newRecordAt} folders={v.folders} folderId={newRecordAt?.folderId} noFolder={!team} onCancel={() => setNewRecordAt(null)}
+      <NewRecordDialog open={!!newRecordAt} folders={v.folders} folderId={newRecordAt?.folderId} type={newRecordAt?.type} noFolder={!team} onCancel={() => setNewRecordAt(null)}
         onNext={(start) => { setNewRecordAt(null); setEditing({ mode: "create", ...start }); }} />
       <Sheet open={genOpen} onOpenChange={setGenOpen}>
         <SheetContent side="right" showCloseButton={false} aria-describedby={undefined} className="w-full sm:max-w-[440px]">

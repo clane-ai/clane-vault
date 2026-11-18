@@ -192,11 +192,39 @@ function Vault({ st, reload }: { st: StateView; reload: () => Promise<void> }) {
   );
   return (
     <Shell header={header}>
+      <RevealsRow st={st} />
       {view === "items" && <Items st={st} reload={reload} flash={flash} />}
       {view === "generator" && <Generator flash={flash} />}
       {view === "settings" && <SettingsView st={st} reload={reload} />}
       {toast && <div role="status" className="pointer-events-none fixed inset-x-3 bottom-3 rounded-lg bg-navy-900 px-3 py-2 text-[12px] text-white shadow-lg">{toast}</div>}
     </Shell>
+  );
+}
+
+/**
+ * An agent is asking for a secret: the web app answers it (R6), so this only says so and opens it. The system notification
+ * needs the optional `notifications` permission, asked for here on first use (F14).
+ */
+function RevealsRow({ st }: { st: StateView }) {
+  const [count, setCount] = useState(0);
+  const [notifying, setNotifying] = useState(true);
+  useEffect(() => {
+    const check = () => void send<{ count: number }>({ type: "reveals" }).then((r) => setCount(r.count ?? 0)).catch(() => undefined);
+    check();
+    const iv = window.setInterval(check, 5000);
+    void ext.permissions.contains({ permissions: ["notifications"] }).then(setNotifying).catch(() => undefined);
+    return () => window.clearInterval(iv);
+  }, []);
+  if (count === 0) return null;
+  return (
+    <div className="px-3 pt-3"><Notice tone="warn">
+      <span className="font-medium">An agent is asking for a secret</span>
+      <div className="mt-1 flex flex-wrap items-center gap-3">
+        <a href={st.webVaultUrl ?? "#"} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-blue-500 hover:underline"><ExternalLink className="size-4" /> Open Clane Vault</a>
+        {!notifying && <button type="button" className="text-blue-500 hover:underline"
+          onClick={() => void ext.permissions.request({ permissions: ["notifications"] }).then(setNotifying).catch(() => undefined)}>Notify me next time</button>}
+      </div>
+    </Notice></div>
   );
 }
 

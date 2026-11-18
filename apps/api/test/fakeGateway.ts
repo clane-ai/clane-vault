@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
-import { b64url, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, signAgentKey } from "@clane-vault/crypto";
+import { b64url, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, signAgentKey, signGatewayMessage, signPersonalAgentKey, type GatewaySigTag } from "@clane-vault/crypto";
 import type { GatewayIdentityInfo } from "../src/lib/gateway.js";
 
 /** A stand-in for apps/gateway's internal port: real key pairs and real attestations, an opaque envelope. */
@@ -9,6 +9,7 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   const token = randomBytes(24).toString("base64url");
   let down = !!o.down;
   let signWrongAgent = false;
+  let reveal: string | undefined;
   let priv: Uint8Array = new Uint8Array();
   const identity: GatewayIdentityInfo = { keyId: "", publicKey: "" };
   const rotateIdentity = async () => {
@@ -18,7 +19,7 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
     identity.publicKey = b64url.encode(kp.publicKey);
   };
   await rotateIdentity();
-  const created: { agentId: string; orgId: string }[] = [];
+  const created: { agentId: string; orgId?: string; ownerUserId?: string; ownerPublicKey?: string }[] = [];
   const dropped: string[] = [];
 
   const server = createServer(async (req, res) => {
@@ -26,14 +27,20 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
     if (down) return send(503, { error: "down" });
     if (req.headers["x-gateway-token"] !== token) return send(401, { error: "unauthorized" });
     const url = req.url ?? "";
-    if (req.method === "GET" && url === "/internal/health") return send(200, { ok: true, identity: { ...identity } });
+    if (req.method === "GET" && url === "/internal/health") return send(200, { ok: true, identity: { ...identity }, ...(reveal ? { reveal } : {}) });
     if (req.method === "POST" && url === "/internal/agents") {
       let raw = "";
       for await (const c of req) raw += c;
-      const ids = JSON.parse(raw) as { agentId: string; orgId: string };
-      created.push({ agentId: ids.agentId, orgId: ids.orgId });
+      const ids = JSON.parse(raw) as { agentId: string; orgId?: string; ownerUserId?: string; ownerPublicKey?: string };
       const publicKey = b64url.encode((await generateKeyPair()).publicKey);
-      const attestation = await signAgentKey(priv, identity.keyId, { orgId: ids.orgId, agentId: signWrongAgent ? crypto.randomUUID() : ids.agentId, publicKey });
+      const agentId = signWrongAgent ? crypto.randomUUID() : ids.agentId;
+      if (ids.ownerUserId) {
+        created.push({ agentId: ids.agentId, ownerUserId: ids.ownerUserId, ownerPublicKey: ids.ownerPublicKey });
+        const attestation = await signPersonalAgentKey(priv, identity.keyId, { ownerUserId: ids.ownerUserId, ownerPublicKey: ids.ownerPublicKey!, agentId, publicKey });
+        return send(200, { publicKey, wrappedPrivateKey: `k2.file-test.${randomBytes(8).toString("base64url")}.v1.${randomBytes(16).toString("base64url")}`, kekId: "file-test", attestation });
+      }
+      created.push({ agentId: ids.agentId, orgId: ids.orgId });
+      const attestation = await signAgentKey(priv, identity.keyId, { orgId: ids.orgId!, agentId, publicKey });
       return send(200, { publicKey, wrappedPrivateKey: `k1.file-test.${randomBytes(8).toString("base64url")}.v1.${randomBytes(16).toString("base64url")}`, kekId: "file-test", attestation });
     }
     const del = /^\/internal\/agents\/([^/]+)$/.exec(url);
@@ -44,6 +51,10 @@ export async function startFakeGateway(o: { down?: boolean } = {}) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token, identity, created, dropped, rotateIdentity,
     setDown(d: boolean) { down = d; },
+    /** Tests: what /internal/health reports as GATEWAY_REVEAL (undefined: an older gateway that says nothing). */
+    setReveal(m: string | undefined) { reveal = m; },
+    /** Tests: sign as the gateway's identity key (deposits, updates). */
+    sign: (tag: GatewaySigTag, message: string) => signGatewayMessage(priv, identity.keyId, tag, message),
     /** Tests: attest a different agent id than the one asked for. */
     setSignWrongAgent(b: boolean) { signWrongAgent = b; },
     close: () => new Promise<void>((r) => server.close(() => r())),

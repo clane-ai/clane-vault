@@ -85,6 +85,51 @@ describe("Org policies section", () => {
     expect(screen.queryByRole("button", { name: "Save policies" })).toBeNull();
   });
 
+  it("on Team the Personal agents block stays editable and saves through its own route", async () => {
+    session.mockReturnValue({ org: { ...ORG, policies: { personalAgentsEnabled: true } }, orgs: [ORG], user: { id: "a1", name: "Ada", role: "admin" }, applyOrgs: vi.fn() } as never);
+    let put: unknown = null;
+    server.use(
+      http.get("/api/v1/org/plan", () => HttpResponse.json({ entitlements: { features: { policyEdit: false } } })),
+      http.put("/api/v1/admin/settings/policies/personal-agents", async ({ request }) => {
+        put = await request.json();
+        return HttpResponse.json({ policies: { autoLockMinutes: null, minPasswordLength: 12, minPasswordScore: 0, links: { allowed: true, maxExpiryHours: 168, requirePassword: false },
+          offlineAllowed: true, extensionAllowed: true, breachCheckAllowed: true, ipAllowlist: [], ownerBreakGlass: true, personalAgents: put }, changedAt: null, changedBy: null, yourIp: "127.0.0.1" });
+      }),
+      http.get("/api/v1/me/orgs", () => HttpResponse.json({ orgs: [ORG], invitations: [], allowOrgCreation: true, instanceAdmin: false })),
+    );
+    try {
+      wrap(<OrgPoliciesSection />);
+      expect(await screen.findByText("Available on the Business plan.")).toBeInTheDocument();
+      expect(await screen.findByLabelText("Master password: minimum length")).toBeDisabled();
+      expect(screen.getByRole("region", { name: "Personal agents" })).toBeInTheDocument();
+      expect(screen.getByText("This is the one policy that reaches members' Personal space. It can switch personal agents off; it cannot show you what they hold.")).toBeInTheDocument();
+      expect(screen.getByRole("switch", { name: "Members may use personal agents" })).toBeEnabled();
+      await userEvent.type(screen.getByLabelText("At most n per member"), "3");
+      await userEvent.click(screen.getByRole("switch", { name: "Agents may save and update items" }));
+      await userEvent.click(screen.getByRole("combobox", { name: "Reading values" }));
+      await userEvent.click(await screen.findByRole("option", { name: "Off" }));
+      await userEvent.click(screen.getByRole("button", { name: "Save personal agents" }));
+      await waitFor(() => expect(put).toEqual({ allowed: true, maxPerMember: 3, write: false, reveal: "off" }));
+    } finally {
+      session.mockReturnValue({ org: ORG, orgs: [ORG], user: { id: "a1", name: "Ada", role: "admin" }, applyOrgs: vi.fn() } as never);
+    }
+  });
+
+  it("the full form never sends the Personal agents block; the block is hidden where the server has no personal agents", async () => {
+    let put: Record<string, unknown> | null = null;
+    server.use(
+      http.get("/api/v1/admin/settings/policies", () => HttpResponse.json({ policies: { autoLockMinutes: null, minPasswordLength: 12, minPasswordScore: 0, links: { allowed: true, maxExpiryHours: 168, requirePassword: false },
+        offlineAllowed: true, extensionAllowed: true, breachCheckAllowed: true, ipAllowlist: [], ownerBreakGlass: true, personalAgents: { allowed: false, maxPerMember: null, write: true, reveal: "approval" } }, changedAt: null, changedBy: null, yourIp: "127.0.0.1" })),
+      http.put("/api/v1/admin/settings/policies", async ({ request }) => { put = (await request.json()) as never; return HttpResponse.json({ policies: put, changedAt: null, changedBy: null, yourIp: null }); }),
+      http.get("/api/v1/me/orgs", () => HttpResponse.json({ orgs: [ORG], invitations: [], allowOrgCreation: true, instanceAdmin: false })),
+    );
+    wrap(<OrgPoliciesSection />);
+    await userEvent.click(await screen.findByRole("button", { name: "Save policies" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    expect(put!).not.toHaveProperty("personalAgents");
+    expect(screen.queryByRole("region", { name: "Personal agents" })).toBeNull();
+  });
+
   it("is hidden from members", () => {
     session.mockReturnValueOnce({ org: { ...ORG, role: "member" }, orgs: [ORG], user: { id: "m1", name: "Mia", role: "member" } } as never);
     const { container } = wrap(<OrgPoliciesSection />);
