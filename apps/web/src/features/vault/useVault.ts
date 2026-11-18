@@ -378,11 +378,11 @@ export function useVault() {
 }
 
 /** Active members of the org (the active space's, or an InOrg override's), with their public and membership keys, for the share and member pickers. */
-export function usePeople() {
+export function usePeople(enabled = true) {
   const org = useScopeOrg();
   const oapi = useOrgApi();
   // Fresh whenever a picker opens: new members, and their current membership keys (what folder keys are sealed to).
-  return useQuery({ queryKey: ["people", useScope()], enabled: !!org, queryFn: () => oapi.get<{ users: Person[] }>("/users").then((r) => r.users), staleTime: 0 });
+  return useQuery({ queryKey: ["people", useScope()], enabled: enabled && !!org, queryFn: () => oapi.get<{ users: Person[] }>("/users").then((r) => r.users), staleTime: 0 });
 }
 
 export interface ActivityEvent { action: string; at: string; actor: string | null; target: string | null }

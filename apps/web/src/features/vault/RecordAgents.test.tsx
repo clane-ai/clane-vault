@@ -55,9 +55,9 @@ beforeEach(async () => {
   );
 });
 
-async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
+async function serveRecord(o: { /** A login with a 2FA secret. */ totp?: boolean; agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
   const id = crypto.randomUUID();
-  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw" }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
+  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw", ...(o.totp ? { totpSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" } : {}) }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
@@ -288,6 +288,107 @@ describe("Can reveal", () => {
     expect(within(section).getByRole("checkbox", { name: "STRIPE_KEY" })).not.toBeChecked();
     expect(within(section).queryByRole("checkbox", { name: /Contents/ })).toBeNull();
     expect(within(section).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+});
+
+/** The record's panel with Agent use on in this space (VaultScreen passes `agentUse`), and its sheet opened from the header. */
+async function openAgentUse(status: string) {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}>
+    <VaultPage agentUse={{ pathsLocked: false, onSave: vi.fn(async () => undefined) }} /></MemoryRouter></QueryClientProvider>);
+  await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+  await userEvent.click(await screen.findByRole("button", { name: `Agent use: ${status}` }));
+  return screen.findByRole("dialog", { name: "Agent use: Stripe" });
+}
+
+describe("the Agent use sheet on a Personal item", () => {
+  const SEE = "Let the AI see this value";
+
+  it("the share sheet's no-settings line opens it", async () => {
+    await serveRecord({ agentPolicy: false });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}>
+      <VaultPage agentUse={{ pathsLocked: false, onSave: vi.fn(async () => undefined) }} /></MemoryRouter></QueryClientProvider>);
+    await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Share" }));
+    const agents = await within(await screen.findByRole("dialog")).findByRole("region", { name: "Agents" });
+    expect(within(agents).getByText("This item has no Agent use settings yet, so the agent can't use it.")).toBeInTheDocument();
+    await userEvent.click(within(agents).getByRole("button", { name: "Set up Agent use" }));
+    expect(await screen.findByRole("dialog", { name: "Agent use: Stripe" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Share Stripe" })).toBeNull();
+  });
+
+  it("the summary names the agent that holds the item", async () => {
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const sheet = await openAgentUse("Use");
+    const status = within(sheet).getByRole("region", { name: "Status" });
+    expect(status).toHaveTextContent("1 agent can use this item.");
+    expect(await within(status).findByRole("listitem", { name: "My bot" })).toHaveTextContent("Use");
+  });
+
+  it("Let the AI see this value: off for every item; on shows the picker with Username ticked, never the password, and the one-time code by name", async () => {
+    reveal = { rules: "approval", gateway: "approval" };
+    const { id } = await serveRecord({ totp: true });
+    let put: { path: string; body: { sealedStub: string; fields: string[] } } | null = null, granted = false, saved = false;
+    server.use(
+      http.put("/api/v1/records/:id/agent-reveal/:agentId", async ({ params, request }) => { put = { path: `${params.id}/${params.agentId}`, body: (await request.json()) as never }; return HttpResponse.json({ ok: true }); }),
+      http.post("/api/v1/records/:id/agent-grants", () => { granted = true; return HttpResponse.json({ ok: true }, { status: 201 }); }),
+      http.put("/api/v1/records/:id", () => { saved = true; return HttpResponse.json({ ok: true }); }),
+    );
+    const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    expect(section).toHaveTextContent("Each read still needs your approval in the web app, unless your server's operator has turned on reading without approval.");
+    const toggle = within(section).getByRole("switch", { name: "Let My bot see values from this item" });
+    expect(toggle).not.toBeChecked();
+    expect(within(section).queryByRole("checkbox")).toBeNull();
+    await userEvent.click(toggle);
+    // Nothing is sent until the fields are confirmed, under both warnings.
+    expect(put).toBeNull();
+    expect(within(section).getByText("Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.")).toBeInTheDocument();
+    expect(within(section).getByRole("note", { name: "Sharing with an agent" })).toBeInTheDocument();
+    expect(within(section).getByRole("checkbox", { name: "Username" })).toBeChecked();
+    expect(within(section).getByRole("checkbox", { name: "Password" })).not.toBeChecked();
+    expect(within(section).getByRole("checkbox", { name: "Current one-time code" })).not.toBeChecked();
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    // The share sheet's own path: a stub sealed to the agent, no record key, and the record itself is not saved.
+    expect(put!.path).toBe(`${id}/${AGENT_ID}`);
+    expect(put!.body.fields).toEqual(["username"]);
+    expect(await openRevealStub(put!.body.sealedStub, { ownerUserId: ME, agentId: AGENT_ID, recordId: id }, agentKeys)).toEqual({ title: "Stripe", type: "login", fields: ["username"] });
+    expect(granted).toBe(false);
+    expect(saved).toBe(false);
+  });
+
+  it("turning it off takes the fields away (DELETE), and the header says Use + See while it is on", async () => {
+    reveal = { rules: "approval", gateway: "approval" };
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: false, write: false, reveal: ["username"] }] });
+    let deleted = "";
+    server.use(http.delete("/api/v1/records/:id/agent-reveal/:agentId", ({ params }) => { deleted = String(params.agentId); return HttpResponse.json({ ok: true }); }));
+    const section = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    expect(section).toHaveTextContent("Can read: Username");
+    const toggle = within(section).getByRole("switch", { name: "Let My bot see values from this item" });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(deleted).toBe(AGENT_ID));
+  });
+
+  it("is per agent when there are several", async () => {
+    reveal = { rules: "approval", gateway: "approval" };
+    agents = [...agents, row({ id: "cccccccc-0000-4000-8000-000000000003", name: "Second bot" })];
+    await serveRecord();
+    const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    expect(within(section).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["Let My bot see values from this item", "Let Second bot see values from this item"]);
+  });
+
+  it("the section is absent where reading isn't offered: the gateway or the rules say off", async () => {
+    for (const r of [{ rules: "approval", gateway: "off" }, { rules: "off", gateway: "approval" }]) {
+      reveal = r;
+      await serveRecord();
+      const sheet = await openAgentUse("Use");
+      await within(sheet).findByRole("region", { name: "Status" });
+      await new Promise((x) => setTimeout(x, 100));
+      expect(within(sheet).queryByRole("region", { name: SEE })).toBeNull();
+      cleanup();
+    }
   });
 });
 

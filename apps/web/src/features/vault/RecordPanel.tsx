@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, Dices, Eye, EyeOff, Folder, Pencil, RotateCcw, Share2, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bot, Dices, Eye, EyeOff, Folder, Pencil, RotateCcw, Share2, Trash2, Users, X } from "lucide-react";
 import { totpCode, totpSecondsLeft, typeLabel, type RecordBody } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -7,6 +7,8 @@ import { relativeTime } from "@/lib/time";
 import { OneTimeLinkButton } from "@/features/links/OneTimeLinkButton";
 import type { StrengthScore } from "@/lib/strength";
 import { reasonLine, strengthForScore, strengthOf, type AttentionReason } from "./attention";
+import { agentUseApplies } from "./AgentPolicyEditor";
+import { agentUseStatus, statusDot } from "./AgentUseSheet";
 import { CopyButton } from "./CopyButton";
 import { EnvDiff, EnvPanelSection } from "./EnvFile";
 import { RecordAvatar } from "./RecordAvatar";
@@ -100,9 +102,10 @@ function FieldValue({ f, shown }: { f: ShownField; shown: boolean }) {
   return <span aria-label={f.label} className={f.mono || f.format ? MONO : "text-[14px] break-words text-text-primary"}>{text}</span>;
 }
 
-export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious, onAckAgentChange, previousBody }: {
+export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, onTrash, onRestore, onPurge, onShare, onAgentUse, reasons, onNewPassword, children, files, scoreOf, onRestorePrevious, onAckAgentChange, previousBody }: {
   record: VaultRecord; folderName: string | null; teamFolder?: boolean; onClose: () => void; onEdit: () => void; onTrash: () => void; onRestore?: () => void; onPurge?: () => void;
   /** Opens the share sheet (record owners only; its "One-time link" tab makes links). */ onShare?: () => void;
+  /** Opens the Agent use sheet. Given where agents are on in this space; the button is for people who can edit, on items with something to send. */ onAgentUse?: () => void;
   /** Needs-attention reasons for this record, if any. */ reasons?: AttentionReason[];
   /** Opens the editor with a generated password (shown to people who can edit). */ onNewPassword?: () => void;
   /** Extra sections under the fields (who can open it, activity). */ children?: React.ReactNode;
@@ -120,6 +123,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   const canEdit = record.permission === "owner" || record.permission === "edit";
   const canTrash = record.permission === "owner";
   const canShare = record.permission === "owner" && !!onShare;
+  // The same rule the editor section had: edit holders, on an item with a policy or something to send.
+  const agentUse = canEdit && onAgentUse && b && agentUseApplies(b) ? agentUseStatus(record) : null;
   // "Use only" (spec §5.6): the app never shows any secret field (password, card number, CVV, keys…), but Copy still
   // works. A soft limit, not a cryptographic one.
   const useOnly = record.permission === "use";
@@ -170,9 +175,15 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
                 )}
               </div>
             )) : (canEdit || canTrash) && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {canEdit && <Button variant="outline" onClick={onEdit}><Pencil className="size-4" />Edit</Button>}
                 {canShare && <Button variant="outline" onClick={onShare}><Share2 className="size-4" />Share</Button>}
+                {agentUse && (
+                  <Button variant="outline" onClick={onAgentUse} aria-label={`Agent use: ${agentUse}`} title={agentUse === "Off" ? "No agent can use this item yet" : agentUse === "Use" ? "Agents can use it in requests" : "An AI model may read some of its fields"}>
+                    <Bot className="size-4" />Agent use
+                    <span className="flex items-center gap-1.5 border-l border-border-default pl-2 text-[12.5px] font-normal text-text-secondary"><span aria-hidden="true" className={`size-1.5 rounded-full ${statusDot(agentUse)}`} />{agentUse}</span>
+                  </Button>
+                )}
                 {/* Editors who aren't the owner can't share with people, but can still send a one-time link. */}
                 {!canShare && <OneTimeLinkButton record={record} />}
                 {canTrash && (

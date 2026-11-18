@@ -16,7 +16,7 @@ import { ConflictError, useVault } from "./useVault";
 import VaultPage from "./VaultPage";
 import { useSession } from "@/lib/session";
 import { adminPath, spacePrefix } from "@/lib/paths";
-import { canFileInto } from "./types";
+import { canFileInto, type VaultRecord } from "./types";
 import { EditorFiles, QueuedFiles } from "@/features/attachments/EditorFiles";
 import { useFileDrop } from "@/features/attachments/AttachmentDropZone";
 import { useAttachmentLimits, useRecordDrop } from "@/features/attachments/useAttachments";
@@ -107,20 +107,26 @@ export default function VaultScreen() {
       }
       setEditing(null);
       setQueue([]);
-    } catch (e) {
-      if (e instanceof ConflictError) { toast.error(e.message); return; }
-      if (e instanceof ApiError && e.code === "in_trash") { toast.error("This record is in the trash."); return; }
-      const pm = planMessage(e, org?.role === "member");
-      if (pm) throw new Error(pm);
-      // The body's own limits (crypto validate): shown in the editor as they are.
-      if (e instanceof Error && /too large|too long|at most \d+/.test(e.message)) throw new Error("This record is too large. Shorten long fields or notes, or remove some custom fields.");
-      throw new Error("Couldn't save. Check your connection and try again.");
-    }
+    } catch (e) { saveFailed(e); }
   }
+  /** A failed save, in words: thrown for the form to show; a conflict or a trashed record is a toast instead while `toasts`. */
+  function saveFailed(e: unknown, toasts = true): void {
+    const gone = e instanceof ConflictError ? e.message : e instanceof ApiError && e.code === "in_trash" ? "This record is in the trash." : null;
+    if (gone && toasts) { toast.error(gone); return; }
+    if (gone) throw new Error(gone);
+    const pm = planMessage(e, org?.role === "member");
+    if (pm) throw new Error(pm);
+    // The body's own limits (crypto validate): shown in the editor as they are.
+    if (e instanceof Error && /too large|too long|at most \d+/.test(e.message)) throw new Error("This record is too large. Shorten long fields or notes, or remove some custom fields.");
+    throw new Error("Couldn't save. Check your connection and try again.");
+  }
+  // The Agent use sheet saves the way the editor does: the whole body, re-encrypted here, through updateRecord.
+  const agentUse = (team ? !agentsOff(gw.error) : !!mine.data)
+    ? { pathsLocked, onSave: (r: VaultRecord, body: RecordBody) => v.updateRecord(r, body).then(() => undefined, (e) => saveFailed(e, false)) } : undefined;
 
   return (
     <>
-      <VaultPage folderId={folderId} onFolderChange={setFolderId} onNew={onNew}
+      <VaultPage folderId={folderId} onFolderChange={setFolderId} onNew={onNew} agentUse={agentUse}
         newButton={offline ? undefined : (compact) => <NewMenu onNew={(k) => onNew(k)} team={team} recordHint={recordHint} compact={compact} />} onCreate={() => setNewRecordAt({ folderId })} onEdit={offline ? undefined : (id, o) => setEditing({ mode: "edit", id, ...(o?.newPassword ? { newPassword: generatePassword() } : {}) })} />
       <Sheet open={!!editing} onOpenChange={(o) => !o && closeEditor()}>
         <SheetContent side="right" showCloseButton={false} aria-describedby={undefined} className="w-full sm:max-w-[440px]" {...editorDrop.handlers}>
@@ -128,7 +134,7 @@ export default function VaultScreen() {
           {editing && (
             <RecordEditor key={editing.mode === "edit" ? `${editing.id}-${current?.revision}` : "new"} TitleAs={SheetTitle}
               mode={editing.mode} type={editing.mode === "create" ? editing.type : (current?.body?.type ?? "login")}
-              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={(team ? !agentsOff(gw.error) : !!mine.data) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
+              initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
               standingReveal={standing ? { agents: liveAgents(mine.data?.agents) } : undefined}
               onSave={save} onCancel={closeEditor}
               files={!limits.enabled || offline ? undefined : editing.mode === "create" ? <QueuedFiles queue={queue} onChange={setQueue} /> : current?.body ? <EditorFiles record={current} /> : undefined} />

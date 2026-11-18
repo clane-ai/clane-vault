@@ -1,15 +1,16 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { encryptFolderName, encryptNewRecord, randomBytes } from "@clane-vault/crypto";
+import { decryptRecordBody, encryptFolderName, encryptNewRecord, randomBytes, unwrapKey } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
 import VaultPage from "./VaultPage";
 import VaultScreen from "./VaultScreen";
 
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as never;
 const userKey = randomBytes(32);
 vi.spyOn(sessionModule, "useSession").mockReturnValue({ org: { id: "o1", name: "Acme", slug: "acme", role: "member", isDefault: true }, orgs: [{ id: "o1", name: "Acme", slug: "acme", role: "member", isDefault: true }], applyOrgs: vi.fn(), user: { id: "u1", name: "Sara" }, generation: () => 0, lock: vi.fn(), signOut: vi.fn(), keys: { userKey, privateKey: new Uint8Array(), publicKey: new Uint8Array() } } as never);
 
@@ -211,42 +212,72 @@ describe("VaultPage", () => {
     await waitFor(() => expect(posted).toMatchObject({ folderId: f.id, type: "login" }));
   });
 
+  /** The Agent use button in the open record's header, once the space has had time to answer. */
+  const agentUseButton = async (shown: boolean) => {
+    if (shown) return expect(await screen.findByRole("button", { name: "Agent use: Off" })).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByRole("button", { name: /^Agent use/ })).toBeNull();
+  };
+
   describe.each([[404, false], [503, true]])("Agent use when the gateway answers %i", (status, shown) => {
-    it(shown ? "stays in the editor" : "is hidden from the editor", async () => {
-      const f = await syncWithFolder();
+    it(shown ? "stays on the record" : "is hidden from the record", async () => {
+      const r = await login("AWS root account", "edit");
       server.use(
-        http.get("/api/v1/sync", () => HttpResponse.json(f.body)),
+        http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [r] })),
         http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: status === 404 ? "not_found" : "gateway_unavailable" }, { status })),
       );
       renderPage(<VaultScreen />);
-      await userEvent.click(await screen.findByRole("button", { name: /^Infrastructure/ }));
-      await userEvent.click(screen.getByRole("button", { name: "New" }));
-      await userEvent.click(screen.getByRole("menuitem", { name: "Record" }));
-      await userEvent.type(await screen.findByLabelText("Title"), "AWS root account{Enter}");
-      await screen.findByRole("heading", { name: "New login" });
-      if (shown) expect(await screen.findByRole("region", { name: "Agent use" })).toBeInTheDocument();
-      else { await new Promise((r) => setTimeout(r, 100)); expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull(); }
+      await userEvent.click(await screen.findByRole("button", { name: /^Shared directly/ }));
+      await userEvent.click(await screen.findByRole("button", { name: /AWS root account/ }));
+      await screen.findByRole("button", { name: "Edit" });
+      await agentUseButton(shown);
     });
   });
 
-  // Personal space: the section is for personal agents, so it follows /me/agents (404 when they are off on this server).
+  // Personal space: Agent use is for personal agents, so it follows /me/agents (404 when they are off on this server).
   describe.each([[404, false], [200, true]])("Agent use in the Personal space when /me/agents answers %i", (status, shown) => {
-    it(shown ? "is in the editor" : "is hidden from the editor", async () => {
+    it(shown ? "is on the record" : "is hidden from the record", async () => {
       const back = inPersonal();
+      const r = await login("Stripe");
       server.use(
-        http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [] })),
+        http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [r] })),
         http.get("/api/v1/me/agents", () => status === 404 ? HttpResponse.json({ error: "not_found" }, { status })
           : HttpResponse.json({ agents: [], allowance: { used: 0, allowed: 20 }, rules: { allowed: true }, gateway: null })),
       );
       renderPage(<VaultScreen />);
-      await userEvent.click(await screen.findByRole("button", { name: "New" }));
-      await userEvent.click(screen.getByRole("menuitem", { name: "Record" }));
-      await userEvent.type(await screen.findByLabelText("Title"), "Stripe{Enter}");
-      await screen.findByRole("heading", { name: "New login" });
-      if (shown) expect(await screen.findByRole("region", { name: "Agent use" })).toBeInTheDocument();
-      else { await new Promise((r) => setTimeout(r, 100)); expect(screen.queryByRole("region", { name: "Agent use" })).toBeNull(); }
+      await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+      await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+      await screen.findByRole("button", { name: "Edit" });
+      await agentUseButton(shown);
       back();
     });
+  });
+
+  it("Agent use saves through the editor's save: the policy goes to the server inside the encrypted body, never in plain text", async () => {
+    const r = await login("AWS root account", "edit");
+    let put: { encBody: string; revision: number } | null = null;
+    let raw = "";
+    server.use(
+      http.get("/api/v1/sync", () => HttpResponse.json({ serverTime: "", folders: [], records: [put ? { ...r, encBody: put.encBody, revision: 2 } : r] })),
+      http.get("/api/v1/org/agents/gateway", () => HttpResponse.json({ error: "gateway_unavailable" }, { status: 503 })),
+      http.put("/api/v1/records/:id", async ({ request }) => { raw = await request.text(); put = JSON.parse(raw); return HttpResponse.json({ revision: 2, updatedAt: new Date().toISOString() }); }),
+    );
+    renderPage(<VaultScreen />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Shared directly/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /AWS root account/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Agent use: Off" }));
+    const sheet = await screen.findByRole("dialog", { name: "Agent use: AWS root account" });
+    await userEvent.type(within(sheet).getByLabelText("Allowed hosts"), "api.stripe.com");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    expect(Object.keys(put!).sort()).toEqual(["encBody", "revision", "type"]);
+    expect(raw).not.toContain("api.stripe.com");
+    expect(raw).not.toContain("agentPolicy");
+    const rk = await unwrapKey(r.wrappedRecordKey, userKey, `record-key:${r.id}`);
+    expect((await decryptRecordBody(r.id, put!.encBody, rk)).agentPolicy).toEqual({ v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" } });
+    // The sheet closes and the button shows the policy is set.
+    expect(await screen.findByRole("button", { name: "Agent use: Use" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Agent use: AWS root account" })).toBeNull();
   });
 
   it("asks for the gateway once: a 404 is not retried, and a window focus doesn't refetch it", async () => {

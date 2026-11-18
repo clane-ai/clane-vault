@@ -10,7 +10,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Logo } from "@/components/brand/Logo";
 import { MOBILE, useMediaQuery } from "@/lib/useMediaQuery";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RECORD_TYPE_GROUPS, type RecordType } from "@clane-vault/crypto";
+import { RECORD_TYPE_GROUPS, type RecordBody, type RecordType } from "@clane-vault/crypto";
 import { TYPE_ICON } from "./recordKinds";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -29,7 +29,9 @@ import { RecordActivity, WhoCanOpen } from "./RecordSharing";
 import { ShareSheet } from "./ShareSheet";
 import { GrantToAgentDialog } from "./GrantToAgentDialog";
 import { AgentInbox } from "./AgentInbox";
-import { liveAgents } from "./RecordAgentsSection";
+import { isPersonalAgentItem, liveAgents } from "./RecordAgentsSection";
+import { agentUseApplies } from "./AgentPolicyEditor";
+import { agentAccess, AgentSeeSection, AgentUseSheet } from "./AgentUseSheet";
 import { useMyAgents } from "@/features/settings/myAgents";
 import { HealthView } from "@/features/health/HealthPage";
 import { useHealthReport } from "@/features/health/useHealthReport";
@@ -49,7 +51,7 @@ import { useMembershipSync, useSecurity } from "@/features/recovery/recovery";
 import { ResetBanner } from "@/features/recovery/ResetBanner";
 import { StatusBar } from "./StatusBar";
 import { OfflineBanner, OfflineOnlyPanel } from "./OfflineBanner";
-import { useVault } from "./useVault";
+import { usePeople, useVault } from "./useVault";
 import { usePasswordScores } from "./usePasswordScores";
 import { OrgSwitcher } from "@/features/orgs/OrgSwitcher";
 import { useOrgLogoUrl } from "@/features/orgs/OrgLogo";
@@ -66,7 +68,9 @@ function TopBarBrand({ org }: { org: { id: string; name: string; logoVersion?: s
   return url && org ? <img src={url} alt={org.name} className="h-8 max-w-[180px] object-contain object-left" /> : <Logo size="sm" onDark animated={false} />;
 }
 
-export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId: folderProp, onFolderChange }: {
+export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId: folderProp, onFolderChange, agentUse }: {
+  /** Agent use is on in this space (VaultScreen decides): the record panel's button and its sheet. `onSave` is the editor's save. */
+  agentUse?: { pathsLocked: boolean; onSave: (record: VaultRecord, body: RecordBody) => Promise<void> };
   /** + New: the sidebar's (a round + in the icon rail: `compact`) and the phone top bar's. */
   newButton?: React.ReactNode | ((compact: boolean) => React.ReactNode); onEdit?: (id: string, opts?: { newPassword?: boolean }) => void; onCreate?: () => void;
   /** The folder Options' New Record / New Folder / New Shared Folder (with the folder they act on); no Options without it. */
@@ -105,6 +109,9 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   const scores = usePasswordScores(v.records);
   const health = useHealthReport(v.records, v.isLoading, v.folders, scores);
   const [sharing, setSharing] = useState(false);
+  const [agentUseOpen, setAgentUseOpen] = useState(false);
+  // Only while the Agent use sheet is open: which of an organisation's direct shares are agents.
+  const people = usePeople(agentUseOpen);
   const [managingId, setManagingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"name" | "recent">("name");
@@ -212,7 +219,8 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   // Lists that aren't records: Share links and From agents (no type filter, sort or search results heading).
   const pageView = listView === "links" || listView === "agents";
   const showFlat = mode === "flat" || query !== "" || listView !== "vault" || typeFilter !== null;
-  useEffect(() => { setSharing(false); }, [selectedId]);
+  useEffect(() => { setSharing(false); setAgentUseOpen(false); }, [selectedId]);
+  const selectedTeam = selected && folderOf(selected.folderId)?.kind === "team" ? folderOf(selected.folderId) : null;
   const spaceName = org ? org.name : "Personal";
   const HEAD: Record<typeof listView, [string, string]> = {
     vault: [org ? "Vault" : "Personal vault", org ? `${org.name}: its shared folders and records shared with you here.` : "Your private records. Nobody else sees them."],
@@ -368,7 +376,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
             <div className="relative min-h-0 border-l border-border-default max-[1099px]:border-l-0" {...drop.handlers}>
               {drop.overlay}
               <RecordPanel record={selected} files={selected.body ? <FilesSection record={selected} /> : undefined} folderName={folderName(selected.folderId)} teamFolder={folderOf(selected.folderId)?.kind === "team"} onClose={closeRecord} scoreOf={scores.scoreOf}
-                onShare={() => setSharing(true)} onRestorePrevious={offline ? undefined : () => v.restorePrevious(selected)} previousBody={offline ? undefined : () => v.previousBody(selected)}
+                onShare={() => setSharing(true)} onAgentUse={agentUse && !offline ? () => setAgentUseOpen(true) : undefined} onRestorePrevious={offline ? undefined : () => v.restorePrevious(selected)} previousBody={offline ? undefined : () => v.previousBody(selected)}
                 onAckAgentChange={offline ? undefined : () => v.ackAgentChange(selected.id)}
                 onEdit={() => onEdit?.(selected.id)} reasons={reasons.get(selected.id)} onNewPassword={onEdit && !offline ? () => onEdit(selected.id, { newPassword: true }) : undefined}
                 onTrash={() => act("Moved to trash", "move it to the trash", () => v.trashRecord(selected.id))}
@@ -376,8 +384,17 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                 onPurge={() => act("Deleted forever", "delete it", () => v.purgeRecord(selected.id))}>
                 {!selected.deleted && !offline && <><WhoCanOpen record={selected} folder={folderOf(selected.folderId)} /><RecordActivity record={selected} /></>}
               </RecordPanel>
+              {agentUse && !offline && (
+                <AgentUseSheet record={selected} open={agentUseOpen} onClose={() => setAgentUseOpen(false)} pathsLocked={agentUse.pathsLocked}
+                  access={agentAccess(selected, { myAgents, people: people.data, teamFolder: selectedTeam })}
+                  onSave={async (body) => { await agentUse.onSave(selected, body); setAgentUseOpen(false); toast.success(body.agentPolicy ? "Agent use saved" : "Agent use removed"); }}
+                  onManageAccess={selected.permission === "owner" ? () => { setAgentUseOpen(false); setSharing(true); } : undefined}
+                  see={isPersonalAgentItem(selected, { org, teamFolder: selectedTeam, userId: user?.id }) &&
+                    <AgentSeeSection record={selected} onSetReveal={(a, fields) => v.setAgentReveal(selected, a, fields)} onUnreveal={(id) => v.revokeAgentReveal(selected.id, id)} />} />
+              )}
               {selected.permission === "owner" && (
-                <ShareSheet record={selected} teamFolder={folderOf(selected.folderId)?.kind === "team" ? folderOf(selected.folderId) : null} open={sharing} onClose={() => setSharing(false)}
+                <ShareSheet record={selected} teamFolder={selectedTeam} open={sharing} onClose={() => setSharing(false)}
+                  onAgentUse={agentUse && !offline && selected.body && agentUseApplies(selected.body) ? () => { setSharing(false); setAgentUseOpen(true); } : undefined}
                   onShare={(p, perm) => v.shareRecord(selected, p, perm)} onShareIn={(o, p, perm) => v.shareRecordIn(selected, o, p, perm)} onUpdate={(uid, perm) => v.updateShare(selected.id, uid, perm)} onRemove={(uid) => v.unshare(selected.id, uid)}
                   onGrantAgent={(a) => v.grantAgent(selected, a)} onRevokeAgent={(id) => v.revokeAgentGrant(selected.id, id)}
                   onSetAgentWrite={(id, write) => v.setAgentWrite(selected.id, id, write)}

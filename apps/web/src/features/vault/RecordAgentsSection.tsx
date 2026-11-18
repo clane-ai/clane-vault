@@ -6,7 +6,8 @@ import { ApiError } from "@/lib/api";
 import { AgentAttestationError, KeyChangedError, type GatewayIdentity } from "@/lib/orgKeys";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { agentErrorText } from "@/features/admin/agents";
-import { useMyAgents, type MyAgent } from "@/features/settings/myAgents";
+import { useMyAgents, type MyAgent, type MyAgents } from "@/features/settings/myAgents";
+import { cn } from "@/lib/utils";
 import { AgentWarning } from "./AgentWarning";
 import { PersonAvatar } from "./people";
 import { revealFieldLabel } from "./reveals";
@@ -44,17 +45,53 @@ const reveals = (m: Mode) => m === "reveal" || m === "both";
 
 /** My personal agents that can be given items: verified and live. */
 export const liveAgents = (agents: MyAgent[] | undefined) => (agents ?? []).filter((a) => a.status === "active");
+/** The picker's first ticks: Username where the item has one; never the password, never an env entry. */
+export const defaultRevealFields = (body: RecordBody) => (body.type !== "envFile" && revealOptions(body).includes("username") ? ["username"] : []);
+/** Reading values is offered only where the owner's policies and the gateway (GATEWAY_REVEAL) both allow it. */
+export const revealOffered = (d: MyAgents | undefined) => !!d && d.rules.reveal !== "off" && !!d.gateway?.reveal && d.gateway.reveal !== "off";
+/** Personal agents take only items I own in the Personal space, outside team folders. */
+export const isPersonalAgentItem = (record: VaultRecord, o: { org: unknown; teamFolder: unknown; userId: string | undefined }) =>
+  !o.org && !o.teamFolder && !record.sharedBy && record.permission === "owner" && !!o.userId && record.ownerId === o.userId;
+/** A failed grant or reveal change, in words: fields the item lacks, else the attestation's or the server's reason. */
+export const revealErrorText = (e: unknown) => (e instanceof Error && e.message.startsWith("reveal fields:") ? "Choose fields this item has." : grantErrorText(e));
+export const REVEAL_WARNING = "Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.";
+
+/** The fields an agent may read, as ticks, under the warning; Save is off with nothing ticked. */
+export function RevealFieldPicker({ body, fields, onChange, busy, onSave, onCancel, note, className }: {
+  body: RecordBody; fields: string[]; onChange: (f: string[]) => void; busy: boolean; onSave: () => void; onCancel: () => void;
+  /** The line under the warning. */ note: React.ReactNode; className?: string;
+}) {
+  return (
+    <fieldset className={cn("flex w-full flex-col gap-2", className)} disabled={busy}>
+      <legend className="mb-1 text-[13px] font-medium text-text-primary">Fields the agent may read</legend>
+      {revealOptions(body).map((f) => (
+        <label key={f} className="flex min-h-6 cursor-pointer items-center gap-2 text-[13px] text-text-primary">
+          <input type="checkbox" className="size-4 accent-blue-500" checked={fields.includes(f)}
+            onChange={(e) => onChange(e.target.checked ? [...fields, f] : fields.filter((x) => x !== f))} />
+          {revealFieldLabel(body, f)}
+        </label>
+      ))}
+      <p className="text-[12.5px] font-medium text-text-primary">{REVEAL_WARNING}</p>
+      <p className="text-[12.5px] text-text-secondary">{note}</p>
+      <div className="flex gap-2">
+        <Button type="button" size="sm" disabled={busy || fields.length === 0} onClick={onSave}>Save</Button>
+        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onCancel}>Cancel</Button>
+      </div>
+    </fieldset>
+  );
+}
 
 /**
  * Share sheet, Personal space, a record I own outside any team folder: which of my personal agents may use it. The warning
  * stands above the choices every time.
  */
-export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onSetReveal, onUnreveal }: {
+export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onSetReveal, onUnreveal, onAgentUse }: {
   /** Resolves with the gateway pin it made, if any (`pinnedNow`: its fingerprint is shown). */
   record: VaultRecord; onGrant: (agent: MyAgent) => Promise<GrantResult>; onRevoke: (agentId: string) => Promise<unknown>;
   /** Agent can update this item (PATCH { write }). */ onSetWrite?: (agentId: string, write: boolean) => Promise<unknown>;
   /** *Can reveal*: a stub { title, type, fields } sealed to the agent; no record key. */
   onSetReveal?: (agent: MyAgent, fields: string[]) => Promise<GrantResult>; onUnreveal?: (agentId: string) => Promise<unknown>;
+  /** Opens the Agent use sheet (the "no Agent use settings yet" line links to it). */ onAgentUse?: () => void;
 }) {
   const q = useMyAgents();
   const [error, setError] = useState<string | null>(null);
@@ -68,11 +105,11 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onS
   const grants = new Map((record.agentGrants ?? []).filter((g) => g.use).map((g) => [g.agentId, g]));
   const shown = new Map((record.agentGrants ?? []).filter((g) => g.reveal?.length).map((g) => [g.agentId, g.reveal!]));
   // Only where the owner's policies, the gateway (GATEWAY_REVEAL) and the caller all allow it.
-  const revealOn = q.data.rules.reveal !== "off" && !!q.data.gateway?.reveal && q.data.gateway.reveal !== "off" && !!onSetReveal && !!onUnreveal && !!record.body;
+  const revealOn = revealOffered(q.data) && !!onSetReveal && !!onUnreveal && !!record.body;
   const modeOf = (id: string): Mode => (grants.has(id) ? (shown.has(id) ? "both" : "use") : shown.has(id) ? "reveal" : "none");
   const run = async (fn: () => Promise<unknown>) => {
     setError(null); setBusy(true);
-    try { await fn(); } catch (e) { setError(e instanceof Error && e.message.startsWith("reveal fields:") ? "Choose fields this item has." : grantErrorText(e)); } finally { setBusy(false); }
+    try { await fn(); } catch (e) { setError(revealErrorText(e)); } finally { setBusy(false); }
   };
   /** Moves the agent to `mode`: the use grant first, then the stub (fields given) or its removal. */
   const apply = (a: MyAgent, mode: Mode, fields?: string[]) => run(async () => {
@@ -87,8 +124,7 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onS
   const change = (a: MyAgent, v: string) => {
     const mode = v as Mode;
     if (reveals(mode) && !reveals(modeOf(a.id))) {
-      const opts = revealOptions(record.body!);
-      return setPicking({ agentId: a.id, mode, fields: record.body!.type !== "envFile" && opts.includes("username") ? ["username"] : [] });
+      return setPicking({ agentId: a.id, mode, fields: defaultRevealFields(record.body!) });
     }
     setPicking(null);
     return apply(a, mode);
@@ -100,7 +136,7 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onS
       {agents.length === 0 ? (
         <p className="text-[13px] text-text-secondary">You have no agents yet. <Link to="/settings/agents" className="font-medium text-[var(--link)] hover:underline">Add one in My agents</Link>.</p>
       ) : <>
-        {!record.body?.agentPolicy && <p className="text-[12.5px] text-text-secondary">This item has no Agent use settings yet, so the agent can't use it.</p>}
+        {!record.body?.agentPolicy && <p className="text-[12.5px] text-text-secondary">This item has no Agent use settings yet, so the agent can't use it.{onAgentUse && <> <button type="button" className="font-medium text-[var(--link)] hover:underline" onClick={onAgentUse}>Set up Agent use</button></>}</p>}
         <ul className="overflow-hidden rounded-[12px] border border-border-default bg-card">
           {agents.map((a) => (
             <li key={a.id} aria-label={a.name} className="flex flex-wrap items-center gap-3 border-b border-border-default px-4 py-3 last:border-b-0">
@@ -122,22 +158,9 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onS
                 </p>
               )}
               {picking?.agentId === a.id && (
-                <fieldset className="flex w-full flex-col gap-2 pl-11" disabled={busy}>
-                  <legend className="mb-1 text-[13px] font-medium text-text-primary">Fields the agent may read</legend>
-                  {revealOptions(record.body!).map((f) => (
-                    <label key={f} className="flex min-h-6 cursor-pointer items-center gap-2 text-[13px] text-text-primary">
-                      <input type="checkbox" className="size-4 accent-blue-500" checked={picking.fields.includes(f)}
-                        onChange={(e) => setPicking({ ...picking, fields: e.target.checked ? [...picking.fields, f] : picking.fields.filter((x) => x !== f) })} />
-                      {revealFieldLabel(record.body!, f)}
-                    </label>
-                  ))}
-                  <p className="text-[12.5px] font-medium text-text-primary">Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.</p>
-                  <p className="text-[12.5px] text-text-secondary">Prefer Can use. Reveal only what can't be sent in an HTTP call and is easy to change.</p>
-                  <div className="flex gap-2">
-                    <Button size="sm" disabled={busy || picking.fields.length === 0} onClick={() => void apply(a, picking.mode, picking.fields)}>Save</Button>
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => setPicking(null)}>Cancel</Button>
-                  </div>
-                </fieldset>
+                <RevealFieldPicker className="pl-11" body={record.body!} fields={picking.fields} onChange={(fields) => setPicking({ ...picking, fields })} busy={busy}
+                  onSave={() => void apply(a, picking.mode, picking.fields)} onCancel={() => setPicking(null)}
+                  note="Prefer Can use. Reveal only what can't be sent in an HTTP call and is easy to change." />
               )}
               {/* Only where the owner's policies allow agent writes, and only for an agent that holds the item. */}
               {q.data.rules.write && grants.has(a.id) && onSetWrite && (

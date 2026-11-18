@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AgentWarning } from "./AgentWarning";
 import { PeoplePicker } from "./PeoplePicker";
 import { RecordAvatar } from "./RecordAvatar";
-import { RecordAgentsSection, type GrantResult } from "./RecordAgentsSection";
+import { isPersonalAgentItem, RecordAgentsSection, type GrantResult } from "./RecordAgentsSection";
 import type { MyAgent } from "@/features/settings/myAgents";
 import { AgentChip, Chip, Fingerprint, PermissionSelect, PersonAvatar } from "./people";
 import { PERMISSION_LABEL, type Grant, type Person, type Permission, type VaultFolder, type VaultRecord } from "./types";
@@ -96,8 +96,9 @@ function PersonalSharing({ record, onShareIn }: { record: VaultRecord; onShareIn
   );
 }
 
-export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent, onSetAgentWrite, onSetAgentReveal, onUnrevealAgent }: {
+export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShareIn, onUpdate, onRemove, onGrantAgent, onRevokeAgent, onSetAgentWrite, onSetAgentReveal, onUnrevealAgent, onAgentUse }: {
   record: VaultRecord; teamFolder: VaultFolder | null; open: boolean; onClose: () => void;
+  /** Opens the Agent use sheet from the Agents section. */ onAgentUse?: () => void;
   onShare: (p: Person, permission: Grant) => Promise<unknown>;
   /** Personal space: share inside one of my organisations. */ onShareIn?: (inOrg: Org, p: Person, permission: Grant) => Promise<unknown>;
   onUpdate: (userId: string, permission: Grant) => Promise<unknown>;
@@ -123,8 +124,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
   const direct = new Set(shares.map((s) => s.userId));
   const viaFolder = (teamFolder?.members ?? []).filter((m) => m.userId !== ownerId && !direct.has(m.userId));
   const total = (ownerId && ownerName ? 1 : 0) + shares.length + viaFolder.length;
-  // Personal agents take only items I own in the Personal space, outside team folders.
-  const agentsHere = !org && !teamFolder && !record.sharedBy && record.permission === "owner" && !!user && ownerId === user.id && onGrantAgent && onRevokeAgent;
+  const agentsHere = isPersonalAgentItem(record, { org, teamFolder, userId: user?.id }) && onGrantAgent && onRevokeAgent;
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -152,7 +152,7 @@ export function ShareSheet({ record, teamFolder, open, onClose, onShare, onShare
               <SheetBody className="gap-6 pt-5">
                 {!org ? <>
                   <PersonalSharing record={record} onShareIn={onShareIn} />
-                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} onSetWrite={onSetAgentWrite} onSetReveal={onSetAgentReveal} onUnreveal={onUnrevealAgent} />}
+                  {agentsHere && <RecordAgentsSection record={record} onGrant={onGrantAgent} onRevoke={onRevokeAgent} onSetWrite={onSetAgentWrite} onSetReveal={onSetAgentReveal} onUnreveal={onUnrevealAgent} onAgentUse={onAgentUse} />}
                 </> : <>
                 <section aria-label="Add people" className="flex flex-col gap-2.5">
                   <h3 className="text-[13px] font-medium text-text-primary">Add people</h3>
