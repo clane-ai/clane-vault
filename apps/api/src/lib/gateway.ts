@@ -27,7 +27,7 @@ export interface GatewayClient {
   dropAgent(agentId: string): Promise<void>;
   /**
    * GATEWAY_REVEAL as the gateway reports it on /internal/health. Absent → "off": a gateway that says nothing is one from
-   * before reveal, whatever a current gateway's own default is ("approval").
+   * before reveal, whatever a current gateway's own default is ("standing").
    */
   revealMode(): Promise<"off" | "approval" | "standing">;
 }

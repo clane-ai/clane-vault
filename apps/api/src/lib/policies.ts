@@ -57,8 +57,12 @@ export const policySchema = z.object({
     maxPerMember: z.number().int().min(1).max(20).nullable().default(null),
     /** Agents may save and update items. */
     write: z.boolean().default(true),
-    /** Whether the owner may let an agent see a field value: never, only after they approve each time, or standing. */
-    reveal: z.enum(["off", "approval", "standing"]).default("approval"),
+    /**
+     * Whether the owner may let an agent see a field value: never, only after they approve each time, or standing (the
+     * item's own setting decides). The default, standing since the owner decision of 2026-11-18, applies to an organisation
+     * whose stored policies carry no value for it; a stored value is never rewritten.
+     */
+    reveal: z.enum(["off", "approval", "standing"]).default("standing"),
   }).prefault({}),
 }).strict();
 export type Policies = z.infer<typeof policySchema>;
@@ -88,7 +92,8 @@ function readPersonalAgents(v: unknown): Policies["personalAgents"] {
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(shape) as (keyof typeof shape)[]) {
     const f = shape[k].safeParse(o[k]);
-    out[k] = f.success ? f.data : shape[k].parse(undefined);
+    // A stored `reveal` that doesn't parse is not "never set": it reads as approval, never as the open default.
+    out[k] = f.success ? f.data : k === "reveal" && o[k] !== undefined ? "approval" : shape[k].parse(undefined);
   }
   return out as Policies["personalAgents"];
 }
