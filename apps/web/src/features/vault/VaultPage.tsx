@@ -31,7 +31,8 @@ import { GrantToAgentDialog } from "./GrantToAgentDialog";
 import { AgentInbox } from "./AgentInbox";
 import { isPersonalAgentItem, liveAgents } from "./RecordAgentsSection";
 import { agentUseApplies } from "./AgentPolicyEditor";
-import { agentAccess, AgentSeeSection, AgentUseSheet } from "./AgentUseSheet";
+import { AgentSeeSection } from "./AgentSeeSection";
+import { agentAccess, AgentUseSheet } from "./AgentUseSheet";
 import { useMyAgents } from "@/features/settings/myAgents";
 import { HealthView } from "@/features/health/HealthPage";
 import { useHealthReport } from "@/features/health/useHealthReport";
@@ -390,7 +391,9 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
                   onSave={async (body) => { await agentUse.onSave(selected, body); setAgentUseOpen(false); toast.success(body.agentPolicy ? "Agent use saved" : "Agent use removed"); }}
                   onManageAccess={selected.permission === "owner" ? () => { setAgentUseOpen(false); setSharing(true); } : undefined}
                   see={isPersonalAgentItem(selected, { org, teamFolder: selectedTeam, userId: user?.id }) &&
-                    <AgentSeeSection record={selected} onSetReveal={(a, fields) => v.setAgentReveal(selected, a, fields)} onUnreveal={(id) => v.revokeAgentReveal(selected.id, id)} />} />
+                    <AgentSeeSection record={selected} onSaveBody={(body) => agentUse.onSave(selected, body)}
+                      onGrant={(a) => v.grantAgent(selected, a)} onRevoke={(id) => v.revokeAgentGrant(selected.id, id)}
+                      onSetReveal={(a, fields) => v.setAgentReveal(selected, a, fields)} onUnreveal={(id) => v.revokeAgentReveal(selected.id, id)} />} />
               )}
               {selected.permission === "owner" && (
                 <ShareSheet record={selected} teamFolder={selectedTeam} open={sharing} onClose={() => setSharing(false)}

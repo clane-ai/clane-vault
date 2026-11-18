@@ -57,9 +57,9 @@ export const revealErrorText = (e: unknown) => (e instanceof Error && e.message.
 export const REVEAL_WARNING = "Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.";
 
 /** The fields an agent may read, as ticks, under the warning; Save is off with nothing ticked. */
-export function RevealFieldPicker({ body, fields, onChange, busy, onSave, onCancel, note, className }: {
+export function RevealFieldPicker({ body, fields, onChange, busy, onSave, onCancel, note, warning = REVEAL_WARNING, className }: {
   body: RecordBody; fields: string[]; onChange: (f: string[]) => void; busy: boolean; onSave: () => void; onCancel: () => void;
-  /** The line under the warning. */ note: React.ReactNode; className?: string;
+  /** The line under the warning. */ note: React.ReactNode; warning?: string; className?: string;
 }) {
   return (
     <fieldset className={cn("flex w-full flex-col gap-2", className)} disabled={busy}>
@@ -71,7 +71,7 @@ export function RevealFieldPicker({ body, fields, onChange, busy, onSave, onCanc
           {revealFieldLabel(body, f)}
         </label>
       ))}
-      <p className="text-[12.5px] font-medium text-text-primary">{REVEAL_WARNING}</p>
+      <p className="text-[12.5px] font-medium text-text-primary">{warning}</p>
       <p className="text-[12.5px] text-text-secondary">{note}</p>
       <div className="flex gap-2">
         <Button type="button" size="sm" disabled={busy || fields.length === 0} onClick={onSave}>Save</Button>

@@ -84,5 +84,25 @@ describe("RecordEditor", () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
       expect(onSave).not.toHaveBeenCalled();
     });
+
+    // What agents read without asking (agentReveal) is set under Agent use too: the editor has no section for it.
+    it("keeps agentReveal byte for byte, and refuses an edit that removes a field it lists", async () => {
+      const AGENT = "bbbbbbbb-0000-4000-8000-000000000002";
+      const login = { v: 2 as const, type: "login" as const, title: "Office wifi", username: "u", password: "p" };
+      const kept = { ...login, agentReveal: { v: 1 as const, agents: [AGENT], fields: ["password", "username"] } };
+      const onSave = vi.fn(async (_body: any) => undefined);
+      const a = render(<RecordEditor mode="edit" type="login" initial={kept} folderId={null} folders={[]} onSave={onSave} onCancel={vi.fn()} />);
+      expect(screen.queryByRole("region", { name: "Reading without approval" })).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(JSON.stringify(onSave.mock.calls[0]![0].agentReveal)).toBe(JSON.stringify(kept.agentReveal));
+      a.unmount();
+      onSave.mockClear();
+      const listed = { ...login, fields: [{ id: "f1", label: "Account", kind: "text" as const, value: "42" }], agentReveal: { v: 1 as const, agents: [AGENT], fields: ["field:f1"] } };
+      render(<RecordEditor mode="edit" type="login" initial={listed} folderId={null} folders={[]} onSave={onSave} onCancel={vi.fn()} />);
+      await userEvent.click(screen.getByRole("button", { name: "Remove field 1" }));
+      expect(await screen.findByText(/Reading without asking: "field:f1" isn't a revealable field of this record.*under Agent use first/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      expect(onSave).not.toHaveBeenCalled();
+    });
   });
 });

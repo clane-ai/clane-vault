@@ -78,7 +78,8 @@ function PersonalAgentsBlock({ stored, onSaved }: { stored: PersonalAgentsPolicy
             <Select value={pa.reveal} onValueChange={(v) => set({ reveal: v as PersonalAgentsPolicy["reveal"] })}>
               <SelectTrigger id="pol-pa-reveal" aria-label="Reading values" className="w-[190px]"><SelectValue /></SelectTrigger>
               <SelectContent>{REVEAL.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
-            </Select></div>
+            </Select>
+            <p className="text-[12.5px] text-text-secondary">Without approval: a member decides per item, and an agent then reads the chosen fields without asking. With approval: every read waits for the member. Off: agents never read values. Your choice overrides the item's own setting.</p></div>
         </>}
         <p className="text-[12.5px] text-text-secondary">This is the one policy that reaches members' Personal space. It can switch personal agents off; it cannot show you what they hold.</p>
         {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}

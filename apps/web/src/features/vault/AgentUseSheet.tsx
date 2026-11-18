@@ -1,16 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { Link } from "react-router";
 import type { RecordBody } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
 import { isAgent } from "@/lib/orgKeys";
 import { cn } from "@/lib/utils";
-import { useMyAgents, type MyAgent } from "@/features/settings/myAgents";
+import type { MyAgent } from "@/features/settings/myAgents";
 import { AgentPolicyEditor, agentPolicyError } from "./AgentPolicyEditor";
-import { AgentWarning } from "./AgentWarning";
 import { Chip, PersonAvatar } from "./people";
-import { defaultRevealFields, liveAgents, revealErrorText, revealOffered, RevealFieldPicker, type GrantResult } from "./RecordAgentsSection";
 import { RecordAvatar } from "./RecordAvatar";
 import { revealFieldLabel } from "./reveals";
 import type { Person, VaultFolder, VaultRecord } from "./types";
@@ -25,20 +21,25 @@ export function agentUseStatus(record: Pick<VaultRecord, "body" | "agentGrants">
   const see = !!record.agentGrants?.some((g) => g.reveal?.length) || !!record.body?.agentReveal?.agents.length;
   return use ? (see ? "Use + See" : "Use") : see ? "See" : "Off";
 }
+/** See is on, and every agent that may read asks first (*Ask me each time*): none reads without asking. The header marks it. */
+export const agentAsksFirst = (record: Pick<VaultRecord, "body" | "agentGrants">) =>
+  !!record.agentGrants?.some((g) => g.reveal?.length) && !record.body?.agentReveal?.agents.length;
 /** The dot beside the status: green while values stay sealed, orange once an AI model may read one. */
 export const statusDot = (s: AgentUseStatus) => (s === "Off" ? "bg-border-strong" : s === "Use" ? "bg-green-600" : "bg-orange-500");
 
 /** One agent that holds the item, and how. */
-export interface AgentAccess { id: string; name: string; use: boolean; /** Labels of the fields it may read. */ see: string[]; standing?: boolean; write?: boolean; via?: string }
+export interface AgentAccess { id: string; name: string; use: boolean; /** Labels of the fields it may read. */ see: string[]; /** It reads them without asking (the item's `agentReveal`); else each read is approved. */ standing?: boolean; write?: boolean; via?: string }
 /**
  * Who the summary lists, from what the vault already knows: in Personal my agents' grants on the item; in an organisation
  * the agents among its direct shares (`people` tells them from persons) and its team folder's members.
  */
 export function agentAccess(record: VaultRecord, o: { myAgents: MyAgent[]; people?: Person[]; teamFolder: VaultFolder | null }): AgentAccess[] {
   const body = record.body;
-  const mine = (record.agentGrants ?? []).filter((g) => g.use || g.reveal?.length).map((g) => ({
-    id: g.agentId, name: o.myAgents.find((a) => a.id === g.agentId)?.name ?? "An agent", use: g.use, write: g.write,
-    see: (g.reveal ?? []).map((f) => (body ? revealFieldLabel(body, f) : f)), standing: !!body?.agentReveal?.agents.includes(g.agentId) }));
+  const mine = (record.agentGrants ?? []).filter((g) => g.use || g.reveal?.length).map((g) => {
+    const standing = !!body?.agentReveal?.agents.includes(g.agentId);
+    return { id: g.agentId, name: o.myAgents.find((a) => a.id === g.agentId)?.name ?? "An agent", use: g.use, write: g.write, standing,
+      see: (standing ? body!.agentReveal!.fields : g.reveal ?? []).map((f) => (body ? revealFieldLabel(body, f) : f)) };
+  });
   const direct = (record.sharedWith ?? []).filter((s) => { const p = o.people?.find((x) => x.id === s.userId); return !!p && isAgent(p); })
     .map((s) => ({ id: s.userId, name: s.name, use: true, see: [], via: "Shared directly" }));
   const folder = (o.teamFolder?.members ?? []).filter((m) => isAgent(m) && !direct.some((d) => d.id === m.userId))
@@ -69,82 +70,12 @@ function Summary({ status, access, onManageAccess }: { status: AgentUseStatus; a
                 {a.use && <Chip tone="green">Use</Chip>}
                 {a.write && <Chip>Update</Chip>}
                 {a.see.length > 0 && <Chip tone="orange">See: {a.see.join(", ")}</Chip>}
-                {a.standing && <Chip tone="orange">Reads without approval</Chip>}
+                {a.see.length > 0 && <Chip>{a.standing ? "Without asking" : "Asks first"}</Chip>}
               </span>
             </li>
           ))}
         </ul>
       )}
-    </section>
-  );
-}
-
-/**
- * "Let the AI see this value" (the Agent use sheet, Personal items I own): per agent a switch, off for every item until
- * turned on, and the *Can reveal* field picker. Each change is sent at once through the share sheet's own calls (a stub
- * sealed to the agent), not with the sheet's Save. Shown only where reading values is offered (my policies and the gateway).
- */
-export function AgentSeeSection({ record, onSetReveal, onUnreveal }: {
-  record: VaultRecord; onSetReveal: (agent: MyAgent, fields: string[]) => Promise<GrantResult>; onUnreveal: (agentId: string) => Promise<unknown>;
-}) {
-  const q = useMyAgents();
-  const [picking, setPicking] = useState<{ agentId: string; fields: string[] } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [newGateway, setNewGateway] = useState<string | null>(null);
-  const body = record.body;
-  if (!q.data || !body || !record.recordKey) return null;
-  const shown = new Map((record.agentGrants ?? []).filter((g) => g.reveal?.length).map((g) => [g.agentId, g.reveal!]));
-  const offered = revealOffered(q.data);
-  // Where it is no longer offered, what is on can still be turned off.
-  const agents = liveAgents(q.data.agents).filter((a) => offered || shown.has(a.id));
-  if (!offered && agents.length === 0) return null;
-  const run = async (fn: () => Promise<unknown>) => {
-    setError(null); setBusy(true);
-    try { await fn(); setPicking(null); } catch (e) { setError(revealErrorText(e)); } finally { setBusy(false); }
-  };
-  return (
-    <section aria-label="Let the AI see this value" className="flex flex-col gap-2.5">
-      <h3 className={eyebrow}>Let the AI see this value</h3>
-      <p className="text-[12.5px] leading-snug text-text-secondary">
-        Off unless you turn it on, for values an agent has to read itself, like a username or a one-time code.
-        Each read still needs your approval in the web app, unless your server's operator has turned on reading without approval.
-      </p>
-      {agents.length === 0 ? (
-        <p className="text-[13px] text-text-secondary">You have no agents yet. <Link to="/settings/agents" className="font-medium text-[var(--link)] hover:underline">Add one in My agents</Link>.</p>
-      ) : (
-        <ul className="overflow-hidden rounded-[12px] border border-border-default bg-card">
-          {agents.map((a) => {
-            const on = shown.has(a.id);
-            const p = picking?.agentId === a.id ? picking : null;
-            return (
-              <li key={a.id} aria-label={a.name} className="flex flex-col gap-2.5 border-b border-border-default px-4 py-3 last:border-b-0">
-                <div className="flex items-center gap-3">
-                  <PersonAvatar id={a.id} name={a.name} agent />
-                  <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-text-primary">{a.name}</span>
-                  <Switch aria-label={`Let ${a.name} see values from this item`} checked={on || !!p} disabled={busy || (!on && !offered)}
-                    onCheckedChange={(v) => (v ? setPicking({ agentId: a.id, fields: defaultRevealFields(body) }) : on ? void run(() => onUnreveal(a.id)) : setPicking(null))} />
-                </div>
-                {on && !p && (
-                  <p className="pl-11 text-[12.5px] text-text-secondary">
-                    Can read: {shown.get(a.id)!.map((f) => revealFieldLabel(body, f)).join(", ")}
-                    {offered && <> · <button type="button" className="font-medium text-[var(--link)] hover:underline" disabled={busy}
-                      onClick={() => setPicking({ agentId: a.id, fields: shown.get(a.id)! })}>Change fields</button></>}
-                  </p>
-                )}
-                {p && <>
-                  <AgentWarning />
-                  <RevealFieldPicker body={body} fields={p.fields} onChange={(fields) => setPicking({ ...p, fields })} busy={busy} onCancel={() => setPicking(null)}
-                    onSave={() => void run(async () => { const r = await onSetReveal(a, p.fields); if (r?.pinnedNow) setNewGateway(r.identity.publicKey); })}
-                    note="Prefer use in requests. Let it see only what can't be sent in an HTTP call and is easy to change." />
-                </>}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {newGateway && <AgentWarning newGateway={newGateway} />}
-      {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
     </section>
   );
 }
@@ -221,8 +152,8 @@ export function AgentUseSheet({ record, open, onClose, onSave, access, pathsLock
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" showCloseButton={false} className="data-[side=right]:w-full data-[side=right]:sm:max-w-[480px]">
-        {/* A new revision is a new form: what was typed never lands on another version of the item. */}
-        {record.body && <Form key={`${record.id}-${record.revision}`} record={record} body={record.body} access={access} pathsLocked={pathsLocked}
+        {/* A changed stored policy is a new form (what was typed never lands on another version of it); a See change, which also saves the body, is not. */}
+        {record.body && <Form key={`${record.id}:${JSON.stringify(record.body.agentPolicy ?? null)}`} record={record} body={record.body} access={access} pathsLocked={pathsLocked}
           onSave={onSave} onClose={onClose} onManageAccess={onManageAccess} see={see} />}
       </SheetContent>
     </Sheet>

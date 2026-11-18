@@ -23,7 +23,7 @@ export const DEFAULT_POLICIES: OrgPolicies = {
   autoLockMinutes: null, minPasswordLength: 12, minPasswordScore: 0, links: { allowed: true, maxExpiryHours: 168, requirePassword: false, allowAttachments: true },
   attachments: { allowed: true, maxFileMb: null, previews: true },
   offlineAllowed: true, extensionAllowed: true, breachCheckAllowed: true, ipRestricted: false,
-  personalAgents: { allowed: true, maxPerMember: null, write: true, reveal: "approval" }, personalAgentsEnabled: false,
+  personalAgents: { allowed: true, maxPerMember: null, write: true, reveal: "standing" }, personalAgentsEnabled: false,
 };
 export const BASE_PASSWORD_POLICY: PasswordPolicy = { minLength: 12, minScore: 0 };
 

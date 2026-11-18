@@ -8,7 +8,7 @@ import { OneTimeLinkButton } from "@/features/links/OneTimeLinkButton";
 import type { StrengthScore } from "@/lib/strength";
 import { reasonLine, strengthForScore, strengthOf, type AttentionReason } from "./attention";
 import { agentUseApplies } from "./AgentPolicyEditor";
-import { agentUseStatus, statusDot } from "./AgentUseSheet";
+import { agentAsksFirst, agentUseStatus, statusDot } from "./AgentUseSheet";
 import { CopyButton } from "./CopyButton";
 import { EnvDiff, EnvPanelSection } from "./EnvFile";
 import { RecordAvatar } from "./RecordAvatar";
@@ -125,6 +125,7 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   const canShare = record.permission === "owner" && !!onShare;
   // The same rule the editor section had: edit holders, on an item with a policy or something to send.
   const agentUse = canEdit && onAgentUse && b && agentUseApplies(b) ? agentUseStatus(record) : null;
+  const asksFirst = !!agentUse && agentAsksFirst(record);
   // "Use only" (spec §5.6): the app never shows any secret field (password, card number, CVV, keys…), but Copy still
   // works. A soft limit, not a cryptographic one.
   const useOnly = record.permission === "use";
@@ -179,9 +180,11 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
                 {canEdit && <Button variant="outline" onClick={onEdit}><Pencil className="size-4" />Edit</Button>}
                 {canShare && <Button variant="outline" onClick={onShare}><Share2 className="size-4" />Share</Button>}
                 {agentUse && (
-                  <Button variant="outline" onClick={onAgentUse} aria-label={`Agent use: ${agentUse}`} title={agentUse === "Off" ? "No agent can use this item yet" : agentUse === "Use" ? "Agents can use it in requests" : "An AI model may read some of its fields"}>
+                  <Button variant="outline" onClick={onAgentUse} aria-label={`Agent use: ${agentUse}${asksFirst ? ", asks first" : ""}`}
+                    title={agentUse === "Off" ? "No agent can use this item yet" : agentUse === "Use" ? "Agents can use it in requests" : asksFirst ? "An AI model may read some of its fields, after you approve each read" : "An AI model reads some of its fields without asking"}>
                     <Bot className="size-4" />Agent use
-                    <span className="flex items-center gap-1.5 border-l border-border-default pl-2 text-[12.5px] font-normal text-text-secondary"><span aria-hidden="true" className={`size-1.5 rounded-full ${statusDot(agentUse)}`} />{agentUse}</span>
+                    <span className="flex items-center gap-1.5 border-l border-border-default pl-2 text-[12.5px] font-normal text-text-secondary"><span aria-hidden="true" className={`size-1.5 rounded-full ${statusDot(agentUse)}`} />{agentUse}
+                      {asksFirst && <span className="rounded-[5px] border border-border-default bg-app px-1 text-[10.5px] leading-[1.5] text-text-secondary">asks first</span>}</span>
                   </Button>
                 )}
                 {/* Editors who aren't the owner can't share with people, but can still send a one-time link. */}

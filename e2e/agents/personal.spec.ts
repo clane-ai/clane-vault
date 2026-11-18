@@ -464,19 +464,19 @@ async function setReading(label: "With approval" | "Without approval") {
   expect((await saved).ok()).toBe(true);
 }
 
-test("18. reading without approval: the admin allows it, the member turns it on by typing the title; no sheet", async () => {
+test("18. reading without asking: the policy allows it, the member picks Without asking in the Agent use sheet; no approval sheet", async () => {
   await setReading("Without approval");
   await unlock(member);
   await openRecord(member, "Echo");
-  await member.getByRole("button", { name: "Edit", exact: true }).click();
-  const section = member.getByRole("region", { name: "Reading without approval" });
-  await expect(section).toContainText("The AI model can read these fields whenever it asks. Nobody is asked first.", { timeout: 30_000 });
-  await section.getByRole("button", { name: "Turn on…" }).click();
-  await section.getByRole("checkbox", { name: "Key ID" }).check();
-  await section.getByRole("textbox", { name: "Type the item's title to let My helper read without approval" }).fill("Echo");
-  await section.getByRole("switch", { name: "My helper reads without approval" }).check();
-  await member.getByRole("button", { name: "Save" }).click();
-  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await member.getByRole("button", { name: /^Agent use/ }).click();
+  const section = member.getByRole("dialog", { name: "Agent use: Echo" }).getByRole("region", { name: "Let the AI see this value" });
+  // Echo already lets My helper ask for Key ID (test 14), so this is not the item's first time: no dialog.
+  await section.getByRole("button", { name: "Change" }).click({ timeout: 30_000 });
+  await section.getByRole("radio", { name: /Without asking/ }).click();
+  await expect(section.getByRole("checkbox", { name: "Key ID" })).toBeChecked();
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByRole("listitem", { name: "My helper" })).toContainText("Reads without asking: Key ID", { timeout: 30_000 });
+  await member.keyboard.press("Escape");
 
   expect(await ask(["data.keyId"])).toEqual({ fields: { "data.keyId": KEY_ID } });
   await expect(revealSheet(member)).toHaveCount(0);

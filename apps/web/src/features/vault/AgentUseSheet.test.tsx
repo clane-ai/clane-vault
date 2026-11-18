@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { RecordBody } from "@clane-vault/crypto";
 import { requestPreview } from "./AgentPolicyEditor";
-import { agentAccess, AgentUseSheet, agentUseStatus } from "./AgentUseSheet";
+import type { MyAgent, MyAgents } from "@/features/settings/myAgents";
+import { grantStandingAgents, readingLimit, standingOn } from "./AgentSeeSection";
+import { agentAccess, agentAsksFirst, AgentUseSheet, agentUseStatus } from "./AgentUseSheet";
 import { RecordPanel } from "./RecordPanel";
 import type { VaultRecord } from "./types";
 
@@ -44,11 +46,54 @@ describe("the Agent use button in the record panel", () => {
     expect(agentUseStatus(record(stored))).toBe("Use");
     expect(agentUseStatus(record(bare, see))).toBe("See");
     expect(agentUseStatus(record(stored, see))).toBe("Use + See");
-    // A use grant alone is not See; reading without approval is.
+    // A use grant alone is not See; reading without asking is.
     expect(agentUseStatus(record(stored, { agentGrants: [{ agentId: "a1", use: true, write: false }] }))).toBe("Use");
-    expect(agentUseStatus(record({ ...stored, agentReveal: { v: 1, agents: ["a1"], fields: ["username"] } }))).toBe("Use + See");
-    panel(record(stored, see));
+    const without = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    expect(agentUseStatus(record(without))).toBe("Use + See");
+    // "asks first" marks an item where every agent that may read asks first; one that reads without asking takes it away.
+    expect(agentAsksFirst(record(stored, see))).toBe(true);
+    expect(agentAsksFirst(record(without))).toBe(false);
+    expect(agentAsksFirst(record(without, see))).toBe(false);
+    expect(agentAsksFirst(record(stored))).toBe(false);
+    const a = panel(record(without));
     expect(button()).toHaveAccessibleName("Agent use: Use + See");
+    expect(button()).not.toHaveTextContent("asks first");
+    a.unmount();
+    panel(record(stored, see));
+    expect(button()).toHaveAccessibleName("Agent use: Use + See, asks first");
+    expect(button()).toHaveTextContent("Use + Seeasks first");
+  });
+
+  it("the summary says how each agent reads: without asking (the item's own setting) or asking first", () => {
+    const body = { ...stored, username: "sara", agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const r = record(body, { agentGrants: [{ agentId: "a1", use: true, write: false }, { agentId: "a2", use: false, write: false, reveal: ["username"] }] });
+    const access = agentAccess(r, { myAgents: [{ id: "a1", name: "My bot" }, { id: "a2", name: "Other bot" }] as never, teamFolder: null });
+    expect(access.map((x) => [x.name, x.see, x.standing])).toEqual([["My bot", ["Username"], true], ["Other bot", ["Username"], false]]);
+    render(<AgentUseSheet record={r} open onClose={vi.fn()} onSave={vi.fn()} access={access} />);
+    const status = screen.getByRole("region", { name: "Status" });
+    expect(within(status).getByRole("listitem", { name: "My bot" })).toHaveTextContent("UseSee: UsernameWithout asking");
+    expect(within(status).getByRole("listitem", { name: "Other bot" })).toHaveTextContent("See: UsernameAsks first");
+  });
+
+  it("reading without asking needs the policies and the gateway at standing; each listed agent without the key gets it", async () => {
+    const d = (rules: string, gw: string | null) => ({ rules: { reveal: rules }, gateway: gw ? { reveal: gw } : null }) as unknown as MyAgents;
+    expect(standingOn(d("standing", "standing"))).toBe(true);
+    for (const [r, g] of [["approval", "standing"], ["standing", "approval"], ["off", "off"]]) expect(standingOn(d(r!, g!))).toBe(false);
+    expect(standingOn(undefined)).toBe(false);
+    expect(readingLimit(d("standing", "standing"))).toBeNull();
+    expect(readingLimit(d("approval", "standing"))).toBe("Your organisation requires approval for each read.");
+    expect(readingLimit(d("off", "standing"))).toBe("Your organisation has turned reading values off.");
+    expect(readingLimit(d("standing", "approval"))).toBe("This server requires approval for each read.");
+    expect(readingLimit(d("standing", "off"))).toBe("Reading values is off on this server.");
+    expect(readingLimit(d("standing", null))).toBe("The agent gateway can't be reached right now, so this can't be changed.");
+    const saved = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const agent = { id: "a1", name: "My bot" } as MyAgent;
+    const grant = vi.fn(async () => undefined);
+    await grantStandingAgents(record(saved, { agentGrants: [] }), saved, [agent], grant);
+    expect(grant).toHaveBeenCalledTimes(1);
+    grant.mockClear();
+    await grantStandingAgents(record(saved, { agentGrants: [{ agentId: "a1", use: true, write: false }] }), saved, [agent], grant);
+    expect(grant).not.toHaveBeenCalled();
   });
 
   it("is for people who can edit, where agents are on (onAgentUse given)", () => {
