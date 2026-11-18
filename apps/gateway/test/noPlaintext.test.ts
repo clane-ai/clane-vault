@@ -21,7 +21,9 @@ const WRITTEN = ["sk_live_SAVE_CANARY_43", "sk_live_UPDATE_CANARY_44", "pw_RECOR
 const CAPTURED = "ghp_CAPTURED_CANARY_47";
 // Env-file entry values the agent saves and sets (spec §10).
 const ENV = ["sk_live_ENVCANARY1", "sk_live_ENVCANARY2"];
-const FORMS = [SECRET, ...WRITTEN, CAPTURED, ...ENV].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
+// A value the owner lets get_secret show: in that tool's response only (spec §8).
+const REVEALED = "acct_REVEALED_CANARY_48";
+const FORMS = [SECRET, ...WRITTEN, CAPTURED, ...ENV, REVEALED].flatMap((v) => [v, Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
 const AUD = "http://localhost:3002/mcp";
 
 // performRequest as is, unless a test makes the tool throw (an Error carrying the secret) or raise a real uncaught throw.
@@ -47,7 +49,7 @@ const closers: (() => Promise<void>)[] = [];
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const cfgFor = (apiUrl: string, apiToken: string): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 600, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 300, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20,
+  upstreamTimeoutMs: 300, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "approval", revealPerHour: 10,
 });
 const apiKey = (port: number): RecordBody => ({ v: 2, type: "apiKey", title: "Stripe", data: { secret: SECRET, keyId: "kid" },
   agentPolicy: { v: 1, hosts: [`api.test:${port}`], inject: { kind: "bearer" } } });
@@ -138,6 +140,15 @@ describe("no plaintext anywhere", () => {
     expect(JSON.parse(await mine("http_request", { item: "personal/creator", method: "POST", url: `http://api.test:${port}/create`, body: "{}",
       capture: { from: "/token", title: "Captured", type: "apiKey" } }))).toMatchObject({ structuredContent: { saved: { item: "personal/captured" } } });
     expect((await tool.api.personal.open(tool.api.personal.deposits[2]!.id)).data?.secret).toBe(CAPTURED);
+
+    // A reveal the owner approves: the value is in get_secret's response, and in nothing else checked below.
+    tool.api.personal.setPolicyReveal("approval");
+    const shownId = await tool.api.personal.addRecord({ v: 2, type: "login", title: "Shown", username: REVEALED });
+    await tool.api.personal.addStub(["username"], { recordId: shownId, title: "Shown" });
+    tool.api.personal.onReveal((r) => tool.api.personal.approveReveal(r.id, { username: REVEALED }));
+    expect(JSON.parse(await mine("get_secret", { item: "personal/shown", fields: ["username"], reason: "check the account" })))
+      .toMatchObject({ structuredContent: { fields: { username: REVEALED } } });
+    expect(captured.pop()).toContain(REVEALED); // that response, and only it, leaves the check
 
     await tool("http_request", call("/hang")); // an upstream timeout
     await tool("http_request", call("/echo")); // a scrub hit

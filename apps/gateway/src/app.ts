@@ -16,7 +16,9 @@ import { ADDRESS_PER_MINUTE, clientAddress, mcpHandler } from "./mcp.js";
 import { defaultResolver, type Resolver } from "./outbound/ssrf.js";
 import { RateLimiter } from "./rateLimit.js";
 
-export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number }
+export interface GatewayDeps { kek: Kek; identity: Identity; log: Logger; held: HeldSecrets; fetch?: typeof fetch; now?: () => number; resolve?: Resolver; sessionIdleMs?: number;
+  /** Test hooks: how often get_secret polls the API, and how long one call waits (defaults 2 s and 50 s). */
+  revealPollMs?: number; revealWaitMs?: number }
 
 const MAX_BODY = 16 * 1024;
 // Exactly one shape: an organisation agent, or a personal agent bound to its owner's 32-byte X25519 key (43 base64url characters).
@@ -36,7 +38,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
   const auth = bearerAuth(cfg, api, deps.now);
   const limiter = new RateLimiter(deps.now);
   const mcp = mcpHandler({ cfg, api, auth, keys, syncs, events: new EventQueue(api, log), limiter,
-    log, held, identity, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs });
+    log, held, identity, resolve: deps.resolve ?? defaultResolver, sessionIdleMs: deps.sessionIdleMs, revealPollMs: deps.revealPollMs, revealWaitMs: deps.revealWaitMs, now: deps.now });
   const mcpPath = new URL(cfg.publicUrl).pathname;
   // RFC 9728: under PUBLIC_URL's path, and by path insertion at the root (`/.well-known/oauth-protected-resource/mcp`).
   const base = mcpPath.replace(/\/+$/, "");
@@ -56,7 +58,7 @@ export async function createGateway(cfg: GatewayConfig, deps: GatewayDeps): Prom
     if (!path.startsWith("/internal/")) return send(res, 404, { error: "not_found" });
     if (!authorised(req)) return send(res, 401, { error: "unauthorized" });
     if (req.method === "GET" && path === "/internal/health")
-      return send(res, 200, { ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey } });
+      return send(res, 200, { ok: true, identity: { keyId: identity.keyId, publicKey: identity.publicKey }, reveal: cfg.reveal });
     if (req.method === "POST" && path === "/internal/agents") {
       const p = enrolBody.safeParse(await readJson(req, MAX_BODY));
       if (!p.success) return send(res, 400, { error: "invalid_request" });

@@ -15,7 +15,8 @@ export interface OrgAgentSync {
 export interface PersonalAgentSync {
   owner: { userId: string; publicKey: string }; agentId: string; publicKey: string; wrappedPrivateKey: string | null; kekId: string; expiresAt: string | null;
   records: { id: string; encBody: string; revision: number; wrappedRecordKey: string; write: boolean; deletedAt: string | null }[];
-  reveal: unknown[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string; signature: string }[]; inboxFree: number;
+  /** *Can reveal* stubs: { title, type, fields } sealed to the agent; [] when the owner's policies say off. */
+  reveal: { recordId: string; sealedStub: string }[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string; signature: string }[]; inboxFree: number;
   policy: { write: boolean; reveal: "off" | "approval" | "standing" };
 }
 export type AgentSync = OrgAgentSync | PersonalAgentSync;
@@ -41,6 +42,11 @@ export interface ApiClient {
   deposit(token: string, d: { id: string; type: "login" | "item"; encBody: string; ownerSealedKey: string; agentSealedKey: string; signature: string }): Written;
   updateDeposit(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
   updateRecord(token: string, id: string, d: { encBody: string; revision: number; signature: string }): Written;
+  /** POST /agent/reveals: a 409 with a known reason is a refusal. */
+  createReveal(token: string, r: { id: string; recordId: string; fields: string[]; reason: string; requestPublicKey: string; signature: string; expiresAt: string }):
+    Promise<{ ok: true } | { refused: "reveal_off" | "busy" | "denied" }>;
+  /** GET /agent/reveals/:id; a 404 (unknown to the API) is "expired". */
+  reveal(token: string, id: string): Promise<{ status: "pending" | "denied" | "expired" } | { status: "approved"; sealed: string }>;
   /** The public issuer from `${API_URL}/.well-known/oauth-authorization-server`: cached once fetched; a failure is retried next call. */
   issuer(): Promise<string>;
   jwksUrl: URL;
@@ -56,9 +62,9 @@ const codeOf = (j: unknown) => {
 export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetchImpl: typeof fetch = fetch): ApiClient {
   const base = `${cfg.apiUrl.replace(/\/+$/, "")}/api/v1`;
   /** `grantRefusals`: a 400 (OAuth invalid_grant and friends) means the token is no good, as a 401 does. */
-  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false, conflicts = false): Promise<Response> {
+  async function call(path: string, init: { method?: string; headers?: Record<string, string>; body?: string }, grantRefusals = false, conflicts = false, notFound = false): Promise<Response> {
     const r = await fetchImpl(`${base}${path}`, { ...init, headers: { "x-gateway-token": cfg.apiToken, ...init.headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (r.ok || (conflicts && r.status === 409)) return r;
+    if (r.ok || (conflicts && r.status === 409) || (notFound && r.status === 404)) return r;
     if (r.status === 401 || r.status === 403 || (grantRefusals && r.status === 400))
       throw new ApiRefused(r.status === 403 ? 403 : 401, codeOf(await r.json().catch(() => null)));
     throw new Error(`API ${path} failed (${r.status})`);
@@ -101,6 +107,21 @@ export function apiClient(cfg: Pick<GatewayConfig, "apiUrl" | "apiToken">, fetch
     deposit: (token, d) => write(token, "POST", "/agent/deposits", d),
     updateDeposit: (token, id, d) => write(token, "PUT", `/agent/deposits/${encodeURIComponent(id)}`, d),
     updateRecord: (token, id, d) => write(token, "PUT", `/agent/records/${encodeURIComponent(id)}`, d),
+    async createReveal(token, b) {
+      const r = await call("/agent/reveals", { method: "POST", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify(b) }, false, true);
+      if (r.status !== 409) return { ok: true };
+      const e = ((await r.json().catch(() => null)) as { error?: unknown } | null)?.error;
+      if (e === "reveal_off" || e === "busy" || e === "denied") return { refused: e };
+      throw new Error("API reveal request failed (409)");
+    },
+    async reveal(token, id) {
+      const r = await call(`/agent/reveals/${encodeURIComponent(id)}`, { headers: bearer(token) }, false, false, true);
+      if (r.status === 404) return { status: "expired" };
+      const j = (await r.json()) as { status?: unknown; sealed?: unknown };
+      if (j.status === "approved" && typeof j.sealed === "string" && j.sealed.startsWith("s1.")) return { status: "approved", sealed: j.sealed };
+      if (j.status === "pending" || j.status === "denied") return { status: j.status };
+      return { status: "expired" };
+    },
     async exchangeStatic(cvat) {
       const r = await call("/oauth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "urn:clane:agent-token", token: cvat }).toString() }, true);

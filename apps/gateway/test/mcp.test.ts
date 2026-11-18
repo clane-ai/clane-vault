@@ -28,7 +28,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((c) => c())); })
 
 const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig> = {}): GatewayConfig => ({
   apiUrl, apiToken, publicUrl: AUD, kek: "file:x", identityKeyFile: "x", cacheTtlSeconds: 60, agentRatePerMinute: 60, maxResponseBytes: 4194304,
-  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, ...over,
+  upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, reveal: "off", revealPerHour: 10, ...over,
 });
 const resolve: Resolver = async (h) => (h === "api.test" ? [{ address: "127.0.0.1", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
 const quiet: Logger = { info: () => {}, error: () => {} };
@@ -542,7 +542,7 @@ describe("MCP endpoint", () => {
     const port = (echo.address() as AddressInfo).port;
     const id = await api.personal.addRecord(apiKey("Echo", [`api.test:${port}`]));
     const { client } = await connect(url, await api.personal.token());
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["http_request", "list_secrets", "save_secret", "update_secret"]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["get_secret", "http_request", "list_secrets", "save_secret", "update_secret"]);
     expect(result(await client.callTool({ name: "list_secrets", arguments: {} }))).toEqual({ secrets: [expect.objectContaining({ handle: "personal/echo", hosts: [`api.test:${port}`] })] });
     const args = { item: "personal/echo", method: "GET", url: `http://api.test:${port}/v1` };
     const r = result(await client.callTool({ name: "http_request", arguments: args }));

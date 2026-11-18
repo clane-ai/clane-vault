@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
   aeadEncrypt, b64url, decryptRecordBody, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, openDepositKey, sealOrgFolderKey, sealOrgRecordShare,
-  sealPersonalAgentRecordKey, serverRecordType, utf8, wrapKey, type RecordBody,
+  sealPersonalAgentRecordKey, sealReveal, sealRevealStub, serverRecordType, utf8, wrapKey, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { Kek } from "../src/kek.js";
 import { wrapAgentKey, wrapPersonalAgentKey } from "../src/envelope.js";
@@ -35,6 +35,13 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   /** Every write call the API received: method, path and parsed body. */
   const writes: { method: string; path: string; body: Record<string, unknown> }[] = [];
   let policyWrite = true, inboxFree: number | null = null, refuseWrites: string | null = null;
+  // Reveal (Tasks 17, 18): stubs, the owner's policy, the requests the API received, and how the "owner" answers.
+  const stubs: { recordId: string; sealedStub: string }[] = [];
+  type RevealReq = { id: string; recordId: string; fields: string[]; reason: string; requestPublicKey: string; signature: string; expiresAt: string;
+    status: "pending" | "approved" | "denied" | "expired" | "delivered"; sealed?: string };
+  const reveals: RevealReq[] = [];
+  let policyReveal: "off" | "approval" | "standing" = "off", refuseReveal: string | null = null;
+  let onReveal: ((r: RevealReq) => void | Promise<void>) | null = null;
   const signing = await generateKeyPair("ES256", { extractable: true });
   const jwk = { ...(await exportJWK(signing.publicKey)), alg: "ES256", use: "sig" };
   jwk.kid = await calculateJwkThumbprint(jwk);
@@ -106,9 +113,9 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
 
   const personalSyncBody = () => ({
     owner: { userId: personalOwnerId, publicKey: ownerPublicKey }, agentId: personalId, publicKey: personalPublicKey, wrappedPrivateKey: personalWrapped,
-    kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: [],
+    kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: policyReveal === "off" ? [] : stubs,
     deposits: deposits.map(({ id, encBody, revision, agentSealedKey, signature }) => ({ id, encBody, revision, agentSealedKey, signature })),
-    inboxFree: inboxFree ?? 100 - deposits.length, policy: { write: policyWrite, reveal: "off" },
+    inboxFree: inboxFree ?? 100 - deposits.length, policy: { write: policyWrite, reveal: policyReveal },
   });
 
   /** The API's /agent/deposits and /agent/records/:id: every business refusal is 409 { error }. */
@@ -128,6 +135,32 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
     if (row.revision !== b.revision) return refuse("conflict");
     Object.assign(row, { encBody: b.encBody, revision: row.revision + 1 }, m[1] === "deposits" ? { signature: b.signature } : {});
     return send(res, 200, { id: row.id, revision: row.revision });
+  }
+
+  /** POST /agent/reveals and GET /agent/reveals/:id: refusals are 409 { error }; another agent's request is 404. */
+  async function agentReveal(req: IncomingMessage, res: ServerResponse, path: string, sub: unknown) {
+    if (sub !== personalId) return send(res, 409, { error: "reveal_off" });
+    if (req.method === "POST" && path === "/agent/reveals") {
+      const b = JSON.parse(await read(req)) as RevealReq;
+      writes.push({ method: "POST", path, body: b as unknown as Record<string, unknown> });
+      if (refuseReveal) return send(res, 409, { error: refuseReveal });
+      const r: RevealReq = { ...b, status: "pending" };
+      reveals.push(r);
+      send(res, 201, { id: b.id, expiresAt: b.expiresAt });
+      await onReveal?.(r);
+      return;
+    }
+    const m = /^\/agent\/reveals\/([^/]+)$/.exec(path);
+    const r = m && req.method === "GET" ? reveals.find((x) => x.id === m[1]) : undefined;
+    if (!r) return send(res, 404, { error: "not_found" });
+    if (r.status === "approved") { const sealed = r.sealed; r.status = "delivered"; delete r.sealed; return send(res, 200, { status: "approved", sealed }); }
+    return send(res, 200, { status: r.status === "delivered" ? "expired" : r.status });
+  }
+  /** The owner's browser: seal these fields to the request's key (as the web app does on Allow once). */
+  async function approveReveal(id: string, fields: Record<string, string>) {
+    const r = reveals.find((x) => x.id === id)!;
+    r.sealed = await sealReveal(fields, { requestId: r.id, recordId: r.recordId, agentId: personalId }, b64url.decode(r.requestPublicKey));
+    r.status = "approved";
   }
 
   const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -160,6 +193,11 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       const a = await agentAuth(req);
       if (typeof a === "number") return send(res, a, { error: a === 401 ? "unauthorized" : "agent_expired" });
       return agentWrite(req, res, path, a.sub);
+    }
+    if (path === "/agent/reveals" || path.startsWith("/agent/reveals/")) {
+      const a = await agentAuth(req);
+      if (typeof a === "number") return send(res, a, { error: a === 401 ? "unauthorized" : "agent_expired" });
+      return agentReveal(req, res, path, a.sub);
     }
     if (path === "/agent/sync" || path === "/agent/events") {
       const a = await agentAuth(req);
@@ -194,6 +232,18 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
       refuseWrites(error: string | null) { refuseWrites = error; },
       /** What the API reports as the owner's key from now on (the wrapped key stays bound to the first). */
       setOwnerPublicKey(b64: string) { ownerPublicKey = b64; },
+      /** *Can reveal*: a stub sealed to the agent for `recordId` (a record it holds, or none: then the item is reveal-only). */
+      async addStub(fields: string[], o: { recordId?: string; title?: string; type?: RecordType } = {}): Promise<string> {
+        const recordId = o.recordId ?? randomUUID();
+        stubs.push({ recordId, sealedStub: await sealRevealStub({ title: o.title ?? "Revealable", type: o.type ?? "login", fields },
+          { ownerUserId: personalOwnerId, agentId: personalId, recordId }, pkp.publicKey) });
+        return recordId;
+      },
+      stubs, reveals, approveReveal,
+      setPolicyReveal(m: "off" | "approval" | "standing") { policyReveal = m; },
+      refuseReveal(error: string | null) { refuseReveal = error; },
+      /** Called once the API has answered a new request's POST. */
+      onReveal(f: ((r: RevealReq) => void | Promise<void>) | null) { onReveal = f; },
     },
     get syncCalls() { return syncCalls; },
     get tokenCalls() { return tokenCalls; },

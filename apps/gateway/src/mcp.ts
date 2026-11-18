@@ -13,6 +13,7 @@ import { HttpError, readJson, send } from "./http.js";
 import { buildDeposit, buildUpdate, InvalidInput, pointerValue, type SaveInput, type UpdateSet } from "./deposits.js";
 import type { Identity } from "./identity.js";
 import { findItem, handleOf, ItemUnopenable, listItems, withItem, type ItemSummary } from "./items.js";
+import { PendingReveals, requestReveal, resumeReveal, type RevealResult } from "./reveal.js";
 import { OwnerKeyChanged, type AgentKeyCache, type SyncCache } from "./keys.js";
 import type { HeldSecrets, Logger } from "./log.js";
 import { performRequest, type OutboundInput } from "./outbound/request.js";
@@ -25,6 +26,8 @@ export interface McpDeps {
   limiter: RateLimiter; log: Logger; held: HeldSecrets; resolve: Resolver; identity: Identity;
   /** Test hook: a session idle this long is closed (default 30 min). */
   sessionIdleMs?: number;
+  /** Test hooks for get_secret: poll interval and wait per call (defaults 2 s and 50 s), the clock. */
+  revealPollMs?: number; revealWaitMs?: number; now?: () => number;
 }
 
 const MAX_BODY = 1024 * 1024 + 64 * 1024;
@@ -32,8 +35,9 @@ const MINUTE = 60_000, HOUR = 60 * MINUTE;
 export const ADDRESS_PER_MINUTE = 600, LIST_PER_MINUTE = 20, EXCHANGE_MISSES_PER_MINUTE = 10, SESSIONS_PER_AGENT = 20;
 const IDLE_MS = 30 * MINUTE;
 const INSTRUCTIONS = "Use `list_secrets` to see what you may call, then `http_request` with the item handle. You will never see a credential. No tool returns a secret.";
+const PERSONAL_INSTRUCTIONS = "`http_request` uses a credential without showing it; prefer it. `get_secret` shows you a value only where the owner allowed it, and they may be asked to approve.";
 
-export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update" | "env_keys" | "env_injects">;
+export type SecretListing = Pick<ItemSummary, "handle" | "title" | "type" | "hosts" | "inject" | "approval" | "methods" | "paths" | "deposit" | "can_update" | "env_keys" | "env_injects" | "modes" | "reveal">;
 /**
  * Personal sessions only: save the credential the upstream creates, at JSON pointer `from`, into `type`'s default secret field;
  * for an envFile, as the one entry `entry` of a new .env file.
@@ -60,8 +64,10 @@ const hostOf = (url: string) => { try { return new URL(url).hostname; } catch { 
 const classOf = (e: unknown) => (e instanceof Error ? e.name : typeof e);
 
 /** The tools' work, outside MCP. Every call runs as the verified principal's agent only. */
-export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "events" | "log" | "held" | "resolve" | "identity">) {
+export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "events" | "log" | "held" | "resolve" | "identity" | "revealPollMs" | "revealWaitMs" | "now">) {
   const allow = parseCidrs(d.cfg.allowPrivateCidrs);
+  const reveals = { cfg: d.cfg, api: d.api, identity: d.identity, held: d.held, pending: new PendingReveals(), log: d.log,
+    pollMs: d.revealPollMs, waitMs: d.revealWaitMs, now: d.now };
 
   /** Sync and key for this agent; an API refusal (revoked, expired) drops both caches at once and is rethrown. */
   async function asAgent<T>(p: AgentPrincipal, f: (sync: AgentSync, keys: MembershipKeys) => Promise<T>): Promise<T> {
@@ -121,7 +127,17 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
       return items.map((i) => ({ handle: i.handle, title: i.title, type: i.type, hosts: i.hosts, inject: i.inject, approval: i.approval,
         ...(i.methods ? { methods: i.methods } : {}), ...(i.paths ? { paths: i.paths } : {}),
         ...(i.deposit ? { deposit: i.deposit } : {}), ...(i.can_update ? { can_update: i.can_update } : {}),
-        ...(i.env_keys ? { env_keys: i.env_keys } : {}), ...(i.env_injects ? { env_injects: i.env_injects } : {}) }));
+        ...(i.env_keys ? { env_keys: i.env_keys } : {}), ...(i.env_injects ? { env_injects: i.env_injects } : {}),
+        ...(i.modes ? { modes: i.modes } : {}), ...(i.reveal ? { reveal: i.reveal } : {}) }));
+    },
+
+    /** A value the owner allowed (spec §5.3). The key opens first (F1); a new request needs a fresh sync (the stub may have gone). */
+    async getSecret(p: AgentPrincipal, input: { item?: string; fields?: string[]; reason?: string; request_id?: string }): Promise<RevealResult | Refusal> {
+      const resume = input.request_id !== undefined;
+      if (resume ? input.item !== undefined || input.fields !== undefined || input.reason !== undefined : !input.item || !input.fields || !input.reason) return refused("invalid");
+      if (resume) return resumeReveal(reveals, p, input.request_id!);
+      d.syncs.drop(p.agentId);
+      return asPersonal(p, (sync, keys) => requestReveal(reveals, p, sync, keys, { item: input.item!, fields: input.fields!, reason: input.reason! })).catch(ownerKeyChanged);
     },
 
     /** A deposit in the owner's inbox. Policy and inbox are checked on the sync before anything is built or sent. */
@@ -251,6 +267,12 @@ const captureInput = z.strictObject({
   entry: z.string().regex(ENV_KEY).optional(),
   agent_use: saveSecretInput.agent_use,
 }).refine((c) => (c.type === "envFile") === (c.entry !== undefined), "entry is required for envFile and only for envFile");
+const getSecretInput = {
+  item: z.string().max(200).optional(),
+  fields: z.array(z.string().max(140)).min(1).max(20).optional(),
+  reason: z.string().min(1).max(300).optional(),
+  request_id: z.string().uuid().optional(),
+};
 const updateSecretInput = {
   item: z.string().max(200),
   set: z.strictObject({ ...fieldsInput.shape, env: z.record(z.string().regex(ENV_KEY), z.string().max(MAX_ENV_BYTES))
@@ -266,7 +288,7 @@ const asResult = (x: object) => ({ content: [{ type: "text" as const, text: JSON
 
 /** One McpServer per session: the two tools, and for a personal agent the two write tools; a session runs one tool call at a time. */
 function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentTools>, log: Logger, personal: boolean) {
-  const server = new McpServer({ name: "clane-vault-gateway", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "clane-vault-gateway", version: "0.1.0" }, { instructions: personal ? PERSONAL_INSTRUCTIONS : INSTRUCTIONS });
   const run = async (extra: { authInfo?: { extra?: Record<string, unknown> } }, f: (p: AgentPrincipal) => Promise<object>,
     busy: (p: AgentPrincipal) => Promise<object> = async () => ({ error: "refused", reason: "busy" })) => {
     const call = extra.authInfo?.extra?.call as Call;
@@ -303,6 +325,15 @@ function sessionServer(s: Pick<Session, "busy">, tools: ReturnType<typeof agentT
     description: "Changes fields of your own unkept item, or of an item the owner lets you update. `revision`, if given, must be the current one.",
     inputSchema: updateSecretInput,
   }, (input, extra) => run(extra, (p) => tools.updateSecret(p, input)));
+  server.registerTool("get_secret", {
+    description: "Shows you the value of fields the owner allowed (list_secrets: modes includes \"reveal\", reveal.fields). The owner may have to approve in Clane Vault; "
+      + "`reason` is shown to them. `{ status: \"pending\", request_id }` means call again with only `request_id`. Prefer http_request.",
+    inputSchema: getSecretInput,
+  }, (input, extra) => run(extra, async (p) => {
+    const r = await tools.getSecret(p, input);
+    if (!("fields" in r)) return r;
+    try { return { fields: r.fields }; } finally { setImmediate(r.release); } // held until the next macrotask, after the SDK has serialised the result
+  }));
   return server;
 }
 
@@ -382,6 +413,9 @@ export function mcpHandler(deps: McpDeps): ((req: IncomingMessage, res: ServerRe
       capture ||= capturing;
       if (msg.params?.name === "list_secrets" && limited(res, `list:${p.agentId}`, LIST_PER_MINUTE)) return;
       if ((msg.params?.name === "save_secret" || msg.params?.name === "update_secret") && limited(res, `write:${p.agentId}`, cfg.writePerHour, HOUR)) return;
+      // A new get_secret request counts (F7); resuming one with request_id does not.
+      if (msg.params?.name === "get_secret" && (msg.params as { arguments?: { request_id?: unknown } }).arguments?.request_id === undefined
+        && limited(res, `reveal:${p.agentId}`, cfg.revealPerHour, HOUR)) return;
     }
 
     const sid = req.headers["mcp-session-id"];
