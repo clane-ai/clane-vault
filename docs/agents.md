@@ -27,7 +27,7 @@ People who aren't admins can have agents of their own, for their Personal space:
 
 **The published fingerprint.**
 
-- Hosted: the fingerprint of `https://vault.clane.ai/mcp` is published on the Clane status page. (*Placeholder until the hosted gateway launches.*)
+- Hosted (vault.clane.ai): key id `zpkr5p_5mx5FzMi8`, fingerprint **`ce99-2be6-9ff9-9b1e-45cc`**. If the Verify dialog shows anything else for vault.clane.ai, click **Not now** and email hello@clane.ai with "Security" in the subject.
 - Self-hosted: print it and give it to your admins through a channel the server doesn't control (chat, a wiki, in person):
 
       docker compose exec gateway /nodejs/bin/node dist/cli.js identity

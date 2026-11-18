@@ -2,6 +2,14 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## 1.9.1 — 2026-11-18
+
+Upgrading: no migration and no `.env` change. Web app only; the gateway is unchanged.
+
+- **My agents explains how to connect an AI agent**: four steps (New agent, Verify, Connect, Give it items) at the top of the page, with where to add the connector in Claude and ChatGPT.
+- The Verify dialog always links to the published gateway fingerprint, and **Matches** opens Connect straight away.
+- `docs/agents.md` publishes the vault.clane.ai gateway fingerprint.
+
 ## 1.9.0 — 2026-11-18
 
 Upgrading: take a backup; migrations `20261115000000_personal_agents` (`Agent.orgId` becomes nullable, a new `Agent.ownerUserId` column with a CHECK that exactly one of the two is set), `20261116000000_agent_writes` and `20261117000000_agent_reveal` run on start. **Upgrade the server, the agent gateway, the web app and the extension together**: an older gateway and a newer web app can't complete a reveal approval, and an older app can't open .env file items. **Operators using AWS KMS must add `ownerUserId` to the allowed encryption-context keys before anyone enrols a personal agent** (`docs/agents.md`, *Keys at rest*). No `.env` change otherwise.

@@ -83,7 +83,7 @@ describe("Settings → My agents", () => {
     expect(created).toEqual({ name: "My bot", expiresAt: null });
     expect(await within(dialog).findByText(await fingerprintOf(pub))).toBeInTheDocument();
     expect(within(dialog).getByText(await fingerprintOf(gw.identity.publicKey))).toBeInTheDocument();
-    expect(within(dialog).getByText("Compare this with the fingerprint your server's operator published. A wrong gateway could read everything you give this agent.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: "the published fingerprint" })).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Matches" }));
     await waitFor(() => expect(verified).toEqual({ publicKey: pub }));
     await waitFor(() => expect(pinnedGateway(ME, PERSONAL_SLOT)).toEqual(gw.identity));
@@ -115,7 +115,7 @@ describe("Settings → My agents", () => {
     const dialog = await screen.findByRole("dialog", { name: "Verify My bot" });
     expect(await within(dialog).findByText("Changed — compare it with the published fingerprint")).toBeInTheDocument();
     expect(within(dialog).getByText(await fingerprintOf(old.identity.publicKey))).toBeInTheDocument();
-    expect(within(dialog).getByRole("link", { name: "The published fingerprint" })).toHaveAttribute("href", expect.stringContaining("docs/agents.md"));
+    expect(within(dialog).getByRole("link", { name: "the published fingerprint" })).toHaveAttribute("href", expect.stringContaining("docs/agents.md"));
     expect(within(dialog).getByRole("button", { name: "Matches" })).toBeDisabled();
     await userEvent.click(within(dialog).getByLabelText("I compared the gateway fingerprint with the published one"));
     await userEvent.click(within(dialog).getByRole("button", { name: "Matches" }));

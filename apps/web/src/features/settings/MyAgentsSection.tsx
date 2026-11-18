@@ -155,6 +155,12 @@ export function MyAgentsSection({ records, privateLocked = false }: { records: V
         <p className="text-[13.5px] leading-relaxed text-text-secondary">
           Your agents use the items you give them through the gateway, without ever seeing the credentials. Give them only restricted credentials.
         </p>
+        <ol aria-label="How to connect an AI agent" className="flex list-decimal flex-col gap-1 rounded-[10px] border border-border-default bg-well py-3 pr-3 pl-8 text-[13px] leading-relaxed text-text-primary">
+          <li><b>New agent</b>: name it after the app that will use it, for example Claude.</li>
+          <li><b>Verify</b>: check the gateway fingerprint against the published one (the dialog links to it), then <b>Matches</b>.</li>
+          <li><b>Connect</b>: copy the connector URL into your AI app (Claude: Customize → Connectors → Add custom connector; ChatGPT: Plugins → Add custom MCP server), sign in to Clane Vault and pick this agent.</li>
+          <li><b>Give it items</b>: open an item in your Personal space → <b>Share</b> → pick the agent → <b>Can use</b>. It sees nothing you don't give it.</li>
+        </ol>
         {agentsOff(q.error) ? <p className="text-[13.5px] text-text-secondary">{AGENTS_OFF}</p>
           : q.isError ? <p role="alert" className="text-[13px] text-red-500">{agentErrorText(q.error, { orgs, personal: true })}</p>
           : d && (<>
@@ -184,7 +190,8 @@ export function MyAgentsSection({ records, privateLocked = false }: { records: V
           </>)}
       </div>
       {form && <AgentForm personal agent={form.agent} onClose={() => setForm(null)} onDone={(created) => { setForm(null); if (created) setVerifying(created); else toast.success("Saved"); }} />}
-      {verifying && <AgentVerifyDialog agent={verifying} personal={verifying.personal} onClose={() => setVerifying(null)} />}
+      {verifying && <AgentVerifyDialog agent={verifying} personal={verifying.personal} onClose={() => setVerifying(null)}
+        onVerified={() => setOpen({ kind: "connect", id: verifying.id })} />}
       {opened && open?.kind === "connect" && d?.gateway && <AgentConnectSheet personal agent={opened} url={d.gateway.url} onClose={() => setOpen(null)} />}
       {opened && open?.kind === "activity" && <ActivityDialog agent={opened} titleOf={titleOf} onClose={() => setOpen(null)} />}
       {opened && open?.kind === "revoke" && <RevokeDialog agent={opened} titleOf={titleOf} onClose={() => setOpen(null)} />}

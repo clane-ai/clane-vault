@@ -20,8 +20,9 @@ const PUBLISHED_FINGERPRINT = `${SELF_HOST_URL}/blob/main/docs/agents.md#enrolme
  * `personal`: the owner's own agent (Settings → My agents): its attestation binds the owner's account key, which must be
  * the one this unlocked session holds, and its gateway pin is "changed" when it differs from ANY pin on this device.
  */
-export function AgentVerifyDialog({ agent, personal, onClose }: {
+export function AgentVerifyDialog({ agent, personal, onClose, onVerified }: {
   agent: { id: string; name: string; publicKey: string; attestation: string }; personal?: { ownerUserId: string; ownerPublicKey: string }; onClose: () => void;
+  /** After Matches succeeds (My agents opens Connect next). */ onVerified?: () => void;
 }) {
   const { user, org, keys } = useSession();
   const orgGw = useGateway(!personal), myGw = useMyGateway(!!personal);
@@ -58,7 +59,7 @@ export function AgentVerifyDialog({ agent, personal, onClose }: {
 
   const matches = async () => {
     setError(null);
-    try { await verify.mutateAsync({ agent, gateway: identity!, repin: pin?.status === "changed" }); toast.success(`${agent.name} is verified`); onClose(); }
+    try { await verify.mutateAsync({ agent, gateway: identity!, repin: pin?.status === "changed" }); toast.success(`${agent.name} is verified`); onClose(); onVerified?.(); }
     catch (e) { setError(agentErrorText(e, { personal: !!personal })); }
   };
   const revokeIt = async () => {
@@ -107,10 +108,9 @@ export function AgentVerifyDialog({ agent, personal, onClose }: {
                   <dt className="text-text-secondary">Gateway this device trusted before</dt><dd className={fp}>{previousFp ?? "…"}</dd>
                 </>)}
               </dl>
-              {personal && <p className="text-[12.5px] text-text-secondary">Compare this with the fingerprint your server's operator published. A wrong gateway could read everything you give this agent.</p>}
-              {personal && pin?.status === "changed" && (
-                <p className="text-[12.5px] text-text-secondary">See <a href={PUBLISHED_FINGERPRINT} target="_blank" rel="noreferrer" className="font-medium text-[var(--link)] underline-offset-2 hover:underline">The published fingerprint</a> before you confirm.</p>
-              )}
+              <p className="text-[12.5px] text-text-secondary">
+                Check that the gateway fingerprint matches <a href={PUBLISHED_FINGERPRINT} target="_blank" rel="noreferrer" className="font-medium text-[var(--link)] underline-offset-2 hover:underline">the published fingerprint</a> (vault.clane.ai's is listed there; on your own server, ask whoever runs it). If it matches, click <b>Matches</b>. A wrong gateway could read everything you give this agent.
+              </p>
               {pin?.status === "changed" && (
                 <label className="flex items-start gap-2 text-[13px] text-text-primary">
                   <input type="checkbox" className="mt-0.5 size-4" checked={compared} onChange={(e) => setCompared(e.target.checked)} />
