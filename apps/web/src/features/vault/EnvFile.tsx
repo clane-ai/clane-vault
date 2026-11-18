@@ -1,7 +1,7 @@
 /** `.env file` items (spec §10.4): the read-only entry list, the editor's Contents field, and the file in and out. */
 import { useId, useRef, useState, type DragEvent } from "react";
 import { Download, Eye, EyeOff, FileUp, Plus } from "lucide-react";
-import { checkEnvContent, ENV_KEY, envEntries, envFileName, envKeys, envValue, MAX_ENV_BYTES, parseEnv, setEnvEntry } from "@clane-vault/crypto";
+import { checkEnvContent, diffEnv, ENV_KEY, envEntries, envFileName, envKeys, envValue, MAX_ENV_BYTES, parseEnv, setEnvEntry } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -88,6 +88,18 @@ export function EnvEntries({ content, useOnly = false }: { content: string; useO
       {useOnly && <p className="text-[12px] text-text-secondary">Use only: you can copy values, not view them.</p>}
       <InvalidLines content={content} />
     </>
+  );
+}
+
+/** Keys only, never values: Added / Changed / Removed from `before` to `after`; a group with no key is left out. */
+export function EnvDiff({ before, after }: { before: string; after: string }) {
+  const d = diffEnv(before, after);
+  const groups = ([["Added", d.added], ["Changed", d.changed], ["Removed", d.removed]] as const).filter(([, keys]) => keys.length);
+  if (!groups.length) return <p className="text-[12.5px] text-text-secondary">No differences.</p>;
+  return (
+    <ul aria-label="Differences" className="flex flex-col gap-0.5 text-[12.5px] text-text-secondary">
+      {groups.map(([label, keys]) => <li key={label}>{label}: <span className="font-mono break-all text-text-primary">{keys.join(", ")}</span></li>)}
+    </ul>
   );
 }
 

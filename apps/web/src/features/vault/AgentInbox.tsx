@@ -1,17 +1,19 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Navigate } from "react-router";
-import { Inbox, ShieldAlert } from "lucide-react";
+import { Download, Inbox, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError } from "@/lib/api";
 import { useSpacePaths } from "@/lib/space";
 import { relativeTime } from "@/lib/time";
 import { useMyAgents, type MyAgent } from "@/features/settings/myAgents";
-import { DepositChangedError, useAgentInbox, useDeleteDeposit, useKeepDeposit, usePinPersonalGateway, type OpenedDeposit } from "./useAgentInbox";
+import { DepositChangedError, envReplaceTargets, useAgentInbox, useDeleteDeposit, useKeepDeposit, usePinPersonalGateway, useReplaceFromDeposit, type OpenedDeposit } from "./useAgentInbox";
+import { downloadEnv, EnvDiff, EnvEntries } from "./EnvFile";
 import { grantErrorText, liveAgents } from "./RecordAgentsSection";
 import { EmptyState } from "./RecordList";
 import { Fingerprint } from "./people";
-import type { VaultFolder } from "./types";
+import type { VaultFolder, VaultRecord } from "./types";
+import { ConflictError } from "./useVault";
 
 const DAY = 864e5;
 const NO_FOLDER = "none";
@@ -55,15 +57,28 @@ function DeleteControl({ id, confirm, onBusy }: { id: string; confirm: boolean; 
   );
 }
 
-function DepositCard({ d, folders, agent, agentName, onKept, onError }: {
-  d: Extract<OpenedDeposit, { ok: true }>; folders: VaultFolder[]; agent?: MyAgent; agentName: string; onKept: (agentRow: boolean, agentName: string) => void; onError: (msg: string) => void;
+function DepositCard({ d, folders, records, agent, agentName, onKept, onReplaced, onError }: {
+  d: Extract<OpenedDeposit, { ok: true }>; folders: VaultFolder[]; records: VaultRecord[]; agent?: MyAgent; agentName: string; onKept: (agentRow: boolean, agentName: string) => void;
+  onReplaced: (title: string) => void; onError: (msg: string) => void;
 }) {
   const [folderId, setFolderId] = useState(NO_FOLDER);
   const [grant, setGrant] = useState(true);
   const keep = useKeepDeposit();
-  const busy = keep.isPending;
+  const replace = useReplaceFromDeposit();
+  const busy = keep.isPending || replace.isPending;
   const b = d.body;
   const policy = b.agentPolicy;
+  // An env file can instead replace the contents of one of my env files (spec 10.5); the matching one is preselected.
+  const { targets, match } = useMemo(() => envReplaceTargets(b, records), [b, records]);
+  const [mode, setMode] = useState<"new" | "replace">(match ? "replace" : "new");
+  const [targetId, setTargetId] = useState((match ?? targets[0])?.id ?? "");
+  const target = targets.find((r) => r.id === targetId) ?? targets[0];
+  const replacing = mode === "replace" && !!target;
+  const doReplace = async () => {
+    onError("");
+    try { await replace.mutateAsync({ d, target: target! }); onReplaced(target!.body?.title ?? ""); }
+    catch (e) { onError(e instanceof ConflictError || (e instanceof Error && e.message.startsWith("Agent policy:")) ? e.message : grantErrorText(e)); }
+  };
   const doKeep = async () => {
     onError("");
     try {
@@ -79,8 +94,33 @@ function DepositCard({ d, folders, agent, agentName, onKept, onError }: {
         {b.url && <p className="text-[13px] break-all text-text-secondary">{b.url}</p>}
       </div>
       <Meta d={d} agentName={agentName} />
+      {b.type === "envFile" && <EnvEntries content={b.data?.content ?? ""} />}
       {policy && <p className="text-[12.5px] text-text-secondary">Agent use, <span className="italic">set by the agent</span>: {policy.hosts.join(", ")}</p>}
-      <div className="flex flex-wrap items-center gap-3">
+      {target && (
+        <div role="radiogroup" aria-label="Keep how" className="flex flex-col gap-2">
+          <label className="flex min-h-6 cursor-pointer items-center gap-2 text-[13px] text-text-primary">
+            <input type="radio" name={`keep-${d.id}`} checked={!replacing} onChange={() => setMode("new")} disabled={busy} className="size-4 accent-blue-500" />Keep as a new item
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex min-h-6 cursor-pointer items-center gap-2 text-[13px] text-text-primary">
+              <input type="radio" name={`keep-${d.id}`} checked={replacing} onChange={() => setMode("replace")} disabled={busy} className="size-4 accent-blue-500" />Replace the contents of
+            </label>
+            <Select value={target.id} onValueChange={(id) => { setTargetId(id); setMode("replace"); }} disabled={busy}>
+              <SelectTrigger aria-label="Item to replace" className="h-8 min-w-[160px] text-[13px]"><SelectValue /></SelectTrigger>
+              <SelectContent>{targets.map((r) => <SelectItem key={r.id} value={r.id}>{r.body?.title}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          {replacing && (
+            <div className="flex flex-col gap-1.5 pl-6">
+              <EnvDiff before={target.body?.data?.content ?? ""} after={b.data?.content ?? ""} />
+              <p className="text-[12.5px] text-text-primary">The current contents will be replaced.</p>
+              <div><Button variant="outline" size="sm" onClick={() => downloadEnv(target.body?.data?.content ?? "", target.body?.data?.fileName)}><Download className="size-3.5" />Download current</Button></div>
+              <p className="text-[12.5px] text-text-secondary">The existing item keeps its own agent settings.</p>
+            </div>
+          )}
+        </div>
+      )}
+      {!replacing && <div className="flex flex-wrap items-center gap-3">
         <Select value={folderId} onValueChange={setFolderId} disabled={busy}>
           <SelectTrigger aria-label="Folder" className="h-8 min-w-[160px] text-[13px]"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -94,9 +134,10 @@ function DepositCard({ d, folders, agent, agentName, onKept, onError }: {
             {agent.name} can keep using this item
           </label>
         )}
-      </div>
+      </div>}
       <div className="flex flex-wrap items-start gap-2">
-        <Button size="sm" disabled={busy} onClick={() => void doKeep()}>{keep.isPending ? "Keeping…" : "Keep"}</Button>
+        {replacing ? <Button size="sm" disabled={busy} onClick={() => void doReplace()}>{replace.isPending ? "Replacing…" : "Replace"}</Button>
+          : <Button size="sm" disabled={busy} onClick={() => void doKeep()}>{keep.isPending ? "Keeping…" : "Keep"}</Button>}
         <DeleteControl id={d.id} confirm onBusy={busy} />
       </div>
     </article>
@@ -131,7 +172,7 @@ function PinFirst({ onPinned }: { onPinned: (publicKey: string) => void }) {
  * From agents (Personal space): what my personal agents saved, waiting to be kept or deleted. Each is shown only after the
  * pinned gateway's signature over it checks out on this device.
  */
-export function AgentInbox({ folders, enabled = true }: { folders: VaultFolder[]; enabled?: boolean }) {
+export function AgentInbox({ folders, records = [], enabled = true }: { folders: VaultFolder[]; /** The Personal vault's records (env files a deposit can replace). */ records?: VaultRecord[]; enabled?: boolean }) {
   const q = useAgentInbox(enabled);
   const paths = useSpacePaths();
   const mine = useMyAgents(enabled).data?.agents;
@@ -155,8 +196,9 @@ export function AgentInbox({ folders, enabled = true }: { folders: VaultFolder[]
         : list.length === 0 ? <EmptyState icon={Inbox} title="Nothing from your agents" line="Items your agents save show up here until you keep or delete them." />
         : unpinned ? <PinFirst onPinned={setNewGateway} />
         : list.map((d) => d.ok
-          ? <DepositCard key={`${d.id}:${d.revision}`} d={d} folders={folders} agent={agents.find((a) => a.id === d.agentId)} agentName={nameOf(d.agentId)}
+          ? <DepositCard key={`${d.id}:${d.revision}`} d={d} folders={folders} records={records} agent={agents.find((a) => a.id === d.agentId)} agentName={nameOf(d.agentId)}
               onError={(m) => { setError(m || null); if (m) setNotice(null); }}
+              onReplaced={(title) => setNotice(`Replaced the contents of ${title}.`)}
               onKept={(agentRow, name) => setNotice(agentRow ? "Kept." : `Kept. ${name} already has 200 items, so it can't use this one. Take an item away from it, then give it this one.`)} />
           : <RefusedCard key={d.id} d={d} agentName={nameOf(d.agentId)} />)}
     </div>

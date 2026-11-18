@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  agentDepositMessage, b64url, decryptRecordBody, openDepositKey, sealPersonalAgentRecordKey, sha256B64, verifyGatewayMessage, wrapKey,
+  agentDepositMessage, b64url, decryptRecordBody, encryptRecordBody, openDepositKey, sealPersonalAgentRecordKey, serverRecordType, sha256B64, verifyGatewayMessage, wrapKey,
   type RecordBody, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import { api, ApiError } from "@/lib/api";
 import { accountPublicKeyOf, ensureGatewayPinned, KeyChangedError, PERSONAL_SLOT, pinKey, pinnedGateway, pinStatus, verifyPersonalAgentKey } from "@/lib/orgKeys";
 import { useSession } from "@/lib/session";
 import type { MyAgent } from "@/features/settings/myAgents";
+import { agentPolicyError } from "./AgentPolicyEditor";
+import type { VaultRecord } from "./types";
+import { ConflictError } from "./useVault";
 
 /** A deposit as GET /me/agent-deposits lists it: ciphertext, the record key sealed to me, and the gateway's d1 signature. */
 export interface DepositRow {
@@ -122,5 +125,46 @@ export function usePinPersonalGateway() {
   return useMutation({
     mutationFn: () => ensureGatewayPinned(api, user!.id, PERSONAL_SLOT, "/me/agents/gateway"),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY] }),
+  });
+}
+
+const sameFile = (a: RecordBody, b: RecordBody) => (["project", "environment", "fileName"] as const).every((k) => (a.data?.[k] ?? "") === (b.data?.[k] ?? ""));
+/** The owner's own, live, Personal envFile records; first the one whose project, environment and fileName all equal the deposit's (the most recently changed when several do), or null. */
+export function envReplaceTargets(deposit: RecordBody, records: VaultRecord[]): { targets: VaultRecord[]; match: VaultRecord | null } {
+  if (deposit.type !== "envFile") return { targets: [], match: null };
+  const mine = records.filter((r) => r.permission === "owner" && !r.deleted && r.recordKey && r.body?.type === "envFile")
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const match = mine.find((r) => sameFile(r.body!, deposit)) ?? null;
+  return { targets: match ? [match, ...mine.filter((r) => r !== match)] : mine, match };
+}
+
+/**
+ * Saves `target` through the normal edit path (PUT /records/:id at its revision) with only data.content replaced by the deposit's,
+ * then DELETE /me/agent-deposits/:id. A refused save (validator or 409) deletes nothing. The deposit's agentPolicy is not applied.
+ */
+export function useReplaceFromDeposit() {
+  const { generation } = useSession();
+  const after = useAfter();
+  return useMutation({
+    mutationFn: async (v: { d: Extract<OpenedDeposit, { ok: true }>; target: VaultRecord }) => {
+      const t = v.target;
+      if (!t.body || !t.recordKey) throw new Error("This item can't be opened");
+      const body: RecordBody = { ...t.body, data: { ...t.body.data, content: v.d.body.data?.content ?? "" } };
+      // The policy's env:<KEY> must still name an entry (Review Focus 7): refused here in the editor's words.
+      const why = agentPolicyError(body.agentPolicy, body);
+      if (why) throw new Error(why);
+      const gen = generation();
+      const rk = t.recordKey.slice();
+      let encBody: string;
+      try {
+        if (rk.every((b) => b === 0)) throw new Error("Vault locked");
+        encBody = await encryptRecordBody(t.id, body, rk);
+        if (generation() !== gen) throw new Error("Vault locked");
+      } finally { rk.fill(0); }
+      try { await api.put(`/records/${t.id}`, { encBody, revision: t.revision, type: serverRecordType(body) }); }
+      catch (e) { throw e instanceof ApiError && e.status === 409 && e.code !== "in_trash" ? new ConflictError() : e; }
+      await api.del(`/me/agent-deposits/${v.d.id}`);
+    },
+    onSettled: after,
   });
 }

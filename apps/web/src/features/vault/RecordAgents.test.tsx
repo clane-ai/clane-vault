@@ -287,6 +287,24 @@ describe("provenance and Changed by agent", () => {
     await waitFor(() => expect(within(panel).queryByRole("note", { name: "Changed by agent" })).toBeNull());
   });
 
+  it("an env file: the banner lists the changed keys, and Restore previous saves the previous text exactly", async () => {
+    const { id, enc, revision } = await serveRecord({ agentChange: "signed", envFile: true, agentPolicy: false });
+    const prevText = "STRIPE_KEY=sk_old\r\n# kept\r\nOLD=1\r\n";
+    let put: { encBody: string; revision: number } | null = null;
+    server.use(
+      http.get("/api/v1/records/:id/agent-overwrites", async () => HttpResponse.json({ overwrites: [{ id: "ow1", agentId: AGENT_ID, agentName: "My bot",
+        prevEncBody: await encryptRecordBody(id, { type: "envFile", title: "Stripe", data: { content: prevText } }, enc.recordKey), newRevision: revision, signature: "", createdAt: "2026-11-16T10:00:00Z" }] })),
+      http.put("/api/v1/records/:id", async ({ request }) => { put = (await request.json()) as never; srv.saved = true; return HttpResponse.json({ ok: true }); }),
+    );
+    const panel = await openRecord();
+    const banner = within(panel).getByRole("note", { name: "Changed by agent" });
+    await waitFor(() => expect(banner).toHaveTextContent("Changed: STRIPE_KEY"));
+    expect(banner).toHaveTextContent("Removed: OLD");
+    await userEvent.click(within(panel).getByRole("button", { name: "Restore previous" }));
+    await waitFor(() => expect(put).not.toBeNull());
+    expect((await decryptRecordBody(id, put!.encBody, enc.recordKey)).data?.content).toBe(prevText);
+  });
+
   it("a change the gateway didn't sign over the current body says so", async () => {
     await serveRecord({ agentChange: "unsigned" });
     const panel = await openRecord();

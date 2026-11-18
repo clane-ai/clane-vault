@@ -15,6 +15,7 @@ import { PERSONAL_SLOT, pinGateway, pinnedGateway, type GatewayIdentity } from "
 import type { MyAgent } from "@/features/settings/myAgents";
 import { AgentInbox } from "./AgentInbox";
 import VaultPage from "./VaultPage";
+import type { VaultRecord } from "./types";
 
 // Every call to openDepositKey is recorded: nothing may be opened before the gateway's signature checks out (spec §8).
 vi.mock("@clane-vault/crypto", async (orig) => {
@@ -41,10 +42,10 @@ let deposits: unknown[];
 let agents: MyAgent[];
 let inboxLoads: number;
 
-async function deposit(o: { signer?: Uint8Array; noSignature?: boolean; ownerKey?: string; createdAt?: string; expiresAt?: string; agentId?: string } = {}) {
+async function deposit(o: { signer?: Uint8Array; noSignature?: boolean; ownerKey?: string; createdAt?: string; expiresAt?: string; agentId?: string; body?: RecordBody } = {}) {
   const id = crypto.randomUUID();
   const recordKey = randomBytes(32);
-  const encBody = await encryptRecordBody(id, BODY, recordKey);
+  const encBody = await encryptRecordBody(id, o.body ?? BODY, recordKey);
   const message = agentDepositMessage({ ownerUserId: ME, ownerPublicKey: o.ownerKey ?? ownerPublicKey, agentId: o.agentId ?? AGENT_ID, id, revision: 1, encBodyHash: await sha256B64(encBody) });
   const signature = o.noSignature ? "" : await signGatewayMessage(o.signer ?? gw.privateKey, gw.identity.keyId, "d1", message);
   // The server's agentName isn't covered by the signature: the page names the agent from My agents.
@@ -73,8 +74,8 @@ beforeEach(async () => {
   );
 });
 
-const renderInbox = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-  <MemoryRouter><AgentInbox folders={[]} /></MemoryRouter></QueryClientProvider>);
+const renderInbox = (records: VaultRecord[] = []) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  <MemoryRouter><AgentInbox folders={[]} records={records} /></MemoryRouter></QueryClientProvider>);
 const REFUSAL = "Not signed by the gateway — delete it";
 
 describe("From agents", () => {
@@ -262,5 +263,106 @@ describe("From agents", () => {
       await screen.findByRole("link", { name: /Trash/ });
       expect(screen.queryByRole("link", { name: /From agents/ })).toBeNull();
     } finally { Object.assign(session, prev); }
+  });
+});
+
+describe("From agents: .env files", () => {
+  const POLICY = { v: 1 as const, hosts: ["api.billing.dev"], inject: { kind: "bearer" as const }, secret: "env:A" };
+  const envBody = (o: { project?: string; content?: string } = {}): RecordBody =>
+    ({ type: "envFile", title: "Billing from agent", data: { project: o.project ?? "billing", fileName: ".env", content: o.content ?? "A=1\nB=3\nC=4\n" } });
+  let existingKey: Uint8Array;
+  let existing: VaultRecord;
+  let calls: string[];
+  let put: { encBody: string; revision: number } | null;
+  beforeEach(() => {
+    existingKey = randomBytes(32);
+    existing = { id: crypto.randomUUID(), folderId: null, type: "item", revision: 3, updatedAt: "2026-11-10T00:00:00Z", deleted: false, permission: "owner", recordKey: existingKey,
+      body: { type: "envFile", title: "Billing", notes: "billing secrets", data: { project: "billing", fileName: ".env", content: "A=1\nB=2\nD=4\n" }, agentPolicy: POLICY } };
+    calls = []; put = null;
+    server.use(
+      http.put("/api/v1/records/:id", async ({ params, request }) => { calls.push(`PUT ${params.id}`); put = (await request.json()) as never; return HttpResponse.json({ ok: true }); }),
+      http.delete("/api/v1/me/agent-deposits/:id", ({ params }) => { calls.push(`DELETE ${params.id}`); deposits = []; return new HttpResponse(null, { status: 204 }); }),
+      http.post("/api/v1/me/agent-deposits/:id/keep", ({ params }) => { calls.push(`KEEP ${params.id}`); return HttpResponse.json({ id: params.id, revision: 1 }, { status: 201 }); }),
+    );
+  });
+
+  it("shows the entries masked until Show", async () => {
+    deposits = [(await deposit({ body: envBody() })).row];
+    renderInbox();
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    const rows = within(within(card).getByRole("list", { name: "Entries" })).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent?.slice(0, 1))).toEqual(["A", "B", "C"]);
+    expect(within(card).getByLabelText("B value")).not.toHaveTextContent("3");
+    await userEvent.click(within(card).getByRole("button", { name: "Show B" }));
+    expect(within(card).getByLabelText("B value")).toHaveTextContent("3");
+  });
+
+  it("preselects Replace the contents of the matching file, shows the differences, and replaces it: one PUT then one DELETE, no keep", async () => {
+    const d = await deposit({ body: envBody() });
+    deposits = [d.row];
+    renderInbox([existing]);
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    expect(within(card).getByRole("radio", { name: "Replace the contents of" })).toBeChecked();
+    expect(within(card).getByRole("combobox", { name: "Item to replace" })).toHaveTextContent("Billing");
+    expect(card).toHaveTextContent("Added: C");
+    expect(card).toHaveTextContent("Changed: B");
+    expect(card).toHaveTextContent("Removed: D");
+    expect(card).toHaveTextContent("The current contents will be replaced.");
+    expect(card).toHaveTextContent("The existing item keeps its own agent settings.");
+    expect(within(card).getByRole("button", { name: "Download current" })).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(calls).toEqual([`PUT ${existing.id}`, `DELETE ${d.id}`]));
+    expect(put!.revision).toBe(3);
+    const saved = await cryptoModule.decryptRecordBody(existing.id, put!.encBody, existingKey);
+    expect(saved.title).toBe("Billing");
+    expect(saved.notes).toBe("billing secrets");
+    expect(saved.data?.content).toBe("A=1\nB=3\nC=4\n");
+    expect(saved.data?.project).toBe("billing");
+    expect(JSON.stringify(saved.agentPolicy)).toBe(JSON.stringify(POLICY));
+  });
+
+  it("a file without the entry the existing policy injects is refused with the validator's message; nothing is sent", async () => {
+    deposits = [(await deposit({ body: envBody({ content: "B=3\nC=4\n" }) })).row];
+    renderInbox([existing]);
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    await userEvent.click(within(card).getByRole("button", { name: "Replace" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Agent policy: secret names a field this record doesn't have");
+    expect(calls).toEqual([]);
+  });
+
+  it("another project: Keep as a new item is the default, and the file is still offered", async () => {
+    deposits = [(await deposit({ body: envBody({ project: "shop" }) })).row];
+    renderInbox([existing]);
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    expect(within(card).getByRole("radio", { name: "Keep as a new item" })).toBeChecked();
+    expect(within(card).getByRole("button", { name: "Keep" })).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("radio", { name: "Replace the contents of" }));
+    expect(within(card).getByRole("combobox", { name: "Item to replace" })).toHaveTextContent("Billing");
+    expect(card).toHaveTextContent("Changed: B");
+  });
+
+  it("identical entries say No differences.", async () => {
+    deposits = [(await deposit({ body: envBody({ content: "A=1\nB=2\nD=4\n" }) })).row];
+    renderInbox([existing]);
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    expect(card).toHaveTextContent("No differences.");
+    expect(card).not.toHaveTextContent("Added:");
+  });
+
+  it("no env file of mine in the vault (only a shared one, or one in the trash): no second choice", async () => {
+    deposits = [(await deposit({ body: envBody() })).row];
+    renderInbox([{ ...existing, permission: "edit" }, { ...existing, id: crypto.randomUUID(), deleted: true }]);
+    const card = await screen.findByRole("article", { name: "Billing from agent" });
+    expect(within(card).queryByRole("radio")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Keep" })).toBeInTheDocument();
+  });
+
+  it("a deposit that fails the signature check offers neither Keep nor Replace", async () => {
+    deposits = [(await deposit({ body: envBody(), signer: (await generateIdentityKeyPair()).privateKey })).row];
+    renderInbox([existing]);
+    expect(await screen.findByText(REFUSAL)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Replace" })).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
   });
 });
