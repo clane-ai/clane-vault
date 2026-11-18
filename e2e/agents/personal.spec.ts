@@ -347,7 +347,7 @@ test("11. the agent sees the keys, never a value, and sends the one entry its Ag
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
   await expect(agents.getByRole("note", { name: "Sharing with an agent" })).toContainText(AGENT_WARNING);
   await agents.getByRole("combobox", { name: "Access for My helper" }).click();
-  await member.getByRole("option", { name: "Can use" }).click();
+  await member.getByRole("option", { name: "Can use", exact: true }).click();
   await expect(agents.getByRole("combobox", { name: "Access for My helper" })).toHaveText("Can use", { timeout: 30_000 });
   await member.keyboard.press("Escape");
 
