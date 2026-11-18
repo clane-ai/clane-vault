@@ -127,6 +127,11 @@ test("1. the member creates and verifies a personal agent", async () => {
   for (const fp of await fingerprints.all()) await expect(fp).toHaveText(/[0-9A-Za-z]{4}/);
   await verify.getByRole("button", { name: "Matches" }).click();
   await expect(verify).toHaveCount(0, { timeout: 30_000 });
+  // Since 1.9.1 Matches opens Connect straight away: close it to see the row.
+  const connect = member.getByRole("dialog", { name: "Connect My helper" });
+  await expect(connect).toBeVisible({ timeout: 30_000 });
+  await member.keyboard.press("Escape");
+  await expect(connect).toHaveCount(0);
   await expect(myAgentRow(member).getByText("Active", { exact: true })).toBeVisible({ timeout: 30_000 });
 });
 
