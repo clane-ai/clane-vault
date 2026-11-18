@@ -2,6 +2,15 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## Unreleased
+
+Upgrading: no migration. **The gateway's `GATEWAY_REVEAL` now defaults to `approval`, not `off`. Operators who want reading values off must set `GATEWAY_REVEAL=off` in `.env` before they upgrade the gateway.** With nothing set, owners are offered *Let the AI see this value* for their own Personal items wherever every organisation they belong to allows reading values (the policy's default, *With approval*). Nothing becomes readable by the upgrade itself: it stays off for every item until its owner turns it on, each read is still approved in the web app, and `standing` (reading without approval) is still only for operators who set it. An organisation can switch reading off for its members under **Policies → Personal agents → Reading values**.
+
+- **Agent use is a button on the record**, beside **Edit** and **Share**, with a status (*Off*, *Use*, *See*, *Use + See*), and opens its own sheet. It is no longer a section at the bottom of the Edit form; a policy is added to a new record after it is saved. The sheet lists the agents that hold the item and how, takes allowed hosts as chips, offers *Bearer*, *Basic*, *Header* and *Query* side by side, and previews the request the service receives with the secret masked. **Remove agent use** takes the policy away. The policy is saved as before, inside the record's encrypted body.
+- **Let the AI see this value**, in the same sheet for your own Personal items: per agent, the *Can reveal* field picker (Username ticked where the item has one, the password never). The share sheet's *Can reveal* choice is unchanged and does the same thing.
+- The share sheet's *This item has no Agent use settings yet* line opens the Agent use sheet.
+- `GATEWAY_REVEAL` defaults to `approval` (`docs/agents.md`, *Letting an agent read a value*; `SECURITY.md`). An older gateway that reports no reveal setting is still treated as `off`.
+
 ## 1.9.1 — 2026-11-18
 
 Upgrading: no migration and no `.env` change. Web app only; the gateway is unchanged.

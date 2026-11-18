@@ -13,7 +13,7 @@ The request, in the owner's words: every user, not just admins, should be able t
 | 3 | Three per-item modes, all off by default: **Agent can use** (today's behaviour), **Agent can reveal** (new; the model sees the value), and **Agent can update** (new; the agent may overwrite the item). |
 | 4 | Agent-written secrets arrive as **deposits** in a "From agents" inbox, signed by the gateway. They become normal records only when the owner clicks **Keep** in an unlocked browser. The existing guard that refuses a sealed key on the user's own record stays exactly as it is. |
 | 5 | Reveal ships as **approval per reveal** first: the agent holds no key for the item; the owner's unlocked browser seals only the approved fields to a one-time key the gateway signed. **Standing reveal** (no approval) is a later, separately switched phase. |
-| 6 | The gateway never returns a value unless the operator set `GATEWAY_REVEAL`. Default `off`. |
+| 6 | The gateway never returns a value while the operator's `GATEWAY_REVEAL` is `off`. Default `approval` (**owner decision, 2026-11-18**; it was `off` as first shipped in 1.9.0): reading is offered, still per item, per field and per approved request. `standing` is never a default; the operator opts in. |
 | 7 | Organisation agents stay Use-only with today's two tools. Write and reveal are for personal agents only in this design. |
 | 8 | Hosted: personal agents do not count against the organisation's agent bundle (Team 3, Business 10). They have a per-person allowance (§3.3). |
 | 9 | An organisation can switch personal agents off for its members, cap how many each may have, and forbid write or reveal (§3.4). This is the first server-enforced organisation policy that reaches the Personal space, and the docs must say so. |
@@ -104,7 +104,7 @@ personalAgents: z.object({
 - The policy of **every organisation the user is an active member of** applies, strictest wins: `allowed` is the AND, `maxPerMember` the minimum, `write` the AND, `reveal` the lowest of off < approval < standing. A user with no organisation has no policy; their plan and the server setting decide.
 - Enforced by the API, not the client: `POST /me/agents` answers `403 { error: "personal_agents_disabled", orgId }`; `requireAgent` refuses a personal agent with the same code while any of its owner's organisations has `allowed: false`. The gateway treats it like expiry (cache dropped). Agents are **suspended, not deleted**: they work again if the policy changes or the user leaves that organisation. Nothing the user stored is touched.
 - `write: false` makes the API refuse `/agent/deposits` and agent updates; `reveal` caps what the API will relay (§5).
-- The server operator has a harder switch that no policy can raise: the gateway's `GATEWAY_REVEAL=off|approval|standing` (default `off`), and an API setting `PERSONAL_AGENTS=on|off` (default `on` when agent access is configured).
+- The server operator has a harder switch that no policy can raise: the gateway's `GATEWAY_REVEAL=off|approval|standing` (default `approval`, an owner decision of 2026-11-18; `off` before that. An operator who wants no reveal sets `off`), and an API setting `PERSONAL_AGENTS=on|off` (default `on` when agent access is configured).
 
 What this policy cannot do: an organisation cannot read, list or revoke an individual's personal agent or see what it was given. It can only turn the capability off for its members.
 

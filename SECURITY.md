@@ -67,13 +67,15 @@ in the file while the grant lives, though the policy lets it send only one. Its 
 
 Residual risks, which no mitigation in this release removes:
 
-- **Reveal: the model sees values.** With `GATEWAY_REVEAL` set by the operator and *Can reveal* chosen by the owner for an
-  item, a personal agent's `get_secret` returns the approved fields. The value is then in the model's context, the
+- **Reveal: the model sees values.** Where the operator has not set `GATEWAY_REVEAL=off` (the gateway's default is
+  `approval`) and the owner chose *Can reveal* for an item, a personal agent's `get_secret` returns the fields the owner
+  approves, one request at a time. Nothing is readable until an owner turns it on for an item, and no organisation's
+  policy may say off. The value is then in the model's context, the
   provider's logs and retention and the conversation, for good; the scrubber can't help. Approval in the web app limits
   when a value is released, not what happens to it next. See [docs/agents.md](docs/agents.md#letting-an-agent-read-a-value).
 - **Reading without approval has no person in the loop.** Where the operator (`GATEWAY_REVEAL=standing`), every
   organisation's policy and the item's own encrypted setting all allow it, the model reads the listed fields whenever it
-  asks. Off by default at every level.
+  asks. Off by default at every level: the gateway's default, `approval`, does not allow it.
 - **An MCP client that auto-approves tools auto-approves `get_secret`.** The control is the owner's approval inside Clane
   Vault (each request signed by the gateway and checked against the pinned identity before the browser seals anything),
   not the MCP client's tool approval.
