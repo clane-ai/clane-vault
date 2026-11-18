@@ -107,7 +107,7 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
   const personalSyncBody = () => ({
     owner: { userId: personalOwnerId, publicKey: ownerPublicKey }, agentId: personalId, publicKey: personalPublicKey, wrappedPrivateKey: personalWrapped,
     kekId: o.kek.id, expiresAt: null, records: personalRecords, reveal: [],
-    deposits: deposits.map(({ id, encBody, revision, agentSealedKey }) => ({ id, encBody, revision, agentSealedKey })),
+    deposits: deposits.map(({ id, encBody, revision, agentSealedKey, signature }) => ({ id, encBody, revision, agentSealedKey, signature })),
     inboxFree: inboxFree ?? 100 - deposits.length, policy: { write: policyWrite, reveal: "off" },
   });
 

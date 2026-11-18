@@ -15,7 +15,7 @@ export interface OrgAgentSync {
 export interface PersonalAgentSync {
   owner: { userId: string; publicKey: string }; agentId: string; publicKey: string; wrappedPrivateKey: string | null; kekId: string; expiresAt: string | null;
   records: { id: string; encBody: string; revision: number; wrappedRecordKey: string; write: boolean; deletedAt: string | null }[];
-  reveal: unknown[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string }[]; inboxFree: number;
+  reveal: unknown[]; deposits: { id: string; encBody: string; revision: number; agentSealedKey: string; signature: string }[]; inboxFree: number;
   policy: { write: boolean; reveal: "off" | "approval" | "standing" };
 }
 export type AgentSync = OrgAgentSync | PersonalAgentSync;

@@ -106,7 +106,7 @@ describe("POST /agent/deposits", () => {
     expect(org.records.find((r: { id: string }) => r.id === d.body.id)).toBeUndefined();
 
     const s = (await agentCall(access, "GET", "/agent/sync")).json();
-    expect(s.deposits).toEqual([{ id: d.body.id, encBody: d.body.encBody, revision: 1, agentSealedKey: d.body.agentSealedKey }]);
+    expect(s.deposits).toEqual([{ id: d.body.id, encBody: d.body.encBody, revision: 1, agentSealedKey: d.body.agentSealedKey, signature: d.body.signature }]);
     expect(s.inboxFree).toBe(99);
   });
 
@@ -164,6 +164,7 @@ describe("PUT /agent/deposits/:id", () => {
     const r = await agentCall(access, "PUT", `/agent/deposits/${d.body.id}`, u);
     expect([r.statusCode, r.json()]).toEqual([200, { id: d.body.id, revision: 2 }]);
     expect(await t.prisma.agentDeposit.findUniqueOrThrow({ where: { id: d.body.id } })).toMatchObject({ revision: 2, encBody: u.encBody, signature: u.signature });
+    expect(await t.prisma.event.findMany({ where: { action: "agent.update" } })).toEqual([expect.objectContaining({ orgId: null, actorId: agent.id, recordId: d.body.id })]);
 
     const second = await setup(owner);
     const s = await agentCall(second.access, "PUT", `/agent/deposits/${d.body.id}`, await update(owner, second.agent, d, 2));
@@ -173,6 +174,7 @@ describe("PUT /agent/deposits/:id", () => {
     const badSig = { ...(await update(owner, agent, d, 2)), encBody: u.encBody };
     expect((await agentCall(access, "PUT", `/agent/deposits/${d.body.id}`, badSig)).json()).toEqual({ error: "conflict" });
     expect((await t.prisma.agentDeposit.findUniqueOrThrow({ where: { id: d.body.id } })).revision).toBe(2);
+    expect(await t.prisma.event.count({ where: { action: "agent.update" } })).toBe(1);
   });
 });
 

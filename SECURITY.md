@@ -73,6 +73,10 @@ Residual risks, which no mitigation in this release removes:
   holds a key for. Each update is signed by the gateway and the server keeps the previous version (the last 5, for 30
   days, *Restore previous*), so an overwrite is visible and reversible, not impossible. Saved items never become records
   without the owner's Keep, so the server can't plant one in a vault.
+- **A malicious server can substitute the key the agent holds for an item with *Agent can update* and read what the
+  agent next writes to it.** The agent's copy of a record key is sealed to its public key, which anyone can seal to, and
+  the gateway can't tell a substituted one from the owner's. Unkept deposits are not affected: the gateway updates a
+  deposit only if it carries the gateway's own signature over that body.
 - **The gateway sees what it writes.** It encrypts a saved or updated value itself, so it sees it even if the agent is
   never given that item to use. With `save_secret` and `update_secret` the model supplied the value, so it has seen it
   too; `capture` keeps a created credential away from the model.

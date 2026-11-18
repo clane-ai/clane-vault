@@ -255,6 +255,8 @@ test("8. update_secret needs Agent can update; Restore previous undoes the chang
   const banner = member.getByRole("note", { name: "Changed by agent" });
   await expect(banner).toContainText("Changed by agent My helper", { timeout: 30_000 });
   await secretShown(member, UPDATED);
+  // This device has the gateway pinned: the change's u1 signature was checked, not skipped.
+  await expect(banner).not.toContainText("This device hasn't verified your gateway");
   await banner.getByRole("button", { name: "Restore previous" }).click();
   await expect(banner).toHaveCount(0, { timeout: 30_000 });
   await expect(member.getByRole("complementary", { name: "Record details" }).getByLabel("Secret", { exact: true })).toHaveText(SAVED, { timeout: 30_000 });

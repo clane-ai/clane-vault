@@ -3,7 +3,7 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { b64url, generateKeyPair as generateX25519, type RecordBody } from "@clane-vault/crypto";
+import { b64url, encryptRecordBody, generateKeyPair as generateX25519, randomBytes, sealPersonalAgentRecordKey, type RecordBody } from "@clane-vault/crypto";
 import { generateKeyPair, SignJWT } from "jose";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -755,6 +755,18 @@ describe("MCP endpoint, personal writes", () => {
     expect((await api.personal.open(api.personal.deposits[0]!.id)).password).toBe("p2");
     const n = api.personal.writes.length;
     expect(await tool("update_secret", { item: "personal/dep", set: { password: "p3" }, revision: 1 })).toEqual({ error: "refused", reason: "conflict" });
+    expect(api.personal.writes).toHaveLength(n);
+  });
+
+  it("update_secret on a deposit whose key and body the API swapped (its own key, sealed to the agent) is not_found with no PUT", async () => {
+    const { api, tool } = await personal();
+    await tool("save_secret", { title: "Dep", type: "login", fields: { password: "p1" } });
+    const d = api.personal.deposits[0]!, fake = randomBytes(32);
+    d.encBody = await encryptRecordBody(d.id, { v: 2, type: "login", title: "Dep", password: "p1" }, fake);
+    d.agentSealedKey = await sealPersonalAgentRecordKey(fake, { ownerUserId: api.personal.ownerId, agentId: api.personal.agentId, recordId: d.id },
+      b64url.decode(api.personal.publicKey));
+    const n = api.personal.writes.length;
+    expect(await tool("update_secret", { item: "personal/dep", set: { password: "p2" } })).toEqual({ error: "refused", reason: "not_found" });
     expect(api.personal.writes).toHaveLength(n);
   });
 

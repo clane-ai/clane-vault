@@ -81,7 +81,7 @@ export async function personalAgentSync(db: Db, cfg: Config, agentUserId: string
     db.recordAccess.findMany({ where: { holderType: "user", holderId: agentUserId, orgId: null, state: "active", record: { ownerId: ownerUserId } }, orderBy: { createdAt: "asc" },
       select: { wrappedRecordKey: true, agentWrite: true, record: { select: { id: true, encBody: true, revision: true, deletedAt: true, folder: { select: { kind: true, orgId: true } } } } } }),
     personalAgentRules(db, cfg, ownerUserId),
-    db.agentDeposit.findMany({ where: { agentId: agentUserId }, orderBy: { createdAt: "asc" }, select: { id: true, encBody: true, revision: true, agentSealedKey: true } }),
+    db.agentDeposit.findMany({ where: { agentId: agentUserId }, orderBy: { createdAt: "asc" }, select: { id: true, encBody: true, revision: true, agentSealedKey: true, signature: true } }),
     db.agentDeposit.count({ where: { ownerUserId } }),
   ]);
   return {

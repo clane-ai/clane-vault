@@ -76,7 +76,9 @@ export const agentDepositRoutes: FastifyPluginAsync = async (app) => {
       if (!(await stillWritable(tx, a.userId))) return "not_writable" as const;
       const n = await tx.agentDeposit.updateMany({ where: { id, agentId: a.userId, revision: b.revision },
         data: { encBody: b.encBody, signature: b.signature, revision: b.revision + 1 } });
-      return n.count ? null : "conflict" as const;
+      if (!n.count) return "conflict" as const;
+      await logEvent(tx, { actorId: a.userId, action: "agent.update", recordId: id });
+      return null;
     });
     return r ? refuse(reply, r) : { id, revision: b.revision + 1 };
   });

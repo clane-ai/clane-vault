@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  agentDepositMessage, agentUpdateMessage, decryptRecordBody, openDepositKey, openPersonalAgentRecordKey, sha256B64, verifyGatewayMessage,
+  agentDepositMessage, agentUpdateMessage, CryptoError, decryptRecordBody, openDepositKey, openPersonalAgentRecordKey, sha256B64, verifyGatewayMessage,
   type MembershipKeys, type RecordBody,
 } from "@clane-vault/crypto";
 import { apiClient, type PersonalAgentSync } from "../src/apiClient.js";
@@ -87,12 +87,15 @@ describe("buildUpdate", () => {
   it("on a deposit: data keys merge, signed d1 at revision + 1, and the owner still opens it", async () => {
     const held = new HeldSecrets();
     const d = await buildDeposit(sync, keys, identity, { title: "K", type: "apiKey", fields: { data: { secret: "s1", keyId: "k" } } }, held);
-    const dep = { id: d.id, encBody: d.encBody, revision: 3, agentSealedKey: d.agentSealedKey };
+    const dep = { id: d.id, encBody: d.encBody, revision: 1, agentSealedKey: d.agentSealedKey, signature: d.signature };
     const s2 = { ...sync, deposits: [dep] };
-    const u = await buildUpdate(s2, keys, identity, { kind: "deposit", id: d.id, revision: 3 }, { data: { secret: "s2" } }, held);
+    // Not this gateway's d1 for that revision: refused before anything is opened.
+    await expect(buildUpdate({ ...sync, deposits: [{ ...dep, revision: 3 }] }, keys, identity, { kind: "deposit", id: d.id, revision: 3 }, { password: "x" }, held))
+      .rejects.toBeInstanceOf(CryptoError);
+    const u = await buildUpdate(s2, keys, identity, { kind: "deposit", id: d.id, revision: 1 }, { data: { secret: "s2" } }, held);
     const owner = await openDepositKey(d.ownerSealedKey, { ownerUserId: api.personal.ownerId, id: d.id }, api.personal.ownerKeys);
     expect((await decryptRecordBody(d.id, u.encBody, owner)).data).toEqual({ secret: "s2", keyId: "k" });
-    expect(await verifyGatewayMessage(u.signature, "d1", agentDepositMessage({ ...ids(), ownerPublicKey: sync.owner.publicKey, id: d.id, revision: 4,
+    expect(await verifyGatewayMessage(u.signature, "d1", agentDepositMessage({ ...ids(), ownerPublicKey: sync.owner.publicKey, id: d.id, revision: 2,
       encBodyHash: await sha256B64(u.encBody) }), identity)).toBe(true);
   });
 

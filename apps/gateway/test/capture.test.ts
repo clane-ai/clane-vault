@@ -26,7 +26,7 @@ const cfgFor = (apiUrl: string, apiToken: string, over: Partial<GatewayConfig>):
   upstreamTimeoutMs: 5000, allowPrivateCidrs: ["127.0.0.0/8"], port: 0, internalPort: 0, internalHost: "127.0.0.1", trustProxy: 0, writePerHour: 20, ...over,
 });
 
-/** The upstream creates a credential on /create; /fail answers 500 with one; /big has one past the response cap. */
+/** The upstream creates a credential on /create; /fail answers 500 with one; /big has one past the response cap, and in a header. */
 async function upstream() {
   const seen: string[] = [];
   const s = http.createServer((req, res) => {
@@ -37,7 +37,7 @@ async function upstream() {
       if (req.url === "/fail") res.writeHead(500).end(created);
       else if (req.url === "/echo") res.writeHead(201).end(JSON.stringify({ headers: { Authorization: req.headers.authorization } }));
       else if (req.url === "/short") res.writeHead(201).end(JSON.stringify({ token: "ghp_123" }));
-      else if (req.url === "/big") res.writeHead(201).end(JSON.stringify({ token: CANARY, pad: "x".repeat(4096) }));
+      else if (req.url === "/big") res.writeHead(201, { "x-created-token": CANARY }).end(JSON.stringify({ token: CANARY, pad: "x".repeat(4096) }));
       else res.writeHead(201, { "content-type": "application/json" }).end(created);
     });
   });
@@ -137,7 +137,7 @@ describe("http_request capture", () => {
     expect(up.seen).toEqual(["POST /create"]);
   });
 
-  it("no value at the pointer is not_found; a non-2xx is not_found and still scrubbed of the value; a truncated body is withheld", async () => {
+  it("no value at the pointer is not_found; a non-2xx is not_found and still scrubbed of the value; a truncated body and its headers are withheld", async () => {
     const { api, tool, req, capture } = await setup({ maxResponseBytes: 1024 });
     expect((await tool("http_request", req("/create", { ...capture, from: "/missing" }))).out).toMatchObject({ status: 201, capture: { refused: "not_found" } });
     const fail = await tool("http_request", req("/fail"));
@@ -145,7 +145,7 @@ describe("http_request capture", () => {
     expect(fail.out!.body).toContain("[clane:redacted]");
     for (const f of FORMS) expect(fail.text).not.toContain(f);
     const big = await tool("http_request", req("/big"));
-    expect(big.out).toMatchObject({ status: 201, truncated: true, body: "", capture: { refused: "invalid" } });
+    expect(big.out).toMatchObject({ status: 201, truncated: true, headers: {}, body: "", capture: { refused: "invalid" } });
     for (const f of FORMS) expect(big.text).not.toContain(f);
     expect(api.personal.writes).toEqual([]);
   });

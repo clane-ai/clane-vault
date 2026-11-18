@@ -88,7 +88,7 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
     const r = await d.api.deposit(p.accessToken, built);
     d.syncs.drop(p.agentId);
     if ("refused" in r) return r;
-    const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey }];
+    const deposits = [...sync.deposits, { id: built.id, encBody: built.encBody, revision: r.revision, agentSealedKey: built.agentSealedKey, signature: built.signature }];
     return { item: (await handleOf({ ...sync, deposits }, keys, built.id, d.log)) ?? built.id };
   }
 
@@ -181,8 +181,8 @@ export function agentTools(d: Pick<McpDeps, "cfg" | "api" | "keys" | "syncs" | "
             d.events.push(p, event("use", req.method, o.host, { recordId: x.recordId, ...(o.result.truncated ? { truncated: true } : {}) }));
             if (o.reflected) d.events.push(p, event("reflected", req.method, o.host, { recordId: x.recordId }));
             if (!capture) return o.result;
-            // A cut body can't be parsed and may hold the minted credential unscrubbed: withheld.
-            if (o.result.truncated) return { ...o.result, body: "", capture: { refused: "invalid" } };
+            // A cut body can't be parsed and may hold the minted credential unscrubbed (so may a header): both withheld.
+            if (o.result.truncated) return { ...o.result, headers: {}, body: "", capture: { refused: "invalid" } };
             const v = value as string | null; // assigned in grab
             if (v === null || o.result.status < 200 || o.result.status >= 300) return { ...o.result, capture: { refused: "not_found" } };
             // Never launder the injected credential (an echoing upstream) into a new item; nor save a value too short to scrub reliably.

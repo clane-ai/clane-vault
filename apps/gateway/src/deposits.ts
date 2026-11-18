@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   aeadDecrypt, agentDepositMessage, agentUpdateMessage, b64url, CryptoError, encryptRecordBody, MAX_FIELD_VALUE, normalizeRecordBody, openPersonalAgentRecordKey, randomBytes,
-  sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8,
+  sealDepositKeyToOwner, sealPersonalAgentRecordKey, serverRecordType, sha256B64, utf8, verifyGatewayMessage,
   type AgentInject, type FieldKind, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { PersonalAgentSync } from "./apiClient.js";
@@ -82,7 +82,7 @@ export async function buildDeposit(sync: PersonalAgentSync, keys: MembershipKeys
 }
 
 /**
- * Decrypts, applies `set` to username/password/url/notes/data only (data keys merge), leaves everything else (agentPolicy among it)
+ * A deposit must carry this gateway's own d1 over its body at its revision (CryptoError otherwise). Decrypts, applies `set` to username/password/url/notes/data only (data keys merge), leaves everything else (agentPolicy among it)
  * as decrypted, re-encrypts under the same key, signs for `revision + 1` (d1 for a deposit, u1 for a record).
  * Returns `revision` as given: what the API is sent, the revision the write replaces. Old and new values are held until it returns.
  */
@@ -92,6 +92,9 @@ export async function buildUpdate(sync: PersonalAgentSync, keys: MembershipKeys,
   const d = sync.deposits.find((x) => x.id === id), r = sync.records.find((x) => x.id === id);
   const row = target.kind === "deposit" ? d && { encBody: d.encBody, sealed: d.agentSealedKey } : r && { encBody: r.encBody, sealed: r.wrappedRecordKey };
   if (!row) throw new Error("no such item in the sync");
+  // The API supplies the deposit's key and body: only what this gateway itself signed is opened, else a swapped key reads what we write.
+  if (d && target.kind === "deposit" && !(await verifyGatewayMessage(d.signature, "d1", agentDepositMessage({ ownerUserId, ownerPublicKey: sync.owner.publicKey, agentId, id,
+    revision: d.revision, encBodyHash: await sha256B64(d.encBody) }), identity))) throw new CryptoError("bad_envelope");
   const releaseNew = holdValues(held, set);
   let releaseOld = () => {};
   const recordKey = await openPersonalAgentRecordKey(row.sealed, { ownerUserId, agentId, recordId: id }, keys);
