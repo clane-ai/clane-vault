@@ -1,6 +1,6 @@
 # Record types and custom fields
 
-Clane Vault records come in fourteen types (Keeper parity, chosen for IT teams), each with a field template, and any
+Clane Vault records come in fifteen types (Keeper parity, chosen for IT teams), each with a field template, and any
 record can carry custom fields. Everything about a record's type and fields lives inside the encrypted record body: the
 server never learns that a record is a payment card or an SSH key.
 
@@ -16,6 +16,7 @@ filter. Every type keeps its Notes field.
 | | Database credentials (`database`) | Type (PostgreSQL, MySQL / MariaDB, SQL Server, Oracle, MongoDB, Redis, Other), Host, Port, Database, Username\*, Password\*, Connection string (secret) | `PostgreSQL · host:port/db` |
 | | SSH key (`sshKey`) | Username\*, Host, Private key (hidden multi-line), Public key (multi-line), Passphrase (secret) | `user@host` |
 | | API key / secret (`apiKey`) | Service, Key ID, Secret (secret), Endpoint (URL) | service, else endpoint |
+| | .env file (`envFile`) | Project, Environment, File name, Contents (hidden multi-line) | `project · environment`, else file name |
 | | Wi-Fi (`wifi`) | Network name (SSID), Password\*, Security (WPA3, WPA2, WPA, WPA2/3 Enterprise, WEP, Open) | SSID |
 | Payments & finance | Payment card (`card`) | Cardholder, Card number (secret; groups of four, Luhn hint), Expiry (MM/YY), Security code (secret), PIN (secret), Billing address (multi-line) | `•••• 4242 · Cardholder` |
 | | Bank account (`bankAccount`) | Account name, Bank, IBAN / account number, BIC / sort code / routing, Online banking login\*, Password\* | `Bank · •••• 5678` |
@@ -28,6 +29,58 @@ filter. Every type keeps its Notes field.
 
 The templates are code (`packages/crypto/src/recordTypes.ts`), shared by the web app, the extension and the validator.
 A subtitle never shows a secret; a card shows only its last four digits.
+
+## .env files
+
+A *.env file* item keeps a project's `.env` as a backup, with every value a secret of its own. **New → .env file**
+opens the New record dialog with the type chosen; it can go in any folder, private or shared. There is no special
+folder: if you want one, make a folder such as *Env backups*. It is an ordinary folder.
+
+**The stored text is the file.** `data.content` holds the file's text exactly as it was read, and nothing else is
+stored: the entries you see are parsed from it each time (`parseEnv`, `packages/crypto/src/envFile.ts`, used by the web
+app and the agent gateway alike). **Download** saves exactly that text, so the file you get back is byte-identical to the
+one you dropped in: CRLF line endings, a byte-order mark, comments, spacing and lines the parser doesn't understand
+included. The download is named after *File name* when that is a plain name, else `.env`. Chrome and Edge drop the leading dot
+of a downloaded file's name (`.env` arrives as `env`): rename it after the download.
+
+**In the editor**, drop a file on the drop zone or use **Choose file**. The file is read as strict UTF-8. Dropping it
+fills *File name* and, from `.env.<name>` or `<name>.env`, *Environment*, when those are empty. Below it each entry is
+a masked input (changing one rewrites only that entry's value) and **Add entry** appends one. **Edit as text** shows the
+whole file in a masked text area, for comments or removing or renaming a key. A browser text area turns `\r\n` into
+`\n`; when the stored file used `\r\n`, the editor turns every line break back into `\r\n` after an edit there, including
+a line break inside a quoted multi-line value. Text you don't touch is saved byte for byte.
+
+**In the record panel** each entry is a row: the key, the value masked, **Show** and **Copy**. **Copy all** copies the
+whole file and **Download** saves it. A person with *Use only* gets Copy and Copy all, but no Show and no Download.
+
+| Line | Read as |
+|---|---|
+| `KEY=value`, `KEY = value`, leading spaces | an entry; an unquoted value is trimmed |
+| `export KEY=value` | the entry `KEY`; the prefix stays in the file |
+| Key | `[A-Za-z0-9_.-]`, 1 to 128 characters |
+| `KEY=` | an entry with an empty value (it can't be given to an agent) |
+| `KEY=abc # note` | `abc`: in an unquoted value, a `#` after whitespace starts a comment |
+| `KEY=abc#123` | `abc#123` (no whitespace before `#`). Node's dotenv would read `abc`; passwords with `#` are why |
+| `KEY="a\nb"` | double quotes: `\n`, `\r`, `\t`, `\"` and `\\` are decoded, any other backslash pair is kept; may span lines |
+| `KEY='a\nb'`, a value in backticks | literal, no escapes; may span lines |
+| After a closing quote | only spaces and an optional `# comment`; anything else makes the line invalid |
+| `${OTHER}`, `$OTHER` | kept literally. Nothing is expanded |
+| `# comment`, a blank line | kept, not an entry |
+| Anything else (`KEY`, `=x`, `KEY: value`, an unterminated quote) | kept verbatim as an invalid line and counted: *"2 lines aren't KEY=value. They are kept as they are."* |
+| The same key twice | both kept; the last one is the value, as loaders do. The earlier one is marked *Overridden below* |
+| `\n`, `\r\n`, a UTF-8 byte-order mark | kept exactly |
+
+**Limits.** The contents are at most 32 768 bytes of UTF-8 and at most 500 entries, with no NUL character; the whole
+record's 49 000-byte limit applies on top. A larger file is refused with *"This file is too large for a .env item
+(32 KB). Attach it to a Secure note instead."* and one that isn't UTF-8 text with *"This file isn't UTF-8 text. Attach it
+to a Secure note instead."* Attachments take much larger files, but then no single value can be shown or used on its own.
+
+**Search** finds a .env file by its title, project, environment, file name and key names, never by a value.
+Password health ignores the type. A one-time link shows the contents as one hidden text field. Agents use one entry of
+the file (`docs/agents.md`, *.env files*).
+
+**Older clients.** A web app or extension from before this type shows a .env file item as *Can't open this record*
+and can't save it, so it can't damage it. Update the web app and the extension together.
 
 ## Custom fields
 
@@ -52,7 +105,7 @@ Secret kinds are `secret`, `totp` and `hiddenMultiline`; template fields use the
 ```ts
 interface RecordBody {
   v?: 2;                       // absent: a v1 body
-  type: RecordType;            // one of the fourteen types
+  type: RecordType;            // one of the fifteen types
   title: string;
   username?: string; password?: string; url?: string; totpSecret?: string;   // core fields, only where the template has them
   notes?: string; passwordChangedAt?: string;

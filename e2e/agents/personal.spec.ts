@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,7 +11,8 @@ import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setting
 // agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
 // by policy; Phase B (§4): the agent saves a secret to the owner's inbox, which the owner keeps, updates one it may update
 // (the owner restores the previous value) and captures a credential an upstream creates; a move into a team folder takes the
-// item away; revoke ends it.
+// item away; Phase E (§10): a .env file item whose one entry the agent uses, a newer copy the agent saves that replaces its
+// contents, and an entry the agent changes that the owner restores; revoke ends it.
 test.describe.configure({ mode: "serial" });
 
 const PW = "an e2e master password";
@@ -17,6 +20,10 @@ const CANARY = "sk_test_PERSONAL_CANARY";
 const SAVED = "sk_test_SAVED_CANARY";
 const UPDATED = "sk_test_UPDATED_CANARY";
 const CAPTURED = "tok_CAPTURED_CANARY";
+// CRLF line endings, a comment, export, a two-line quoted value, a duplicate key and a line that isn't KEY=value.
+const ENV_FILE = readFileSync(path.join(import.meta.dirname, "fixtures", "sample.env"));
+const ENV_CANARY = "sk_test_ENV_CANARY_1";
+const ENV_CANARY_2 = "sk_test_ENV_CANARY_2";
 const AGENT_WARNING = "Give agents restricted credentials: a Stripe restricted key, a read-only database user, a scoped token. Never a root or owner credential. What you share here can be read by the gateway and used by whatever drives the agent.";
 const MCP_URL = `http://localhost:${process.env.E2E_GATEWAY_PORT ?? 3002}/mcp`;
 const id = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
@@ -90,11 +97,12 @@ async function unlock(p: Page) {
   await p.getByRole("button", { name: "Unlock" }).click();
 }
 const fromAgents = (p: Page) => p.getByRole("link", { name: /^From agents/ });
-/** The Personal vault's "No folder" list, then the record titled `title`. */
+/** The Personal vault's "No folder" list (opened unless it already is), then the record titled `title`. */
 async function openRecord(p: Page, title: string) {
   await p.getByRole("link", { name: /^Vault/ }).click();
-  await p.getByRole("button", { name: /^No folder/ }).click();
-  await p.getByRole("button", { name: new RegExp(title) }).click();
+  const row = p.getByRole("button", { name: new RegExp(title) });
+  if (!(await row.isVisible())) await p.getByRole("button", { name: /^No folder/ }).click();
+  await row.click();
   await expect(p.getByRole("heading", { name: title })).toBeVisible({ timeout: 30_000 });
 }
 const secretShown = async (p: Page, value: string) => {
@@ -278,7 +286,119 @@ test("9. http_request capture saves the upstream's new credential without showin
   await secretShown(member, CAPTURED);
 });
 
-test("10. moved into a team folder the item leaves the agent; revoke ends it", async () => {
+const envHandle = "personal/billing-env";
+const details = (p: Page) => p.getByRole("complementary", { name: "Record details" });
+/** The Authorization header the echo upstream received for one use of the env item. */
+async function echoed(): Promise<string | undefined> {
+  const used = JSON.stringify(await call(token, "http_request", { item: envHandle, method: "GET", url: `http://echo.test:${echoPort}/headers` }));
+  expect(used).not.toContain("ENV_CANARY");
+  return received.at(-1)?.authorization;
+}
+
+test("10. a .env file item: entries masked, a byte-identical download, found by key name only", async () => {
+  await member.getByRole("link", { name: /^Vault/ }).click();
+  await member.getByRole("button", { name: "New", exact: true }).click();
+  await member.getByRole("menuitem", { name: ".env file" }).click();
+  const newDlg = member.getByRole("dialog");
+  await newDlg.getByLabel("Title").fill("Billing env");
+  await newDlg.getByRole("button", { name: "Next" }).click();
+  await member.getByTestId("env-input").setInputFiles({ name: ".env", mimeType: "text/plain", buffer: ENV_FILE });
+  await expect(member.getByLabel("File name", { exact: true })).toHaveValue(".env");
+  await expect(member.getByLabel("Environment", { exact: true })).toHaveValue("");
+  await member.getByRole("button", { name: "Save" }).click();
+  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await openRecord(member, "Billing env");
+  const entries = details(member).getByRole("list", { name: "Entries" });
+  for (const k of ["STRIPE_KEY", "PORT", "CERT", "A"]) await expect(entries).toContainText(k);
+  expect(await member.locator("body").innerText()).not.toContain(ENV_CANARY);
+  await details(member).getByRole("button", { name: "Show STRIPE_KEY" }).click();
+  await expect(details(member).getByLabel("STRIPE_KEY value")).toHaveText(ENV_CANARY);
+  await details(member).getByRole("button", { name: "Hide STRIPE_KEY" }).click();
+
+  const [dl] = await Promise.all([member.waitForEvent("download"), details(member).getByRole("button", { name: "Download" }).click()]);
+  // The app names it ".env"; Chromium drops a leading dot from a download's name, so only the bytes are checked.
+  expect(readFileSync(await dl.path()).equals(ENV_FILE)).toBe(true);
+
+  const row = member.getByRole("button", { name: /Billing env/ });
+  await member.getByLabel("Search records").fill("STRIPE_KEY");
+  await expect(row).toBeVisible();
+  await member.getByLabel("Search records").fill("sk_test_ENV");
+  await expect(row).toHaveCount(0);
+  await member.getByLabel("Search records").fill("");
+});
+
+test("11. the agent sees the keys, never a value, and sends the one entry its Agent use names", async () => {
+  await openRecord(member, "Billing env");
+  await member.getByRole("button", { name: "Edit", exact: true }).click();
+  const agentUse = member.getByRole("region", { name: "Agent use" });
+  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
+  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
+  await agentUse.getByRole("combobox", { name: "Secret" }).click();
+  await member.getByRole("option", { name: "STRIPE_KEY", exact: true }).click();
+  await member.getByRole("button", { name: "Save" }).click();
+  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
+  await expect(agents.getByRole("note", { name: "Sharing with an agent" })).toContainText(AGENT_WARNING);
+  await agents.getByRole("combobox", { name: "Access for My helper" }).click();
+  await member.getByRole("option", { name: "Can use" }).click();
+  await expect(agents.getByRole("combobox", { name: "Access for My helper" })).toHaveText("Can use", { timeout: 30_000 });
+  await member.keyboard.press("Escape");
+
+  const listed = await call(token, "list_secrets", {});
+  const item = (listed.secrets as Record<string, unknown>[]).find((s) => s.handle === envHandle);
+  expect(item).toMatchObject({ type: "envFile", env_keys: expect.arrayContaining(["STRIPE_KEY", "PORT"]), env_injects: "STRIPE_KEY" });
+  expect(JSON.stringify(listed)).not.toContain("ENV_CANARY");
+  expect(await echoed()).toBe(`Bearer ${ENV_CANARY}`);
+});
+
+test("12. a newer copy saved by the agent replaces the contents of Billing env", async () => {
+  const r = await call(token, "save_secret", { type: "envFile", title: "Billing env (new)",
+    fields: { data: { fileName: ".env", content: `STRIPE_KEY=${ENV_CANARY_2}\nPORT=3000\nNEW=1\n` } } });
+  expect(typeof r.item).toBe("string");
+  await unlock(member);
+  await expect(fromAgents(member)).toHaveText(/From agents\s*1$/, { timeout: 30_000 });
+  await fromAgents(member).click();
+  const card = member.getByRole("article", { name: "Billing env (new)" });
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByRole("list", { name: "Entries" }).getByRole("listitem")).toHaveCount(3);
+  await expect(card.getByRole("radio", { name: "Replace the contents of" })).toBeChecked();
+  await expect(card.getByRole("combobox", { name: "Item to replace" })).toHaveText("Billing env");
+  const diff = card.getByRole("list", { name: "Differences" });
+  await expect(diff).toContainText("Added: NEW");
+  await expect(diff).toContainText("Changed: STRIPE_KEY");
+  await expect(diff).toContainText("Removed: CERT, A");
+  await card.getByRole("button", { name: "Replace", exact: true }).click();
+  await expect(member.getByText("Replaced the contents of Billing env.")).toBeVisible({ timeout: 30_000 });
+  await expect(fromAgents(member)).toHaveText(/From agents\s*0$/, { timeout: 30_000 });
+  await openRecord(member, "Billing env");
+  await expect(details(member).getByRole("list", { name: "Entries" })).toContainText("NEW");
+  expect(await echoed()).toBe(`Bearer ${ENV_CANARY_2}`);
+});
+
+test("13. set.env needs Agent can update; Restore previous puts the entry back", async () => {
+  const set = { item: envHandle, set: { env: { PORT: "8080" } } };
+  expect(await call(token, "update_secret", set)).toEqual({ error: "refused", reason: "not_writable" });
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const canUpdate = member.getByRole("dialog").getByRole("region", { name: "Agents" }).getByRole("checkbox", { name: "Agent can update this item" });
+  await canUpdate.click(); // controlled: checked once the change is saved
+  await expect(canUpdate).toBeChecked({ timeout: 30_000 });
+  await member.keyboard.press("Escape");
+
+  expect(await call(token, "update_secret", set)).toMatchObject({ item: envHandle, revision: expect.any(Number) });
+  await unlock(member);
+  await openRecord(member, "Billing env");
+  const banner = member.getByRole("note", { name: "Changed by agent" });
+  await expect(banner).toContainText("Changed by agent My helper", { timeout: 30_000 });
+  await expect(banner).toContainText("Changed: PORT");
+  await banner.getByRole("button", { name: "Restore previous" }).click();
+  await expect(banner).toHaveCount(0, { timeout: 30_000 });
+  await details(member).getByRole("button", { name: "Show PORT" }).click();
+  await expect(details(member).getByLabel("PORT value")).toHaveText("3000", { timeout: 30_000 });
+});
+
+test("14. moved into a team folder the item leaves the agent; revoke ends it", async () => {
   // A personal record reaches the organisation's space only while it is shared there: share it with the admin, then move it.
   await member.getByRole("link", { name: /^Vault/ }).click();
   await switchSpace(member, { firstOrg: true });

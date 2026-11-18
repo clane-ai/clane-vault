@@ -59,6 +59,10 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 
 *Sharing with an agent makes those items readable by the gateway operator. Everything else stays end-to-end encrypted.*
 
+A *.env file* item given to an agent at *Can use* gives the gateway its record key, so the gateway can decrypt every entry
+in the file while the grant lives, though the policy lets it send only one. Its key names (`STRIPE_LIVE_KEY`,
+`DATABASE_URL`) reach the model through `list_secrets`, as titles and hosts already do, and describe a project's stack.
+
 Residual risks, which no mitigation in this release removes:
 
 - **Non-admin users pin the gateway: trust-on-first-use in practice.** A person who creates a personal agent pins the
