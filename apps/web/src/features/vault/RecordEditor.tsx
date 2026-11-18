@@ -2,7 +2,7 @@ import { useRef, useState, type ElementType, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, Dices, Eye, EyeOff, Plus, Trash2, X } from "lucide-react";
 import {
   base32Decode, expiryValid, generatePassword, luhnValid, MAX_CUSTOM_FIELDS, MAX_FIELD_LABEL, templateOf, typeLabel,
-  FIELD_KINDS, defaultSecretRef, type AgentPolicy, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
+  FIELD_KINDS, defaultSecretRef, envKeys, type AgentPolicy, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
 } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { emptyField, groupCardNumber, KIND_LABEL, lowerFirst, PLACEHOLDER } from "./recordKinds";
 import { AgentPolicyEditor, agentPolicyError } from "./AgentPolicyEditor";
+import { envContentError, environmentOf, EnvFileField } from "./EnvFile";
 import { canFileInto, type VaultFolder } from "./types";
 
 const NO_FOLDER = "__none__";
@@ -148,13 +149,20 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   const move = (i: number, d: -1 | 1) => setFields((fs) => { const n = [...fs]; const [x] = n.splice(i, 1); n.splice(i + d, 0, x!); return n; });
 
   const keptFields = fields.filter((f) => f.value !== "");
-  const policyError = agentPolicyError(policy, { type, fields: keptFields });
-  const showAgent = agentUse && (!!policy || defaultSecretRef(type) !== null || keptFields.some((f) => f.kind === "secret"));
+  // The template's data values as they stand (an env file's policy names keys in data.content).
+  const data = Object.fromEntries(template.filter((f) => !f.core && values[f.key]).map((f) => [f.key, values[f.key]!]));
+  const policyError = agentPolicyError(policy, { type, fields: keptFields, data });
+  const env = type === "envFile";
+  const showAgent = agentUse && (!!policy || defaultSecretRef(type) !== null || keptFields.some((f) => f.kind === "secret") || (env && envKeys(values.content ?? "").length > 0));
+  // A dropped file names the item's File name and Environment, when those are still empty.
+  const onEnvFile = (name: string) => setValues((x) => ({ ...x, fileName: x.fileName || name, environment: x.environment || environmentOf(name) }));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (policyError) return setError(policyError);
     if (!title.trim()) return setError("Give it a title.");
+    const envError = env ? envContentError(values.content ?? "") : null;
+    if (envError) return setError(envError);
     for (const f of template) {
       const v = values[f.key]!.trim();
       if (!v) continue;
@@ -209,6 +217,7 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
         <Field id="ed-title" label="Title"><Input id="ed-title" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus={focusTitle} placeholder={type === "login" ? "e.g. AWS root account" : `e.g. ${PLACEHOLDER[type]}`} /></Field>
         {template.map((f, i) => {
           const id = `ed-${f.key}`;
+          if (env && f.key === "content") return <EnvFileField key={f.key} value={values.content!} onChange={setValue("content")} onFile={onEnvFile} />;
           const totp = f.kind === "totp" && f.core;
           return (
             <Field key={f.key} id={id} label={totp ? `${f.label} (optional)` : f.label}
@@ -254,7 +263,7 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
         {showAgent && (
           <section aria-label="Agent use" className="flex flex-col gap-2.5">
             <h3 className="font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase">Agent use</h3>
-            <AgentPolicyEditor body={{ type, fields: keptFields }} value={policy} onChange={setPolicy} pathsLocked={pathsLocked} />
+            <AgentPolicyEditor body={{ type, fields: keptFields, data }} value={policy} onChange={setPolicy} pathsLocked={pathsLocked} />
             {policyError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{policyError}</p>}
           </section>
         )}

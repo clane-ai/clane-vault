@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { generatePassword, type RecordBody } from "@clane-vault/crypto";
+import { generatePassword, type RecordBody, type RecordType } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ImportSheet } from "@/features/import/ImportSheet";
@@ -33,7 +33,7 @@ export default function VaultScreen() {
   const v = useVault();
   const [editing, setEditing] = useState<Editing>(null);
   // New Record (step one: location, type, title), opened at a folder; Next opens the editor with them.
-  const [newRecordAt, setNewRecordAt] = useState<{ folderId: string | null } | null>(null);
+  const [newRecordAt, setNewRecordAt] = useState<{ folderId: string | null; type?: RecordType } | null>(null);
   // The folder open in the vault list: + New → Record starts there.
   const [folderId, setFolderId] = useState<string | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
@@ -69,13 +69,15 @@ export default function VaultScreen() {
     }
     setQueue(next);
   };
+  // An env file's editor reads a dropped file as its contents (EnvFileField), so the sheet doesn't take drops as attachments.
+  const editingType = editing?.mode === "create" ? editing.type : current?.body?.type;
   const editorDrop = useFileDrop({
     canDrop: editing?.mode === "create" ? limits.uploadsAllowed : recordDrop.canDrop, title: editing?.mode === "create" ? editing.title : current?.body?.title,
-    onFiles: editing?.mode === "create" ? addToQueue : recordDrop.onFiles, disabled: !editing || !limits.enabled || offline,
+    onFiles: editing?.mode === "create" ? addToQueue : recordDrop.onFiles, disabled: !editing || !limits.enabled || offline || editingType === "envFile",
   });
   const closeEditor = () => { setEditing(null); setQueue([]); };
 
-  const onNew = (k: NewKind, at: string | null = folderId) => (k === "folder" ? setFolderOpen(true) : k === "team" ? setTeamOpen(true) : k === "generate" ? setGenOpen(true) : k === "import" ? setImportOpen(true) : setNewRecordAt({ folderId: at }));
+  const onNew = (k: NewKind, at: string | null = folderId) => (k === "folder" ? setFolderOpen(true) : k === "team" ? setTeamOpen(true) : k === "generate" ? setGenOpen(true) : k === "import" ? setImportOpen(true) : setNewRecordAt({ folderId: at, ...(k === "env" ? { type: "envFile" as const } : {}) }));
   // "Generate new password" (Needs attention) opens the editor with a fresh password; the panel offers it to editors only.
   const initial = current?.body && editing?.mode === "edit" && editing.newPassword ? { ...current.body, password: editing.newPassword, passwordChangedAt: new Date().toISOString() } : current?.body ?? undefined;
 
@@ -126,7 +128,7 @@ export default function VaultScreen() {
           )}
         </SheetContent>
       </Sheet>
-      <NewRecordDialog open={!!newRecordAt} folders={v.folders} folderId={newRecordAt?.folderId} noFolder={!team} onCancel={() => setNewRecordAt(null)}
+      <NewRecordDialog open={!!newRecordAt} folders={v.folders} folderId={newRecordAt?.folderId} type={newRecordAt?.type} noFolder={!team} onCancel={() => setNewRecordAt(null)}
         onNext={(start) => { setNewRecordAt(null); setEditing({ mode: "create", ...start }); }} />
       <Sheet open={genOpen} onOpenChange={setGenOpen}>
         <SheetContent side="right" showCloseButton={false} aria-describedby={undefined} className="w-full sm:max-w-[440px]">

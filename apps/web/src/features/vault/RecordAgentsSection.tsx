@@ -81,6 +81,7 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite }: {
             </li>
           ))}
         </ul>
+        {record.body?.type === "envFile" && <p className="text-[12.5px] text-text-secondary">The gateway can open this whole file. It will only send the entry you chose.</p>}
       </>}
       {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
     </section>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { templateOf, validateAgentPolicy, type AgentInject, type AgentPolicy, type RecordBody } from "@clane-vault/crypto";
+import { envKeys, templateOf, validateAgentPolicy, type AgentInject, type AgentPolicy, type RecordBody } from "@clane-vault/crypto";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,7 +12,7 @@ const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 /** The message to show under the section, or null when the policy is fine. Unicode hosts are refused, not converted: the gateway only matches punycode. */
 // eslint-disable-next-line react-refresh/only-export-components
-export function agentPolicyError(p: AgentPolicy | undefined, body: Pick<RecordBody, "type" | "fields">): string | null {
+export function agentPolicyError(p: AgentPolicy | undefined, body: Pick<RecordBody, "type" | "fields" | "data">): string | null {
   if (!p) return null;
   if (p.hosts.some((h) => /[^\p{ASCII}]/u.test(h))) return "Agent policy: write international host names in punycode (xn--…). The gateway only matches that form.";
   try { validateAgentPolicy(p, body); return null; } catch (e) { return (e as Error).message.replace(/^agent policy:/, "Agent policy:"); }
@@ -41,8 +41,8 @@ function build(s: S, base: AgentPolicy | undefined, locked: boolean): AgentPolic
 }
 
 export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }: {
-  /** The record as it stands in the editor: its type and secret custom fields decide what can be injected. */
-  body: Pick<RecordBody, "type" | "fields">; value: AgentPolicy | undefined; onChange: (p: AgentPolicy | undefined) => void;
+  /** The record as it stands in the editor: its type, secret custom fields and (an env file) its keys decide what can be injected. */
+  body: Pick<RecordBody, "type" | "fields" | "data">; value: AgentPolicy | undefined; onChange: (p: AgentPolicy | undefined) => void;
   /** Methods and paths are a Business feature: shown, not editable. */ pathsLocked?: boolean;
 }) {
   // The policy as stored: what the form does not show survives clearing and refilling the hosts.
@@ -53,7 +53,9 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
     secret: value?.secret ?? DEFAULT_SECRET, methods: listText(value?.methods).replace(/\n/g, ", "), paths: listText(value?.paths),
   }));
   const set = (patch: Partial<S>) => { const n = { ...s, ...patch }; setS(n); onChange(build(n, stored, pathsLocked)); };
-  const secrets = [
+  // An env file injects one entry and nothing else: no Contents, no default (spec §10.5).
+  const env = body.type === "envFile";
+  const secrets = env ? envKeys(body.data?.content ?? "").map((k) => ({ ref: `env:${k}`, label: k })) : [
     ...templateOf(body.type).filter((f) => !f.core || f.key === "password").map((f) => ({ ref: f.core ? f.key : `data.${f.key}`, label: f.label })),
     ...(body.fields ?? []).filter((f) => f.kind === "secret").map((f) => ({ ref: `field:${f.id}`, label: f.label || "Custom field" })),
   ];
@@ -96,10 +98,10 @@ export function AgentPolicyEditor({ body, value, onChange, pathsLocked = false }
       )}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="ag-secret" className="text-[13px] text-text-primary">Secret</Label>
-        <Select value={s.secret} onValueChange={(v) => set({ secret: v })}>
-          <SelectTrigger id="ag-secret" className="w-full"><SelectValue /></SelectTrigger>
+        <Select value={env && s.secret === DEFAULT_SECRET ? "" : s.secret} onValueChange={(v) => set({ secret: v })}>
+          <SelectTrigger id="ag-secret" className="w-full"><SelectValue placeholder="Choose an entry" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value={DEFAULT_SECRET}>Default for this record type</SelectItem>
+            {!env && <SelectItem value={DEFAULT_SECRET}>Default for this record type</SelectItem>}
             {secrets.map((x) => <SelectItem key={x.ref} value={x.ref}>{x.label}</SelectItem>)}
             {!known && <SelectItem value={s.secret}>{s.secret} (not on this record)</SelectItem>}
           </SelectContent>

@@ -11,7 +11,7 @@ describe("NewMenu", () => {
     render(<NewMenu onNew={onNew} team={false} />);
     await userEvent.click(screen.getByRole("button", { name: "New" }));
     expect(screen.getByText("Create New")).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem").map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual(["Record", "Folder", "Shared Folder", "Generate Password", "Import"]);
+    expect(screen.getAllByRole("menuitem").map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual(["Record", ".env file", "Folder", "Shared Folder", "Generate Password", "Import"]);
     const shared = screen.getByRole("menuitem", { name: "Shared Folder" });
     expect(shared).toHaveAttribute("aria-disabled", "true");
     expect(shared).toHaveAccessibleDescription("Shared folders belong to an organisation: switch to one");
@@ -25,7 +25,7 @@ describe("NewMenu", () => {
     screen.getByRole("button", { name: "New" }).focus();
     await userEvent.keyboard("{Enter}");
     // Enter opens the menu on its first item (Record).
-    await userEvent.keyboard("{ArrowDown}{Enter}");
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
     expect(onNew).toHaveBeenCalledWith("folder");
   });
 
@@ -33,7 +33,7 @@ describe("NewMenu", () => {
     const onNew = vi.fn();
     render(<NewMenu onNew={onNew} team />);
     await userEvent.click(screen.getByRole("button", { name: "New" }));
-    expect(screen.getAllByRole("menuitem").map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual(["Record", "Shared Folder", "Generate Password", "Import"]);
+    expect(screen.getAllByRole("menuitem").map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual(["Record", ".env file", "Shared Folder", "Generate Password", "Import"]);
     const imp = screen.getByRole("menuitem", { name: "Import" });
     expect(imp).toHaveAttribute("aria-disabled", "true");
     expect(imp).toHaveAccessibleDescription("Imports go to your Personal vault");
@@ -47,6 +47,17 @@ describe("NewMenu", () => {
     const rec = screen.getByRole("menuitem", { name: "Record" });
     expect(rec).toHaveAttribute("aria-disabled", "true");
     expect(rec).toHaveAccessibleDescription("Create a shared folder first");
+    const env = screen.getByRole("menuitem", { name: ".env file" });
+    expect(env).toHaveAttribute("aria-disabled", "true");
+    expect(env).toHaveAccessibleDescription("Create a shared folder first");
+  });
+
+  it(".env file asks for a new env file", async () => {
+    const onNew = vi.fn();
+    render(<NewMenu onNew={onNew} team={false} />);
+    await userEvent.click(screen.getByRole("button", { name: "New" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: ".env file" }));
+    expect(onNew).toHaveBeenCalledWith("env");
   });
 });
 
@@ -80,6 +91,14 @@ describe("NewRecordDialog", () => {
     expect(screen.getByRole("combobox", { name: "Location" })).toHaveTextContent("No folder");
     await userEvent.type(screen.getByLabelText("Title"), "   {Enter}");
     expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it("opened with a type, that type is chosen", async () => {
+    const onNext = vi.fn();
+    render(<NewRecordDialog open type="envFile" folders={[]} onNext={onNext} onCancel={vi.fn()} />);
+    expect(screen.getByRole("combobox", { name: "Record Type" })).toHaveTextContent(".env file");
+    await userEvent.type(screen.getByLabelText("Title"), "Web shop{Enter}");
+    expect(onNext).toHaveBeenCalledWith({ type: "envFile", title: "Web shop", folderId: null });
   });
 
   it("Cancel closes it", async () => {

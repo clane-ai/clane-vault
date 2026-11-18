@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,9 +51,9 @@ beforeEach(async () => {
   );
 });
 
-async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean } = {}) {
+async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
   const id = crypto.randomUUID();
-  const body = { type: "login" as const, title: "Stripe", password: "pw", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
+  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, password: "pw" }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
@@ -104,6 +104,17 @@ describe("giving an item to a personal agent", () => {
     const rk = await openPersonalAgentRecordKey(posted!.wrappedRecordKey, { ownerUserId: ME, agentId: AGENT_ID, recordId: id }, agentKeys);
     expect((await decryptRecordBody(id, enc.encBody, rk)).title).toBe("Stripe");
     await expect(openPersonalAgentRecordKey(posted!.wrappedRecordKey, { ownerUserId: ME, agentId: AGENT_ID, recordId: crypto.randomUUID() }, agentKeys)).rejects.toThrow();
+  });
+
+  it("an env file says the gateway can open the whole file; other types don't", async () => {
+    await serveRecord();
+    const login = await openShare();
+    await within(login).findByRole("combobox", { name: "Access for My bot" });
+    expect(within(login).queryByText("The gateway can open this whole file. It will only send the entry you chose.")).toBeNull();
+    cleanup();
+    await serveRecord({ envFile: true, agentPolicy: false });
+    const env = await openShare();
+    expect(await within(env).findByText("The gateway can open this whole file. It will only send the entry you chose.")).toBeInTheDocument();
   });
 
   it("a tampered attestation posts nothing and says why", async () => {

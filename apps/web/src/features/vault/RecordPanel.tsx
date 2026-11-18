@@ -8,6 +8,7 @@ import { OneTimeLinkButton } from "@/features/links/OneTimeLinkButton";
 import type { StrengthScore } from "@/lib/strength";
 import { reasonLine, strengthForScore, strengthOf, type AttentionReason } from "./attention";
 import { CopyButton } from "./CopyButton";
+import { EnvPanelSection } from "./EnvFile";
 import { RecordAvatar } from "./RecordAvatar";
 import { displayValue, isSecretField, last4, lowerFirst, shownFields, TYPE_ICON, type ShownField } from "./recordKinds";
 import { StrengthMeter } from "./StrengthMeter";
@@ -109,7 +110,9 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
   // "Use only" (spec §5.6): the app never shows any secret field (password, card number, CVV, keys…), but Copy still
   // works. A soft limit, not a cryptographic one.
   const useOnly = record.permission === "use";
-  const fields = useMemo(() => (b ? shownFields(b) : []), [b]);
+  // An env file's text is shown as its entries (EnvPanelSection), not as one Contents row.
+  const env = b?.type === "envFile";
+  const fields = useMemo(() => (b ? shownFields(b).filter((f) => !(env && f.id === "t:content")) : []), [b, env]);
   const pw = b?.password;
   const strength = useMemo(() => { if (!pw) return null; const s = scoreOf?.(pw); return s === undefined ? strengthOf(pw) : strengthForScore(pw, s); }, [pw, scoreOf]);
 
@@ -207,6 +210,8 @@ export function RecordPanel({ record, folderName, teamFolder, onClose, onEdit, o
                 })}
               </div>
             )}
+
+            {env && b.data?.content && <EnvPanelSection key={record.id} content={b.data.content} fileName={b.data.fileName} useOnly={useOnly} />}
 
             {b.notes && (
               <section className="flex flex-col gap-2" aria-label="Notes">
