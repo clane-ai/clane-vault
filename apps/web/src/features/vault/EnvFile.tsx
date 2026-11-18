@@ -36,8 +36,20 @@ export async function readEnvFile(file: File): Promise<string> {
 /** `.env.production` and `production.env` → "production"; `.env` → "". */
 export const environmentOf = (fileName: string): string => /^\.env\.(.+)$/.exec(fileName)?.[1] ?? /^(.+)\.env$/.exec(fileName)?.[1] ?? "";
 
-/** A text area turns "\r\n" into "\n": put it back when the stored text used it. */
-export const keepEol = (stored: string, edited: string): string => (stored.includes("\r\n") ? edited.replace(/\r?\n/g, "\r\n") : edited);
+/**
+ * A text area turns "\r\n" and a lone "\r" into "\n". Only the changed span is converted (to the file's dominant line
+ * ending); the untouched prefix and suffix keep the stored bytes, so a bare LF inside a quoted value or a lone CR survives.
+ */
+export function keepEol(stored: string, edited: string): string {
+  const units = stored.match(/\r\n|[\s\S]/g) ?? []; // one unit per character the text area shows
+  const norm = units.map((u) => (u === "\r\n" || u === "\r" ? "\n" : u));
+  let p = 0;
+  while (p < norm.length && p < edited.length && norm[p] === edited[p]) p++;
+  let s = 0;
+  while (s < norm.length - p && s < edited.length - p && norm[norm.length - 1 - s] === edited[edited.length - 1 - s]) s++;
+  const eol = units.filter((u) => u === "\r\n").length > units.filter((u) => u === "\n").length ? "\r\n" : "\n";
+  return units.slice(0, p).join("") + edited.slice(p, edited.length - s).replace(/\n/g, eol) + units.slice(units.length - s).join("");
+}
 
 /** Saves exactly the stored text (as UTF-8) under the item's file name when that is a plain name, else `.env`. */
 export function downloadEnv(content: string, fileName?: string): void {

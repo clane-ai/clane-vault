@@ -52,6 +52,14 @@ describe("readEnvFile and environmentOf", () => {
     expect(keepEol("A=1\r\n", "A=1\nB=2\n")).toBe("A=1\r\nB=2\r\n");
     expect(keepEol("A=1\n", "A=1\nB=2\n")).toBe("A=1\nB=2\n");
   });
+
+  it("converts only the changed span: a bare LF in a quoted value, a lone CR and untouched CRLFs keep their bytes", () => {
+    const stored = "# key\r\nPEM=\"-----BEGIN\nabc\n-----END\"\r\nX=1\rY=2\r\n";
+    const shown = stored.replace(/\r\n?/g, "\n");
+    expect(keepEol(stored, shown.replace("# key", "# keys"))).toBe(stored.replace("# key", "# keys"));
+    expect(keepEol(stored, shown + "Z=3\n")).toBe(stored + "Z=3\r\n");
+    expect(keepEol(stored, shown)).toBe(stored);
+  });
 });
 
 describe("the editor", () => {
@@ -107,16 +115,14 @@ describe("the editor", () => {
     expect(saved(onSave).data!.content).toBe(FILE + "\r\nNEW=x\r\n");
   });
 
-  it("Edit as text: a masked text area, and an appended line keeps CRLF everywhere", async () => {
+  it("Edit as text: a masked text area; an appended line gets CRLF and the rest (a quoted value's bare LF too) keeps its bytes", async () => {
     const onSave = editor();
     await userEvent.click(screen.getByRole("button", { name: "Edit as text" }));
     const area = screen.getByLabelText("File contents");
     expect(area).toHaveAttribute("data-masked", "true");
     await userEvent.type(area, "{Enter}NEW=1");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    const content = saved(onSave).data!.content!;
-    expect(content.endsWith("\r\nNEW=1")).toBe(true);
-    expect(content.replace(/\r\n/g, "")).not.toMatch(/[\r\n]/);
+    expect(saved(onSave).data!.content).toBe(FILE + "\r\nNEW=1");
   });
 
   it("a 40 KB file shows the size message and leaves the contents as they were", async () => {

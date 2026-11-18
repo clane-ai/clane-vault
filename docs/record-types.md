@@ -47,8 +47,9 @@ of a downloaded file's name (`.env` arrives as `env`): rename it after the downl
 fills *File name* and, from `.env.<name>` or `<name>.env`, *Environment*, when those are empty. Below it each entry is
 a masked input (changing one rewrites only that entry's value) and **Add entry** appends one. **Edit as text** shows the
 whole file in a masked text area, for comments or removing or renaming a key. A browser text area turns `\r\n` into
-`\n`; when the stored file used `\r\n`, the editor turns every line break back into `\r\n` after an edit there, including
-a line break inside a quoted multi-line value. Text you don't touch is saved byte for byte.
+`\n`; the editor converts only the text you changed there, to the line ending most of the file uses, and the text
+before and after your change keeps its stored bytes (a bare `\n` inside a quoted multi-line value and a lone `\r`
+among them). Text you don't touch is saved byte for byte.
 
 **In the record panel** each entry is a row: the key, the value masked, **Show** and **Copy**. **Copy all** copies the
 whole file and **Download** saves it. A person with *Use only* gets Copy and Copy all, but no Show and no Download.
