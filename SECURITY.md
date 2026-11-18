@@ -53,6 +53,7 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 | Records never shared to an agent | ciphertext only (unchanged) | nothing (no key reaches it) | nothing |
 | Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
 | Personal items with *Can use* (a person's own agent) | ciphertext only | **plaintext at use time**; could decrypt any time while the agent is live | names, hosts, policy; responses with the secret scrubbed |
+| Personal items with *Can reveal*, approval mode | ciphertext only; a stub sealed to the agent; the field names | **only the approved fields, per approved request**; never the record key | **the approved fields, in full** |
 | Deposits and agent updates (a personal agent's `save_secret`, `update_secret`, `capture`) | ciphertext, a gateway signature, the previous version of an updated item | **plaintext at write time**, even for an item the agent is never given to use | for `save_secret` and `update_secret`, the value it supplied; for `capture`, only the new item's handle |
 | Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
 | Who used what, where, when | metadata events | metadata log | its own calls |
@@ -61,6 +62,13 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 
 Residual risks, which no mitigation in this release removes:
 
+- **Reveal: the model sees values.** With `GATEWAY_REVEAL` set by the operator and *Can reveal* chosen by the owner for an
+  item, a personal agent's `get_secret` returns the approved fields. The value is then in the model's context, the
+  provider's logs and retention and the conversation, for good; the scrubber can't help. Approval in the web app limits
+  when a value is released, not what happens to it next. See [docs/agents.md](docs/agents.md#letting-an-agent-read-a-value).
+- **An MCP client that auto-approves tools auto-approves `get_secret`.** The control is the owner's approval inside Clane
+  Vault (each request signed by the gateway and checked against the pinned identity before the browser seals anything),
+  not the MCP client's tool approval.
 - **Non-admin users pin the gateway: trust-on-first-use in practice.** A person who creates a personal agent pins the
   gateway identity themselves, and most won't compare its fingerprint with the published one. A malicious API server
   could present its own "gateway" to a first-time user and receive every record key that user then gives their agent.
@@ -77,6 +85,9 @@ Residual risks, which no mitigation in this release removes:
   agent next writes to it.** The agent's copy of a record key is sealed to its public key, which anyone can seal to, and
   the gateway can't tell a substituted one from the owner's. Unkept deposits are not affected: the gateway updates a
   deposit only if it carries the gateway's own signature over that body.
+- **More gateway code handles plaintext.** Writes, `capture` and reveal each handle values in the gateway (a reveal
+  only the approved fields, in memory, held for log redaction until the result is written), which enlarges what an audit
+  must cover.
 - **The gateway sees what it writes.** It encrypts a saved or updated value itself, so it sees it even if the agent is
   never given that item to use. With `save_secret` and `update_secret` the model supplied the value, so it has seen it
   too; `capture` keeps a created credential away from the model.

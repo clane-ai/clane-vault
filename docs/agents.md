@@ -77,12 +77,12 @@ The gateway also refuses, whatever the policy says:
 
 ## Tools
 
-The gateway offers two MCP tools to every agent, and two more to personal agents (`save_secret` and `update_secret`, in [Saving and updating items](#saving-and-updating-items)). There is no tool that returns a credential.
+The gateway offers two MCP tools to every agent, and three more to personal agents (`save_secret` and `update_secret`, in [Saving and updating items](#saving-and-updating-items), and `get_secret`, in [Letting an agent read a value](#letting-an-agent-read-a-value)). For organisation agents there is no tool that returns a credential. A personal agent's `get_secret` returns a value only where its owner allowed it, and, unless the item is on standing reveal, only after the owner approves that one request.
 
-- `list_secrets` → the items the agent may use: `handle`, title, type, hosts, how it is sent, and methods/paths if set; for a personal agent also `deposit: true` on an item it saved that the owner hasn't kept yet, and `can_update: true` where it may change the item. Never a secret field. A **handle** is `<folder>/<title>`, slugged. The folder part names the folder that **holds the record's key** (for a record in a subfolder, the team folder it belongs to), or `shared` for a record shared directly. Duplicates get `-2`, `-3`.
+- `list_secrets` → the items the agent may use: `handle`, title, type, hosts, how it is sent, and methods/paths if set; for a personal agent also `deposit: true` on an item it saved that the owner hasn't kept yet, `can_update: true` where it may change the item, `modes` (`"use"` where it holds the item's key, `"reveal"` where `get_secret` may read it) and `reveal: { fields, approval }` (the fields it may ask for, and whether the owner is asked first). Never a secret field. A **handle** is `<folder>/<title>`, slugged. The folder part names the folder that **holds the record's key** (for a record in a subfolder, the team folder it belongs to), or `shared` for a record shared directly. Duplicates get `-2`, `-3`.
 - `http_request` `{ item, method, url, headers?, body? }` → `{ status, headers, body, truncated? }`, or `{ error: "refused", reason }`. The gateway drops any `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` and policy header the agent sent, injects the real one, and scrubs the secret (raw, base64, base64url, URL-encoded, hex, JSON-escaped and the `username:secret` form) from the response headers and decompressed body as `[clane:redacted]`.
 
-Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session), and for personal agents `owner_key_changed` (the owner key the server reports isn't the one the agent was enrolled with; see [Personal agents](#personal-agents)), `not_kept` (`http_request` with an item the owner hasn't kept yet), and the write reasons in [Saving and updating items](#saving-and-updating-items).
+Refusal reasons: `not_found`, `no_policy`, `host`, `scheme`, `ssrf`, `method`, `path`, `timeout`, `request_too_large`, `upstream_error`, `busy` (one call at a time per session), and for personal agents `owner_key_changed` (the owner key the server reports isn't the one the agent was enrolled with; see [Personal agents](#personal-agents)), `not_kept` (`http_request` with an item the owner hasn't kept yet), and the write and read reasons in [Saving and updating items](#saving-and-updating-items) and [Letting an agent read a value](#letting-an-agent-read-a-value).
 
 ## Connecting a client
 
@@ -161,7 +161,7 @@ A **personal agent** belongs to one person and reaches only items in that person
 
 **Allowances.** Personal agents don't count against an organisation's agent bundle. Hosted: Personal 1 per person, Team 2, Business 5; a person in several organisations gets the highest allowance among their active memberships (the Personal plan's with none). Self-hosted (`BILLING_MODE=off`): up to 20 per person, the hard ceiling whatever the plan or policy says. Over it: `402 agent_limit` (`used`, `allowed`); after a downgrade existing agents keep working and only new ones are blocked. My agents shows *n of m agents*.
 
-**The organisation's policy.** Each organisation has a *Personal agents* block in **Organisation settings → Policies** (`docs/policies.md`), editable on every plan: *Members may use personal agents* (default on), *At most n per member* (default no limit) and two switches for later phases (saving items, reading values). For a person in several organisations the strictest wins: allowed only if every one allows it, and the smallest cap. The server enforces it: `POST /me/agents` answers `403 personal_agents_disabled` with the `orgId` that blocks it, and My agents names that organisation.
+**The organisation's policy.** Each organisation has a *Personal agents* block in **Organisation settings → Policies** (`docs/policies.md`), editable on every plan: *Members may use personal agents* (default on), *At most n per member* (default no limit), *Agents may save and update items* and *Reading values* (*Off*, *With approval*, the default, or *Without approval*; see [Letting an agent read a value](#letting-an-agent-read-a-value)). For a person in several organisations the strictest wins: allowed only if every one allows it, and the smallest cap. The server enforces it: `POST /me/agents` answers `403 personal_agents_disabled` with the `orgId` that blocks it, and My agents names that organisation.
 
 **Suspension.** When an organisation the owner belongs to switches personal agents off, the owner's agents are **suspended, not deleted**: every call is refused (the gateway answers 401 and drops its cache), My agents shows *Suspended by an organisation's policy*, and that organisation's event log gets `personal_agent.suspended`. Nothing the owner stored or granted is touched. The agents work again when the policy allows them again, or when the owner leaves that organisation. A disabled owner account stops them too (`403 owner_inactive`).
 
@@ -188,6 +188,30 @@ Write refusal reasons (`{ error: "refused", reason }`): `not_writable` (this age
 **What this costs.** The gateway sees a secret when it writes it, even if the agent is never given the item to use. Whether an agent may update an item is a flag on the server: a malicious server together with a hijacked agent could overwrite any item the agent holds. The signature and the kept previous version make that visible and reversible, not impossible. See `SECURITY.md`.
 
 Events, visible to the owner and in no organisation's log: `agent.deposit` and `agent.update` (the agent's), `agent.deposit_keep`, `agent.deposit_delete` and `agent.item_write` (*Agent can update* changed).
+
+### Letting an agent read a value
+
+Everything above lets an agent *use* a credential without seeing it. `get_secret` is different: **the value leaves the vault's control for good.** Once the agent reads it, it is in the model's context, in the model provider's logs and retention, in the conversation history, and available to every other tool and connector in that session. The scrubber can't help, and nothing in Clane Vault can take it back. Approval limits *when* a value is released, not what happens to it next. Treat every revealed value as disclosed to the model provider.
+
+**Prefer *Can use*.** Reveal only what can't be sent in an HTTP call and is low in value or easy to change: an account id, a username, a Wi-Fi password, a restricted token for a tool the gateway can't proxy. Never a master, owner or recovery credential.
+
+| Threat | What limits it | What remains |
+|---|---|---|
+| Prompt injection makes the agent ask for a value and send it elsewhere | Off by default; per item; per field; each request approved with the item and the connected app shown; one request at a time; a rate limit | If you approve, the value is gone. An injected agent can write a persuasive reason |
+| The model provider keeps it | Nothing | Its retention is the provider's |
+| Approval fatigue | One open request per agent, a 5-minute expiry, no "always allow" | Clicking **Allow once** without reading |
+| A malicious server relays the request to itself | The request key is signed by the gateway; your browser checks the signature against the gateway you pinned before it seals anything | A malicious server plus a gateway you pinned on first use without checking it |
+| A proxy that terminates TLS in front of the gateway | Nothing | It sees revealed values in transit |
+
+**Turning it on for an item.** In the share sheet of a Personal item, an agent's access can be *None*, *Can use*, *Can reveal* or *Can use and reveal*. Choosing reveal opens a field picker: the item's own fields that have a value, *Username* ticked by default where there is one and the password never ticked for you. `totp` is listed as *Current one-time code*: the agent gets the current 6-digit code, never the 2FA secret, and a one-time-code custom field is not listed at all. For a .env file the picker lists its keys (`env:<KEY>`), none ticked, and never the whole file. The picker says *"Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards."* *Can reveal* alone gives the agent **no key to the item**: your browser seals a small stub (title, type and the field names) to the agent's key, so `list_secrets` can show the item, and the gateway never holds the record. Renaming the item seals its stubs again. The choice is absent unless the gateway's operator set `GATEWAY_REVEAL` and every organisation you belong to allows reading values.
+
+**Each read is approved.** `get_secret` `{ item, fields, reason }` asks for fields the item allows. The gateway signs a request naming you, the agent, the item, the fields and a one-time key it holds in memory, and the request waits up to 5 minutes. Only a signed-in, **unlocked** Clane Vault web app can answer it, because answering means decrypting: it checks for requests every 5 seconds on every screen and shows a sheet with the agent, the connected app, the item's title (from your own vault, never from the request), the fields, the time, and the agent's reason under *"Written by the agent. It may not be true."* **Allow once** decrypts the item in your browser, takes only the approved fields and seals them to the request's one-time key; **Deny** refuses. If the request's signature doesn't check out against your pinned gateway, or it names an item or field you didn't allow, there is no **Allow once** button. On a device that hasn't verified your gateway yet, the sheet asks you to verify it first. The browser extension and an email (on by default; *Email me when an agent asks for a secret* in My agents) only tell you that a request is waiting. Neither can answer it, and the email names no item, reason or link to the request. With no unlocked web app open, the request expires: no person, no value.
+
+**The tool.** `get_secret` `{ item, fields, reason }` → `{ fields: { <field>: <value> } }`, or `{ status: "pending", request_id }` when nobody has answered within about 50 seconds; then `get_secret { request_id }` waits again for the same request. `fields` are the names `list_secrets` shows in `reveal.fields`: `username`, `password`, `url`, `notes`, `totp`, `data.<key>`, `field:<id>` and `env:<KEY>`. A field without a value is left out of the result. A pending request is held by the gateway process that made it: if that process restarts, the request can only expire.
+
+Read refusal reasons: `reveal_off` (the operator, an organisation's policy or the item doesn't allow it), `field` (a field the item doesn't allow), `denied` (the owner said no), `expired` (nobody answered in 5 minutes, or the gateway restarted), `busy` (the agent already has a request waiting), `not_found`. New requests are limited to `GATEWAY_REVEAL_PER_HOUR` (default 10) per agent per hour (HTTP 429); waiting on one with `request_id` is not counted. Three denials within ten minutes pause that agent's requests for an hour, and the web app shows a notice. With `GATEWAY_REVEAL=off` (the default) `get_secret` answers `reveal_off` and nothing reaches the server.
+
+Events, visible to the owner and in no organisation's log: `agent.item_reveal_on` and `agent.item_reveal_off`, then per request `agent.reveal_request`, `agent.reveal` (field names, never values), `agent.reveal_denied` or `agent.reveal_expired`. **Revoke** also lists the fields the agent was shown: *These fields were shown to the AI model. Change them.*
 
 **Connecting a client.** **Connect** in My agents opens the same sheet: the URL, the snippets and **Create API token**. OAuth flows end on the consent page, which lists *Your agents*: you may allow your own agent there without being an admin.
 
@@ -247,6 +271,8 @@ On the **gateway**:
 | `GATEWAY_CACHE_TTL_SECONDS` | 60 | How long an agent's opened key and sync data stay in memory. `0`: a KMS call per request. |
 | `GATEWAY_AGENT_RATE_PER_MINUTE` | 60 | `http_request` calls per agent per minute. |
 | `GATEWAY_WRITE_PER_HOUR` | 20 | `save_secret`, `update_secret` and `http_request` with `capture`, together, per personal agent per hour. |
+| `GATEWAY_REVEAL` | off | `off`, `approval` or `standing`. Whether `get_secret` can return a value at all: `approval` lets owners allow reading values, each read approved in the web app; `standing` adds reading without approval (Phase D). Anything else stops the gateway with `config_error`. |
+| `GATEWAY_REVEAL_PER_HOUR` | 10 | New `get_secret` requests per personal agent per hour. |
 | `GATEWAY_MAX_RESPONSE_BYTES` | 4194304 | Response cap, after decompression; longer responses are cut and marked `truncated`. |
 | `GATEWAY_UPSTREAM_TIMEOUT_MS` | 30000 | Total time for an outbound call, redirects included. |
 | `GATEWAY_ALLOW_PRIVATE_CIDRS` | empty | Comma-separated CIDRs an agent may reach over `http`/`https` though private. Self-hosted only; never set on a hosted service. Metadata addresses stay blocked. |
@@ -257,7 +283,7 @@ On the **gateway**:
 
 Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NODE_DEBUG` (undici's debug log prints request paths, which can hold a secret injected into the query) or `NODE_V8_COVERAGE`, any Node flag outside a short allowlist, and starting without `--disable-sigusr1` (SIGUSR1 would open the inspector). The image's command is `--disable-sigusr1 dist/server.js`; run it from source with `npm run dev -w @clane-vault/gateway`, which builds and then runs it the same way. A bad setting prints one line, `{"event":"config_error","msg":…}`, and exits 1. After changing the API's `PUBLIC_URL` (its OAuth issuer), restart the gateway.
 
-**Limits**: `http_request` `GATEWAY_AGENT_RATE_PER_MINUTE` per agent; writes `GATEWAY_WRITE_PER_HOUR` per personal agent; `list_secrets` 20 a minute per agent; 600 requests a minute per client address; 10 unknown API tokens a minute per address; 20 open MCP sessions per agent (idle ones close after 30 minutes); one call in flight per session; request bodies up to 1 MiB.
+**Limits**: `http_request` `GATEWAY_AGENT_RATE_PER_MINUTE` per agent; writes `GATEWAY_WRITE_PER_HOUR` per personal agent; new `get_secret` requests `GATEWAY_REVEAL_PER_HOUR` per personal agent; `list_secrets` 20 a minute per agent; 600 requests a minute per client address; 10 unknown API tokens a minute per address; 20 open MCP sessions per agent (idle ones close after 30 minutes); one call in flight per session; request bodies up to 1 MiB.
 
 **Errors.** Bodies are `{ "error": "<code>" }`.
 
@@ -275,6 +301,7 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 | 403 | `personal_agents_disabled` (`orgId`) | An organisation the person belongs to switched personal agents off: creating one, or any call of a suspended one. |
 | 403 | `owner_inactive` | A personal agent whose owner's account is disabled. |
 | 403 | `totp_step_up_required` | My agents from a session confined to one organisation: confirm the authenticator code first. |
+| 403 | `reveal_disabled` | *Can reveal*, or answering a request, while an organisation's policy says reading values is off. |
 | 403 | `forbidden` | Gateway: an MCP session used with another agent's token. |
 | 409 | `stale_key` | Verify: the key isn't the agent's current key. |
 | 409 | `is_agent` | A People page action on an agent. |
@@ -283,6 +310,8 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 | 409 | `team_record` | Giving a personal agent an item in a team folder. |
 | 409 | `already_shared` | Giving a personal agent an item it already holds through another row. |
 | 409 | `not_writable`, `conflict`, `inbox_full` | Gateway to API (`/agent/deposits*`, `/agent/records/:id`): a refused write. Never 401 or 403, which would end the agent. |
+| 409 | `reveal_off`, `busy`, `denied` | Gateway to API (`/agent/reveals`): a refused read request. |
+| 409 | `expired` | Answering a reveal request that is no longer waiting. |
 | 429 | `rate_limited` | With `Retry-After`. |
 | 503 | `gateway_unavailable` | The API can't reach the gateway; nothing was created. |
 | 503 | `gateway_identity_changed` | The gateway identity changed; see above. |
@@ -294,5 +323,6 @@ Rules the gateway enforces at start: it refuses a non-empty `NODE_OPTIONS`, `NOD
 - **A hijacked agent** (prompt injection) can't see a value, but can make legitimate-looking calls to an allowed host with bad intent. Narrow hosts, methods and paths, and give agents restricted credentials.
 - **A host that re-encodes the secret** in a form the scrubber doesn't know can get it into a response, and so to the model provider.
 - **Trust on first use** of the gateway identity, per user, as above. For personal agents it is trust-on-first-use in practice: owners rarely compare the fingerprint (see [Personal agents](#personal-agents)).
+- **A revealed value is out of the vault for good.** `get_secret` puts it in the model's context and the provider's retention. Approval decides when, not what happens next; a proxy that terminates TLS in front of the gateway sees it in transit. Off unless the operator sets `GATEWAY_REVEAL` (see [Letting an agent read a value](#letting-an-agent-read-a-value)).
 - **Admins can't see what personal agents hold.** By design; an organisation that needs to audit it switches personal agents off.
 - **JavaScript can't guarantee zeroing.** The gateway zeroes key and secret buffers after each call, but decrypted values also exist as JavaScript strings, which can't be zeroed, and the garbage collector may copy buffers. Core dumps, the inspector, heap snapshots and diagnostic reports are off. The real answer is running the gateway in an enclave (Phase 5), with an attestation your browser checks, so that not even the operator can read agent-scoped items.

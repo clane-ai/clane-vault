@@ -9,7 +9,8 @@ import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setting
 // agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
 // by policy; Phase B (§4): the agent saves a secret to the owner's inbox, which the owner keeps, updates one it may update
 // (the owner restores the previous value) and captures a credential an upstream creates; a move into a team folder takes the
-// item away; revoke ends it.
+// item away; revoke ends it. Phase C (§5): the agent reads a value the owner allowed, after the owner approves it in the
+// web app (GATEWAY_REVEAL=approval).
 test.describe.configure({ mode: "serial" });
 
 const PW = "an e2e master password";
@@ -17,6 +18,7 @@ const CANARY = "sk_test_PERSONAL_CANARY";
 const SAVED = "sk_test_SAVED_CANARY";
 const UPDATED = "sk_test_UPDATED_CANARY";
 const CAPTURED = "tok_CAPTURED_CANARY";
+const KEY_ID = "acct_e2e_KEYID_42";
 const AGENT_WARNING = "Give agents restricted credentials: a Stripe restricted key, a read-only database user, a scoped token. Never a root or owner credential. What you share here can be read by the gateway and used by whatever drives the agent.";
 const MCP_URL = `http://localhost:${process.env.E2E_GATEWAY_PORT ?? 3002}/mcp`;
 const id = `${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
@@ -130,6 +132,7 @@ test("2. a Personal API key item, given to the agent at Can use, under the warni
   await newDlg.getByLabel("Title").fill("Echo");
   await newDlg.getByRole("button", { name: "Next" }).click();
   await member.getByLabel("Secret", { exact: true }).and(member.locator("input")).fill(CANARY);
+  await member.getByLabel("Key ID", { exact: true }).fill(KEY_ID);
   const agentUse = member.getByRole("region", { name: "Agent use" });
   await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
   await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
@@ -143,7 +146,7 @@ test("2. a Personal API key item, given to the agent at Can use, under the warni
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
   await expect(agents.getByRole("note", { name: "Sharing with an agent" })).toContainText(AGENT_WARNING);
   await agents.getByRole("combobox", { name: "Access for My helper" }).click();
-  await member.getByRole("option", { name: "Can use" }).click();
+  await member.getByRole("option", { name: "Can use", exact: true }).click();
   await expect(agents.getByRole("combobox", { name: "Access for My helper" })).toHaveText("Can use", { timeout: 30_000 });
   await expect(agents.getByRole("alert")).toHaveCount(0);
   await member.keyboard.press("Escape");
@@ -278,7 +281,67 @@ test("9. http_request capture saves the upstream's new credential without showin
   await secretShown(member, CAPTURED);
 });
 
-test("10. moved into a team folder the item leaves the agent; revoke ends it", async () => {
+const revealSheet = (p: Page) => p.getByRole("dialog", { name: "An agent is asking for a secret" });
+const ask = (fields: string[]) => call(token, "get_secret", { item: "personal/echo", fields, reason: "e2e" });
+
+test("10. Can use and reveal on Echo: list_secrets shows both modes", async () => {
+  await unlock(member);
+  await openRecord(member, "Echo");
+  await member.getByRole("button", { name: "Share", exact: true }).click();
+  const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
+  await agents.getByRole("combobox", { name: "Access for My helper" }).click();
+  await member.getByRole("option", { name: "Can use and reveal" }).click();
+  await expect(agents.getByText("Can reveal lets the AI model read these fields. Clane Vault cannot take them back afterwards.")).toBeVisible();
+  await agents.getByRole("checkbox", { name: "Key ID" }).check();
+  await agents.getByRole("button", { name: "Save" }).click();
+  await expect(agents.getByText(/^Can read: Key ID/)).toBeVisible({ timeout: 30_000 });
+  await expect(agents.getByRole("alert")).toHaveCount(0);
+  await member.keyboard.press("Escape");
+  const listed = JSON.parse(await listSecrets(token)) as { structuredContent: { secrets: { handle: string; modes?: string[]; reveal?: unknown }[] } };
+  expect(listed.structuredContent.secrets.find((x) => x.handle === "personal/echo")).toMatchObject({ modes: ["use", "reveal"], reveal: { fields: ["data.keyId"], approval: true } });
+});
+
+test("11. get_secret waits for the owner; Allow once returns the value; Activity shows both", async () => {
+  const pending = ask(["data.keyId"]);
+  const sheet = revealSheet(member);
+  await expect(sheet).toBeVisible({ timeout: 30_000 });
+  await expect(sheet).toContainText("Echo");
+  await expect(sheet).toContainText("Key ID");
+  await expect(sheet).toContainText("Written by the agent. It may not be true.");
+  await sheet.getByRole("button", { name: "Allow once" }).click();
+  expect(await pending).toEqual({ fields: { "data.keyId": KEY_ID } });
+  await expect(sheet).toHaveCount(0, { timeout: 30_000 });
+  await settingsPage(member, "My agents");
+  await myAgentRow(member).getByRole("button", { name: "Activity of My helper" }).click();
+  const activity = member.getByRole("dialog", { name: "My helper: activity" });
+  await expect(activity.getByRole("listitem").filter({ hasText: "agent.reveal_request" })).toHaveCount(1, { timeout: 30_000 });
+  await expect(activity.getByRole("listitem").filter({ hasText: /agent\.reveal(?!_)/ })).toHaveCount(1);
+  await member.keyboard.press("Escape");
+});
+
+test("12. Deny refuses; a field the owner did not allow is refused with no sheet", async () => {
+  const pending = ask(["data.keyId"]);
+  const sheet = revealSheet(member);
+  await sheet.getByRole("button", { name: "Deny" }).click({ timeout: 30_000 });
+  expect(await pending).toEqual({ error: "refused", reason: "denied" });
+  expect(await ask(["data.secret"])).toEqual({ error: "refused", reason: "field" });
+  await member.waitForTimeout(6000); // one poll of the web app
+  await expect(sheet).toHaveCount(0);
+});
+
+test("13. with the vault locked nobody answers: get_secret says pending, with a request id", async () => {
+  await member.reload(); // the lock screen: no unlocked client polls
+  await expect(member.getByLabel("Master password")).toBeVisible({ timeout: 30_000 });
+  const r = await ask(["data.keyId"]);
+  expect(r).toEqual({ status: "pending", request_id: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+  await member.getByLabel("Master password").fill(PW);
+  await member.getByRole("button", { name: "Unlock" }).click();
+  // The request is still open: the sheet shows it; denying clears it for the steps after.
+  await revealSheet(member).getByRole("button", { name: "Deny" }).click({ timeout: 30_000 });
+  await expect(revealSheet(member)).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("14. moved into a team folder the item leaves the agent; revoke ends it", async () => {
   // A personal record reaches the organisation's space only while it is shared there: share it with the admin, then move it.
   await member.getByRole("link", { name: /^Vault/ }).click();
   await switchSpace(member, { firstOrg: true });
