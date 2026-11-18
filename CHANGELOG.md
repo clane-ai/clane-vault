@@ -2,7 +2,7 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
-## Unreleased
+## 1.9.2 — 2026-11-18
 
 Upgrading: no migration. Upgrade the server, the gateway and the web app together. **Two defaults change, and both make reading values available without approval:**
 
