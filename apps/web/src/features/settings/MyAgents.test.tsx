@@ -12,7 +12,8 @@ import type { VaultRecord } from "@/features/vault/types";
 import { MyAgentsSection } from "./MyAgentsSection";
 import { SettingsArea } from "./SettingsPage";
 import type { MyAgent, MyAgents } from "./myAgents";
-import { agentErrorText } from "@/features/admin/agents";
+import { AGENT_PROMPT, agentErrorText, SKILL_INSTALL } from "@/features/admin/agents";
+import { copySecret } from "@/lib/clipboard";
 
 vi.mock("@/lib/clipboard", () => ({ copySecret: vi.fn(async () => undefined) }));
 const ME = "11111111-0000-4000-8000-000000000001";
@@ -158,6 +159,25 @@ describe("Settings → My agents", () => {
     const good = screen.getByRole("listitem", { name: "Good bot" });
     expect(within(good).getByText("Active")).toBeInTheDocument();
     expect(within(good).getByRole("button", { name: "Connect Good bot" })).toBeInTheDocument();
+  });
+
+  it("the personal Connect sheet has the same instructions for the model and skill command", async () => {
+    const gw = await newGateway();
+    gwIdentity = gw.identity;
+    await pinGateway(ME, PERSONAL_SLOT, gw.identity);
+    const pub = await agentKey();
+    agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub) })];
+    renderSection();
+    await userEvent.click(await screen.findByRole("button", { name: "Connect My bot" }));
+    const sheet = await screen.findByRole("dialog", { name: "Connect My bot" });
+    const prompt = within(sheet).getByRole("region", { name: "Prompt" });
+    expect(within(prompt).getByRole("heading", { name: "Instructions for the model" })).toBeInTheDocument();
+    expect(prompt.textContent).toContain(AGENT_PROMPT.split("\n")[0]);
+    expect(prompt.textContent).toContain(SKILL_INSTALL);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy prompt" }));
+    expect(copySecret).toHaveBeenLastCalledWith(AGENT_PROMPT);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy skill command" }));
+    expect(copySecret).toHaveBeenLastCalledWith(SKILL_INSTALL);
   });
 
   it("revoke lists the items to rotate by title", async () => {

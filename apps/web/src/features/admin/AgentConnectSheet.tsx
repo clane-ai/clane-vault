@@ -8,7 +8,7 @@ import { Sheet, SheetBody, SheetCloseButton, SheetContent, SheetHeader, SheetTit
 import { copySecret } from "@/lib/clipboard";
 import { useSession } from "@/lib/session";
 import { relativeTime } from "@/lib/time";
-import { AGENT_PROMPT, agentErrorText, connectSnippets, useCreateToken, useRevokeGrant, useRevokeToken, type Agent } from "./agents";
+import { AGENT_PROMPT, agentErrorText, SKILL_INSTALL, connectSnippets, useCreateToken, useRevokeGrant, useRevokeToken, type Agent } from "./agents";
 
 const h3 = "font-display text-[14px] font-semibold text-text-primary";
 const pre = "overflow-x-auto rounded-[10px] border border-border-default bg-well px-3 py-2 font-mono text-[12px] whitespace-pre-wrap break-all text-text-primary";
@@ -88,8 +88,10 @@ export function AgentConnectSheet({ agent, url, personal, onClose }: { agent: Pi
           {error && <p role="alert" className="text-[13px] text-red-500">{error}</p>}
 
           <section aria-label="Prompt" className="flex flex-col gap-1.5">
-            <h3 className={h3}>Tell the model</h3>
+            <h3 className={h3}>Instructions for the model</h3>
             <div className="flex items-start gap-2"><p className={`${pre} flex-1`}>{AGENT_PROMPT}</p><CopyButton text={AGENT_PROMPT} label="Copy prompt" /></div>
+            <p className="text-[12.5px] text-text-secondary">Paste this into the client's custom instructions or system prompt. Claude Code and Claude.ai can install the Clane Vault skill instead:</p>
+            <div className="flex items-start gap-2"><pre className={`${pre} flex-1`}>{SKILL_INSTALL}</pre><CopyButton text={SKILL_INSTALL} label="Copy skill command" /></div>
           </section>
           {connectSnippets(url, token ?? undefined).map((s) => (
             <section key={s.id} aria-label={`${s.label} snippet`} className="flex flex-col gap-1.5">

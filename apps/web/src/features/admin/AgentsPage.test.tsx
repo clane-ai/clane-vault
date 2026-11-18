@@ -9,7 +9,8 @@ import * as sessionModule from "@/lib/session";
 import { fingerprintOf, gatewayPinStatus, pinGateway, pinStatus, type GatewayIdentity } from "@/lib/orgKeys";
 import type { VaultFolder } from "@/features/vault/types";
 import AgentsPage from "./AgentsPage";
-import type { Agent } from "./agents";
+import { AGENT_PROMPT, SKILL_INSTALL, type Agent } from "./agents";
+import { copySecret } from "@/lib/clipboard";
 
 vi.mock("@/lib/clipboard", () => ({ copySecret: vi.fn(async () => undefined) }));
 const ORG = { id: "aaaaaaaa-0000-4000-8000-000000000001", name: "Acme", slug: "acme", role: "admin" as const, isDefault: true };
@@ -145,6 +146,14 @@ describe("Admin → Agents", () => {
     expect(snippets).toHaveLength(6);
     for (const s of snippets) expect(s.textContent).toContain(URL_);
     expect(within(sheet).getByRole("region", { name: "Claude API (MCP connector) snippet" }).textContent).toContain("mcp-client-2025-11-20");
+    const prompt = within(sheet).getByRole("region", { name: "Prompt" });
+    expect(within(prompt).getByRole("heading", { name: "Instructions for the model" })).toBeInTheDocument();
+    expect(prompt.textContent).toContain(AGENT_PROMPT.split("\n")[0]);
+    expect(prompt.textContent).toContain(SKILL_INSTALL);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy prompt" }));
+    expect(copySecret).toHaveBeenLastCalledWith(AGENT_PROMPT);
+    await userEvent.click(within(prompt).getByRole("button", { name: "Copy skill command" }));
+    expect(copySecret).toHaveBeenLastCalledWith(SKILL_INSTALL);
     const grant = within(sheet).getByRole("listitem", { name: "Claude" });
     expect(within(grant).getByText(/Admin, /)).toBeInTheDocument();
     await userEvent.click(within(grant).getByRole("button", { name: "Revoke Claude" }));

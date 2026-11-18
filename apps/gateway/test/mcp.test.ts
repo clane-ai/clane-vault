@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
@@ -531,6 +532,21 @@ describe("MCP endpoint", () => {
     const r = await client.callTool({ name: "list_secrets", arguments: {} });
     expect(result(r)).toEqual({ secrets: [expect.objectContaining({ handle: "payments/stripe", hosts: ["api.test"] })] });
     expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it("the agent skill names the tools, arguments and refusal reasons the gateway has", async () => {
+    const SKILL = readFileSync(join(import.meta.dirname, "../../../skills/clane-vault/SKILL.md"), "utf8");
+    const named = (kind: "Organisation" | "Personal") =>
+      [...SKILL.match(new RegExp(`^${kind} agents: (.+)$`, "m"))![1]!.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).sort();
+    const { api, url } = await start();
+    const org = (await (await connect(url, api.staticToken)).client.listTools()).tools;
+    const personal = (await (await connect(url, await api.personal.token())).client.listTools()).tools;
+    expect(named("Organisation")).toEqual(org.map((t) => t.name).sort());
+    expect(named("Personal")).toEqual(personal.map((t) => t.name).sort()); // four names after Phase E
+    for (const t of personal) for (const arg of Object.keys(t.inputSchema.properties ?? {})) expect(SKILL, `${t.name}.${arg}`).toContain("`" + arg + "`");
+    // RefuseReason (outbound/ssrf.ts), the reasons mcp.ts and items.ts return, the write reasons, and capture.refused's internal_error.
+    for (const reason of ["not_found", "no_policy", "host", "scheme", "ssrf", "method", "path", "timeout", "request_too_large", "upstream_error", "busy",
+      "owner_key_changed", "not_kept", "invalid", "not_writable", "conflict", "inbox_full", "internal_error"]) expect(SKILL).toContain("`" + reason + "`");
   });
 
   it("a personal agent: personal/ handles, the credential injected and scrubbed; a swapped owner key refuses both tools with no outbound call", async () => {
