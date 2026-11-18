@@ -6,7 +6,7 @@ export interface GatewayConfig {
   maxResponseBytes: number; upstreamTimeoutMs: number; allowPrivateCidrs: string[]; port: number; internalPort: number; internalHost: string; trustProxy: number;
   /** save_secret and update_secret (and capture) per agent per hour. */
   writePerHour: number;
-  /** get_secret (spec §5): off (default), approval per reveal, or standing reveal too. */
+  /** get_secret (spec §5): off, approval for every read, or standing (the default): an item whose owner chose it is read without asking. */
   reveal: "off" | "approval" | "standing";
   /** New get_secret requests per agent per hour. */
   revealPerHour: number;
@@ -30,7 +30,7 @@ const schema = z.object({
   INTERNAL_HOST: z.preprocess(blank, z.string().default("0.0.0.0")),
   TRUST_PROXY: int(0),
   GATEWAY_WRITE_PER_HOUR: int(20, 1),
-  GATEWAY_REVEAL: z.preprocess(blank, z.enum(["off", "approval", "standing"]).default("off")),
+  GATEWAY_REVEAL: z.preprocess(blank, z.enum(["off", "approval", "standing"]).default("standing")),
   GATEWAY_REVEAL_PER_HOUR: int(10, 1),
 });
 

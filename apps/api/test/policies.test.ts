@@ -82,7 +82,7 @@ describe("org policies", () => {
     const orgs = (await call(m, "GET", "/me/orgs", undefined, "10.0.0.9", false)).json().orgs;
     expect(orgs[0].policies).toEqual({ autoLockMinutes: 5, minPasswordLength: 16, minPasswordScore: 3, links: { allowed: true, maxExpiryHours: 168, requirePassword: false, allowAttachments: true },
       attachments: { allowed: true, maxFileMb: null, previews: true }, offlineAllowed: false, extensionAllowed: false, breachCheckAllowed: false, ipRestricted: true,
-      personalAgents: { allowed: true, maxPerMember: null, write: true, reveal: "approval" }, personalAgentsEnabled: false });
+      personalAgents: { allowed: true, maxPerMember: null, write: true, reveal: "standing" }, personalAgentsEnabled: false });
     const e = await t.prisma.event.findFirstOrThrow({ where: { action: "org.policies_update" } });
     expect(e).toMatchObject({ actorId: admin.id, orgId: admin.orgId });
     expect((e.meta as { changed: string[] }).changed.sort()).toEqual(["autoLockMinutes", "breachCheckAllowed", "extensionAllowed", "ipAllowlist", "minPasswordLength", "minPasswordScore", "offlineAllowed"]);
@@ -181,10 +181,13 @@ describe("personal-agents policy block", () => {
   const business = (u: U) => t2.prisma.organization.update({ where: { id: u.orgId }, data: { plan: "business", billingStatus: "active", seatsPaid: 20 } });
 
   it("defaults for {} and for a missing block; the block is part of the schema", () => {
-    const d = { allowed: true, maxPerMember: null, write: true, reveal: "approval" };
+    const d = { allowed: true, maxPerMember: null, write: true, reveal: "standing" };
     expect(policySchema.parse({}).personalAgents).toEqual(d);
     expect(readPolicies({}).personalAgents).toEqual(d);
     expect(readPolicies({}, { features: { policyEdit: false } as never }).personalAgents).toEqual(d);
+    // A stored choice is read as stored whatever the default is; only an organisation that never set it reads as standing.
+    for (const reveal of ["off", "approval"]) expect(readPolicies({ personalAgents: { reveal } }).personalAgents.reveal).toBe(reveal);
+    expect(readPolicies({ personalAgents: { allowed: false } }).personalAgents).toEqual({ ...d, allowed: false });
     for (const bad of [{ maxPerMember: 0 }, { maxPerMember: 21 }, { reveal: "always" }]) expect(policySchema.shape.personalAgents.safeParse(bad).success).toBe(false);
   });
 

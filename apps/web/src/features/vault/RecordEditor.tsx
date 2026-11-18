@@ -2,7 +2,7 @@ import { useRef, useState, type ElementType, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, Dices, Eye, EyeOff, Plus, Trash2, X } from "lucide-react";
 import {
   base32Decode, expiryValid, generatePassword, luhnValid, MAX_CUSTOM_FIELDS, MAX_FIELD_LABEL, templateOf, typeLabel,
-  FIELD_KINDS, defaultSecretRef, envKeys, type AgentPolicy, type AgentReveal, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
+  FIELD_KINDS, type CustomField, type FieldKind, type RecordBody, type RecordType, type TemplateField,
 } from "@clane-vault/crypto";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,9 +12,8 @@ import { SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { emptyField, groupCardNumber, KIND_LABEL, lowerFirst, PLACEHOLDER } from "./recordKinds";
-import { AgentPolicyEditor, agentPolicyError } from "./AgentPolicyEditor";
-import { AgentRevealEditor, agentRevealError } from "./AgentRevealEditor";
-import type { MyAgent } from "@/features/settings/myAgents";
+import { agentPolicyError } from "./AgentPolicyEditor";
+import { agentRevealError } from "./AgentSeeSection";
 import { envContentError, environmentOf, EnvFileField } from "./EnvFile";
 import { canFileInto, type VaultFolder } from "./types";
 
@@ -118,7 +117,7 @@ function cardHint(v: string) {
   return luhnValid(d) ? undefined : <span className="text-amber-700 dark:text-amber-500">This number doesn't pass the card check. Check it for typos.</span>;
 }
 
-export function RecordEditor({ mode, type, initial, folderId, folders, canMove: canMoveProp = true, noFolder = true, onSave, onCancel, TitleAs = "h2", files, agentUse = false, pathsLocked = false, standingReveal }: {
+export function RecordEditor({ mode, type, initial, folderId, folders, canMove: canMoveProp = true, noFolder = true, onSave, onCancel, TitleAs = "h2", files }: {
   mode: "create" | "edit"; type: RecordType; initial?: RecordBody; folderId: string | null; folders: VaultFolder[];
   /** "No folder" is a place (Personal); in an organisation records stay in its shared folders. */ noFolder?: boolean;
   /** Only the record owner can move it between folders. */ canMove?: boolean;
@@ -127,10 +126,6 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   TitleAs?: ElementType;
   /** The Files part at the bottom (features/attachments): uploads for an existing record, a queue for a new one. */
   files?: React.ReactNode;
-  /** Edit holders in an organisation, and owners in Personal while personal agents are on, get the Agent use section. */ agentUse?: boolean;
-  /** Methods and paths need the Business plan. */ pathsLocked?: boolean;
-  /** The owner's Personal item where the gateway and every policy allow reading without approval: the section, for these agents. */
-  standingReveal?: { agents: MyAgent[] };
 }) {
   const template = templateOf(type);
   const [title, setTitle] = useState(initial?.title ?? "");
@@ -140,10 +135,10 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
     (f.core ? (initial as unknown as Record<string, string | undefined> | undefined)?.[f.key] : initial?.data?.[f.key]) ?? ""])));
   const [fields, setFields] = useState<CustomField[]>(() => initial?.fields?.map((f) => ({ ...f })) ?? []);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  // Untouched, the stored policy is saved back as the same object (byte for byte).
-  const [policy, setPolicy] = useState<AgentPolicy | undefined>(initial?.agentPolicy);
-  // The same for standing reveal: kept as stored unless the section changes it (a client that drops it fails closed).
-  const [reveal, setReveal] = useState<AgentReveal | undefined>(initial?.agentReveal);
+  // Agent use is set in its own sheet (AgentUseSheet): here the stored policy is saved back as the same object, byte for byte.
+  const policy = initial?.agentPolicy;
+  // The same for what agents read without asking (agentReveal): set under Agent use, kept here as stored (a client that drops it fails closed).
+  const reveal = initial?.agentReveal;
   const [folder, setFolder] = useState<string | null>(folderId);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -162,7 +157,6 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
   const liveBody: RecordBody = { type, title, ...Object.fromEntries(template.filter((f) => f.core && values[f.key]).map((f) => [f.key, values[f.key]!])), ...(notes ? { notes } : {}), data, fields: keptFields };
   const revealError = agentRevealError(reveal, liveBody);
   const env = type === "envFile";
-  const showAgent = agentUse && (!!policy || defaultSecretRef(type) !== null || keptFields.some((f) => f.kind === "secret") || (env && envKeys(values.content ?? "").length > 0));
   // A dropped file names the item's File name and Environment, when those are still empty.
   const onEnvFile = (name: string) => setValues((x) => ({ ...x, fileName: x.fileName || name, environment: x.environment || environmentOf(name) }));
 
@@ -271,17 +265,9 @@ export function RecordEditor({ mode, type, initial, folderId, folders, canMove: 
           </Button>
         </section>
 
-        {showAgent && (
-          <section aria-label="Agent use" className="flex flex-col gap-2.5">
-            <h3 className="font-mono text-[10.5px] font-normal tracking-[.12em] text-text-tertiary uppercase">Agent use</h3>
-            <AgentPolicyEditor body={{ type, fields: keptFields, data }} value={policy} onChange={setPolicy} pathsLocked={pathsLocked} />
-            {policyError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{policyError}</p>}
-          </section>
-        )}
-        {standingReveal && (<>
-          <AgentRevealEditor body={liveBody} title={title.trim()} agents={standingReveal.agents} value={reveal} onChange={setReveal} />
-          {revealError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{revealError}</p>}
-        </>)}
+        {/* An edit that takes away what the item's Agent use names (a field, an env entry) is refused here. */}
+        {revealError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{revealError} Put it back, or change Let the AI see this value under Agent use first.</p>}
+        {policyError && <p role="alert" className="rounded-[9px] border border-[var(--red-tint-border)] bg-red-tint px-3 py-2 text-[13px] text-red-500">{policyError} Put it back, or change the item's Agent use first.</p>}
         <Field id="ed-folder" label="Folder">
           <Select value={elsewhere ? NO_FOLDER : folder ?? NO_FOLDER} onValueChange={(v) => setFolder(v === NO_FOLDER ? null : v)} disabled={!canMove}>
             <SelectTrigger id="ed-folder" className="w-full"><SelectValue /></SelectTrigger>

@@ -9,6 +9,7 @@ import { FILE } from "../../../../../packages/crypto/test/envFixture";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
 import { environmentOf, keepEol, readEnvFile } from "./EnvFile";
+import { AgentUseSheet } from "./AgentUseSheet";
 import { RecordEditor } from "./RecordEditor";
 import { RecordPanel } from "./RecordPanel";
 import VaultScreen from "./VaultScreen";
@@ -133,19 +134,21 @@ describe("the editor", () => {
     expect(saved(onSave).data!.content).toBe(FILE);
   });
 
-  it("Agent use: the Secret list is the file's keys, and env:<KEY> is stored", async () => {
-    const onSave = editor({ agentUse: true });
+  it("Agent use (its sheet): the Secret list is the file's keys, and env:<KEY> is stored", async () => {
+    const onSave = vi.fn(async (_b: RecordBody) => undefined);
+    const record: VaultRecord = { id: "r1", folderId: null, type: "item", revision: 1, updatedAt: "2026-11-15T09:00:00Z", deleted: false, permission: "owner", recordKey: new Uint8Array(32), body: stored };
+    render(<AgentUseSheet record={record} open onClose={vi.fn()} onSave={onSave} access={[]} />);
     await userEvent.type(screen.getByLabelText("Allowed hosts"), "api.stripe.com");
     await userEvent.click(screen.getByRole("combobox", { name: "Secret" }));
     expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual(["STRIPE_KEY", "PORT", "DB", "PW", "PW2", "A", "REF", "E", "T"]);
     await userEvent.click(screen.getByRole("option", { name: "STRIPE_KEY" }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(saved(onSave).agentPolicy).toEqual({ v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, secret: "env:STRIPE_KEY" });
+    expect(saved(onSave)).toEqual({ ...stored, agentPolicy: { v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, secret: "env:STRIPE_KEY" } });
   });
 
   it("removing the policy's key in Edit as text shows the validator's message and saves nothing", async () => {
     const policy = { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const }, secret: "env:STRIPE_KEY" };
-    const onSave = editor({ agentUse: true, initial: { ...stored, agentPolicy: policy } });
+    const onSave = editor({ initial: { ...stored, agentPolicy: policy } });
     expect(screen.queryByRole("alert")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Edit as text" }));
     fireEvent.change(screen.getByLabelText("File contents"), { target: { value: FILE.replace("export STRIPE_KEY = 'sk_live_1' # live\r\n", "") } });

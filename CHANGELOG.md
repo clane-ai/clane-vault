@@ -2,6 +2,22 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## Unreleased
+
+Upgrading: no migration. Upgrade the server, the gateway and the web app together. **Two defaults change, and both make reading values available without approval:**
+
+- **The gateway's `GATEWAY_REVEAL` now defaults to `standing`, not `off`. Operators who want every read approved must set `GATEWAY_REVEAL=approval`, and operators who want no reading of values must set `GATEWAY_REVEAL=off`, in `.env` before they upgrade the gateway.**
+- **The organisation policy *Reading values* now defaults to *Without approval*, not *With approval***, for new organisations and for every organisation whose stored policies carry no value for it. An admin who wants approval for each read, or no reading, sets it under **Policies → Personal agents → Reading values**. A stored value is never rewritten. Note that an organisation that saved its policies form on 1.9.0 or 1.9.1 has *With approval* stored, although nobody chose it there: it keeps *With approval* until an admin changes it.
+
+Nothing becomes readable by the upgrade itself: reading stays off for every item until its owner turns on *Let the AI see this value* for an agent. Owner decision, 2026-11-18: that setting is the consent, and from then on the agent reads the chosen fields without asking.
+
+- **Agent use is a button on the record**, beside **Edit** and **Share**, with a status (*Off*, *Use*, *See*, *Use + See*), and opens its own sheet. It is no longer a section at the bottom of the Edit form; a policy is added to a new record after it is saved. The sheet lists the agents that hold the item and how, takes allowed hosts as chips, offers *Bearer*, *Basic*, *Header* and *Query* side by side, and previews the request the service receives with the secret masked. **Remove agent use** takes the policy away. The policy is saved as before, inside the record's encrypted body.
+- **Let the AI see this value**, in the same sheet for your own Personal items: a switch per agent and a field picker (Username ticked where the item has one, the password never). A switch that is on reads **Without asking** by default, or **Ask me each time** for an approval in the web app before every read. The first time it is turned on for an item, one dialog asks: *"<agent> will be able to read <fields> of <title> whenever it needs them, without asking you. Clane Vault can't take back what it has read."* The button shows *See*, with an *asks first* marker when every agent asks first. *Without asking* gives the agent gateway the item's key, as *Can use* does.
+- **Reading without approval moved out of the Edit form** and lost its type-the-title step: it is the *Without asking* choice above. Items that already have it keep it.
+- Where an organisation or the server requires approval, or has reading off, the section says so (*Your organisation requires approval for each read*), and the restriction overrides the item's setting. The share sheet's *Can reveal* is unchanged: it is *Ask me each time*.
+- The share sheet's *This item has no Agent use settings yet* line opens the Agent use sheet.
+- `GATEWAY_REVEAL` defaults to `standing` and the *Reading values* policy to *Without approval* (`docs/agents.md`, *Letting an agent read a value*; `SECURITY.md`, which lists what this costs). An older gateway that reports no reveal setting is still treated as `off`.
+
 ## 1.9.1 — 2026-11-18
 
 Upgrading: no migration and no `.env` change. Web app only; the gateway is unchanged.

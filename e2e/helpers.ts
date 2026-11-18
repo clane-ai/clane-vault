@@ -105,6 +105,23 @@ export async function newRecord(page: Page, title: string, opts: { folder?: stri
   await expect(page.getByLabel("Title")).toHaveValue(title);
 }
 
+/**
+ * The open record's Agent use sheet (the header button beside Edit and Share): one allowed host, sent as a Bearer token
+ * (the default), optionally the entry to send (`secret`), then Save.
+ */
+export async function setAgentUse(page: Page, host: string, secret?: string): Promise<void> {
+  await page.getByRole("button", { name: /^Agent use/ }).click();
+  const sheet = page.getByRole("dialog", { name: /^Agent use:/ });
+  await sheet.getByLabel("Allowed hosts").fill(host);
+  await expect(sheet.getByRole("radio", { name: "Bearer" })).toBeChecked();
+  if (secret) {
+    await sheet.getByRole("combobox", { name: "Secret" }).click();
+    await page.getByRole("option", { name: secret, exact: true }).click();
+  }
+  await sheet.getByRole("button", { name: "Save" }).click();
+  await expect(sheet).toHaveCount(0, { timeout: 30_000 });
+}
+
 /** + New → Folder: a private folder (the Personal space). */
 export async function newFolder(page: Page, name: string): Promise<void> {
   await page.getByRole("button", { name: "New", exact: true }).click();

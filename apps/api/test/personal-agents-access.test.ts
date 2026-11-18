@@ -202,7 +202,7 @@ describe("GET /agent/sync for a personal agent", () => {
     expect(b).not.toHaveProperty("folders");
     expect(b).not.toHaveProperty("members");
     expect(b).toMatchObject({ owner: { userId: owner.id, publicKey: (await t.prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).publicKey },
-      agentId: agent.id, publicKey: agent.publicKey, kekId: "test-kek", expiresAt: null, reveal: [], deposits: [], policy: { write: true, reveal: "approval" } }); // the default organisation policy
+      agentId: agent.id, publicKey: agent.publicKey, kekId: "test-kek", expiresAt: null, reveal: [], deposits: [], policy: { write: true, reveal: "standing" } }); // the default organisation policy
     expect(b.wrappedPrivateKey).toMatch(/^k2\./);
     expect(b.records).toEqual([{ id: r.id, encBody: r.encBody, revision: 1, wrappedRecordKey: stored, write: false, deletedAt: null }]);
     expect(await t.prisma.event.findFirst({ where: { action: "agent.sync", actorId: agent.id } })).toMatchObject({ orgId: null });

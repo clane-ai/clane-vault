@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import {
   agentUpdateMessage, b64url, decryptRecordBody, encryptNewRecord, encryptRecordBody, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openPersonalAgentRecordKey, randomBytes,
-  openRevealStub, sha256B64, signGatewayMessage, signPersonalAgentKey,
+  openRevealStub, sha256B64, type RecordBody, signGatewayMessage, signPersonalAgentKey,
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
@@ -55,9 +55,9 @@ beforeEach(async () => {
   );
 });
 
-async function serveRecord(o: { agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
+async function serveRecord(o: { /** A login with a 2FA secret. */ totp?: boolean; /** The first agent reads these fields without asking (agentReveal). */ standing?: string[]; agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
   const id = crypto.randomUUID();
-  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw" }), title: "Stripe", ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
+  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw", ...(o.totp ? { totpSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" } : {}) }), title: "Stripe", ...(o.standing ? { agentReveal: { v: 1 as const, agents: [AGENT_ID], fields: o.standing } } : {}), ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
@@ -288,6 +288,207 @@ describe("Can reveal", () => {
     expect(within(section).getByRole("checkbox", { name: "STRIPE_KEY" })).not.toBeChecked();
     expect(within(section).queryByRole("checkbox", { name: /Contents/ })).toBeNull();
     expect(within(section).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+});
+
+/** What the sheet saved through the editor's save (VaultScreen passes it as `agentUse.onSave`): the bodies, in order. */
+let savedBodies: RecordBody[];
+const page = () => <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={["/p/vault"]}>
+  <VaultPage agentUse={{ pathsLocked: false, onSave: async (_r, body) => { savedBodies.push(body); } }} /></MemoryRouter></QueryClientProvider>;
+/** The record's panel with Agent use on in this space, and its sheet opened from the header. */
+async function openAgentUse(status: string) {
+  savedBodies = [];
+  render(page());
+  await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+  await userEvent.click(await screen.findByRole("button", { name: `Agent use: ${status}` }));
+  return screen.findByRole("dialog", { name: "Agent use: Stripe" });
+}
+
+describe("the Agent use sheet on a Personal item", () => {
+  const SEE = "Let the AI see this value";
+  const WITHOUT = "Without asking", ASK = "Ask me each time";
+  const everywhere = { rules: "standing", gateway: "standing" };
+  const toggleOf = (section: HTMLElement, name = "My bot") => within(section).getByRole("switch", { name: `Let ${name} see values from this item` });
+  const calls = () => {
+    const seen = { stub: null as { path: string; body: { sealedStub: string; fields: string[] } } | null, granted: [] as string[], unrevealed: [] as string[], revoked: [] as string[] };
+    server.use(
+      http.put("/api/v1/records/:id/agent-reveal/:agentId", async ({ params, request }) => { seen.stub = { path: `${params.id}/${params.agentId}`, body: (await request.json()) as never }; return HttpResponse.json({ ok: true }); }),
+      http.post("/api/v1/records/:id/agent-grants", async ({ request }) => { seen.granted.push(((await request.json()) as { agentId: string }).agentId); return HttpResponse.json({ ok: true }, { status: 201 }); }),
+      http.delete("/api/v1/records/:id/agent-reveal/:agentId", ({ params }) => { seen.unrevealed.push(String(params.agentId)); return HttpResponse.json({ ok: true }); }),
+      http.delete("/api/v1/records/:id/agent-grants/:agentId", ({ params }) => { seen.revoked.push(String(params.agentId)); return HttpResponse.json({ ok: true }); }),
+    );
+    return seen;
+  };
+
+  it("the share sheet's no-settings line opens it", async () => {
+    await serveRecord({ agentPolicy: false });
+    savedBodies = [];
+    render(page());
+    await userEvent.click(await screen.findByRole("button", { name: /^No folder/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Stripe/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Share" }));
+    const agents = await within(await screen.findByRole("dialog")).findByRole("region", { name: "Agents" });
+    expect(within(agents).getByText("This item has no Agent use settings yet, so the agent can't use it.")).toBeInTheDocument();
+    await userEvent.click(within(agents).getByRole("button", { name: "Set up Agent use" }));
+    expect(await screen.findByRole("dialog", { name: "Agent use: Stripe" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Share Stripe" })).toBeNull();
+  });
+
+  it("the summary names the agent that holds the item", async () => {
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const sheet = await openAgentUse("Use");
+    const status = within(sheet).getByRole("region", { name: "Status" });
+    expect(status).toHaveTextContent("1 agent can use this item.");
+    expect(await within(status).findByRole("listitem", { name: "My bot" })).toHaveTextContent("Use");
+  });
+
+  it("turning See on is the consent: Without asking by default, one dialog the first time, then the item's encrypted setting and the key", async () => {
+    reveal = everywhere;
+    await serveRecord({ totp: true });
+    const seen = calls();
+    const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    expect(section).toHaveTextContent("Off until you turn it on. Turning it on is your consent");
+    expect(within(section).queryByRole("note", { name: "Reading values here" })).toBeNull();
+    expect(toggleOf(section)).not.toBeChecked();
+    expect(within(section).queryByRole("checkbox")).toBeNull();
+    await userEvent.click(toggleOf(section));
+    expect(within(section).getByRole("radio", { name: new RegExp(WITHOUT) })).toBeChecked();
+    expect(within(section).getByRole("radio", { name: new RegExp(ASK) })).not.toBeChecked();
+    expect(within(section).getByText("The AI model reads these fields. Clane Vault can't take back what it has read.")).toBeInTheDocument();
+    expect(within(section).getByRole("note", { name: "Sharing with an agent" })).toBeInTheDocument();
+    expect(within(section).getByRole("checkbox", { name: "Username" })).toBeChecked();
+    expect(within(section).getByRole("checkbox", { name: "Password" })).not.toBeChecked();
+    await userEvent.click(within(section).getByRole("checkbox", { name: "Current one-time code" }));
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    // Nothing is saved before the dialog is answered, and there is no title to type.
+    const dialog = await screen.findByRole("dialog", { name: "Let My bot see this?" });
+    expect(dialog).toHaveTextContent("My bot will be able to read Username and Current one-time code of Stripe whenever it needs them, without asking you. Clane Vault can't take back what it has read.");
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    expect(savedBodies).toEqual([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(savedBodies).toEqual([]);
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Let My bot see this?" })).getByRole("button", { name: "Allow" }));
+    await waitFor(() => expect(seen.granted).toEqual([AGENT_ID]));
+    // The setting is in the record's body (the editor's save); the agent gets the item's key; no approval stub.
+    expect(savedBodies).toHaveLength(1);
+    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID], fields: ["totp", "username"] });
+    expect(savedBodies[0]).toMatchObject({ title: "Stripe", username: "sara", password: "pw", agentPolicy: { hosts: ["api.stripe.com"] } });
+    // The same fields as an approval stub too, so a later approval rule makes the agent ask instead of reading nothing.
+    await waitFor(() => expect(seen.stub?.body.fields).toEqual(["totp", "username"]));
+  });
+
+  it("Ask me each time is the approval way: a stub sealed to the agent, no key, and the record is not saved", async () => {
+    reveal = everywhere;
+    const { id } = await serveRecord();
+    const seen = calls();
+    const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    await userEvent.click(toggleOf(section));
+    await userEvent.click(within(section).getByRole("radio", { name: new RegExp(ASK) }));
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("dialog", { name: "Let My bot see this?" });
+    expect(dialog).toHaveTextContent("My bot will be able to read Username of Stripe after you approve each read. Clane Vault can't take back what it has read.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Allow" }));
+    await waitFor(() => expect(seen.stub).not.toBeNull());
+    expect(seen.stub!.path).toBe(`${id}/${AGENT_ID}`);
+    expect(seen.stub!.body.fields).toEqual(["username"]);
+    expect(await openRevealStub(seen.stub!.body.sealedStub, { ownerUserId: ME, agentId: AGENT_ID, recordId: id }, agentKeys)).toEqual({ title: "Stripe", type: "login", fields: ["username"] });
+    expect(seen.granted).toEqual([]);
+    expect(savedBodies).toEqual([]);
+  });
+
+  it("the dialog is for the first time on an item: a second agent is added without it, and shares the fields", async () => {
+    reveal = everywhere;
+    const SECOND = "cccccccc-0000-4000-8000-000000000003";
+    const kp = await generateKeyPair();
+    const pub = b64url.encode(kp.publicKey);
+    // The fixture's attestation names the first agent's id, so the second one's key is refused: the body is saved first.
+    agents = [...agents, row({ id: SECOND, name: "Second bot", publicKey: pub, attestation: await gw.attest(pub) })];
+    await serveRecord({ standing: ["username"], agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    calls();
+    const section = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    expect(within(section).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["Let My bot see values from this item", "Let Second bot see values from this item"]);
+    expect(within(section).getByRole("listitem", { name: "My bot" })).toHaveTextContent("Reads without asking: Username");
+    await userEvent.click(toggleOf(section, "Second bot"));
+    expect(within(section).getByText("Agents that read without asking share one list of fields.")).toBeInTheDocument();
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    expect(screen.queryByRole("dialog", { name: /^Let .* see this\?$/ })).toBeNull();
+    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID, SECOND], fields: ["username"] });
+  });
+
+  it("an organisation that requires approval overrides the item: Without asking can't be chosen, and the section says why", async () => {
+    reveal = { rules: "approval", gateway: "standing" };
+    await serveRecord();
+    calls();
+    const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    expect(within(section).getByRole("note", { name: "Reading values here" })).toHaveTextContent("Your organisation requires approval for each read.");
+    await userEvent.click(toggleOf(section));
+    expect(within(section).getByRole("radio", { name: new RegExp(WITHOUT) })).toBeDisabled();
+    expect(within(section).getByRole("radio", { name: new RegExp(ASK) })).toBeChecked();
+    cleanup();
+    // The operator's setting does the same, in its own words.
+    reveal = { rules: "standing", gateway: "approval" };
+    await serveRecord();
+    const again = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+    expect(within(again).getByRole("note", { name: "Reading values here" })).toHaveTextContent("This server requires approval for each read.");
+    cleanup();
+    // An agent set to read without asking falls back to asking, for the fields its stub names.
+    await serveRecord({ standing: ["username"], agentGrants: [{ agentId: AGENT_ID, use: true, write: false, reveal: ["username"] }] });
+    const third = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    expect(within(third).getByRole("listitem", { name: "My bot" })).toHaveTextContent("Reads without asking: Username (asks first for now)");
+  });
+
+  it("reading switched off says so on the item, and offers no switch", async () => {
+    for (const [r, words] of [[{ rules: "off", gateway: "standing" }, "Your organisation has turned reading values off."], [{ rules: "standing", gateway: "off" }, "Reading values is off on this server."]] as const) {
+      reveal = r;
+      await serveRecord();
+      const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
+      expect(within(section).getByRole("note", { name: "Reading values here" })).toHaveTextContent(words);
+      expect(within(section).queryByRole("switch")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("what is on can be turned off where it is no longer offered; without asking shows as paused", async () => {
+    reveal = { rules: "approval", gateway: "standing" };
+    await serveRecord({ standing: ["username"], agentPolicy: false, agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const seen = calls();
+    const section = await within(await openAgentUse("See")).findByRole("region", { name: SEE });
+    expect(within(section).getByRole("listitem", { name: "My bot" })).toHaveTextContent("Reads without asking: Username (paused)");
+    await userEvent.click(toggleOf(section));
+    await waitFor(() => expect(seen.revoked).toEqual([AGENT_ID]));
+    // The setting leaves the body, and the key it needed goes too: the item has no Agent use settings to use it with.
+    expect(savedBodies).toHaveLength(1);
+    expect(savedBodies[0]).not.toHaveProperty("agentReveal");
+  });
+
+  it("turning off Ask me each time takes the fields away (DELETE); the header marks an item whose agents all ask first", async () => {
+    reveal = everywhere;
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: false, write: false, reveal: ["username"] }] });
+    const seen = calls();
+    const section = await within(await openAgentUse("Use + See, asks first")).findByRole("region", { name: SEE });
+    expect(within(section).getByRole("listitem", { name: "My bot" })).toHaveTextContent("Asks first: Username");
+    expect(toggleOf(section)).toBeChecked();
+    await userEvent.click(toggleOf(section));
+    await waitFor(() => expect(seen.unrevealed).toEqual([AGENT_ID]));
+    expect(savedBodies).toEqual([]);
+  });
+
+  it("changing from Ask me each time to Without asking: the setting and the key go in, and the stub stays for an approval rule", async () => {
+    reveal = everywhere;
+    await serveRecord({ agentGrants: [{ agentId: AGENT_ID, use: false, write: false, reveal: ["username"] }] });
+    const seen = calls();
+    const section = await within(await openAgentUse("Use + See, asks first")).findByRole("region", { name: SEE });
+    await userEvent.click(within(section).getByRole("button", { name: "Change" }));
+    expect(within(section).getByRole("radio", { name: new RegExp(ASK) })).toBeChecked();
+    await userEvent.click(within(section).getByRole("radio", { name: new RegExp(WITHOUT) }));
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(seen.stub?.body.fields).toEqual(["username"]));
+    expect(seen.unrevealed).toEqual([]);
+    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID], fields: ["username"] });
+    expect(seen.granted).toEqual([AGENT_ID]);
   });
 });
 

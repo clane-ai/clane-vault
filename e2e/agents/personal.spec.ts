@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, settingsPage, switchSpace, totp } from "../helpers";
+import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setAgentUse, settingsPage, switchSpace, totp } from "../helpers";
 
 // Personal agents, Phase A end to end (docs/design/2026-11-15-personal-agents.md §3): a member (not an admin) enrols an
 // agent of their own, gives it one Personal item at Can use, uses it over MCP; the admin sees lifecycle only, can suspend it
@@ -127,6 +127,11 @@ test("1. the member creates and verifies a personal agent", async () => {
   for (const fp of await fingerprints.all()) await expect(fp).toHaveText(/[0-9A-Za-z]{4}/);
   await verify.getByRole("button", { name: "Matches" }).click();
   await expect(verify).toHaveCount(0, { timeout: 30_000 });
+  // Since 1.9.1 Matches opens Connect straight away: close it to see the row.
+  const connect = member.getByRole("dialog", { name: "Connect My helper" });
+  await expect(connect).toBeVisible({ timeout: 30_000 });
+  await member.keyboard.press("Escape");
+  await expect(connect).toHaveCount(0);
   await expect(myAgentRow(member).getByText("Active", { exact: true })).toBeVisible({ timeout: 30_000 });
 });
 
@@ -142,14 +147,12 @@ test("2. a Personal API key item, given to the agent at Can use, under the warni
   await newDlg.getByRole("button", { name: "Next" }).click();
   await member.getByLabel("Secret", { exact: true }).and(member.locator("input")).fill(CANARY);
   await member.getByLabel("Key ID", { exact: true }).fill(KEY_ID);
-  const agentUse = member.getByRole("region", { name: "Agent use" });
-  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
-  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
   await member.getByRole("button", { name: "Save" }).click();
   await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
   await member.getByRole("button", { name: /^No folder/ }).click();
   await member.getByRole("button", { name: /Echo/ }).click();
   await expect(member.getByRole("heading", { name: "Echo" })).toBeVisible({ timeout: 30_000 });
+  await setAgentUse(member, `echo.test:${echoPort}`);
 
   await member.getByRole("button", { name: "Share", exact: true }).click();
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
@@ -334,14 +337,7 @@ test("10. a .env file item: entries masked, a byte-identical download, found by 
 
 test("11. the agent sees the keys, never a value, and sends the one entry its Agent use names", async () => {
   await openRecord(member, "Billing env");
-  await member.getByRole("button", { name: "Edit", exact: true }).click();
-  const agentUse = member.getByRole("region", { name: "Agent use" });
-  await agentUse.getByLabel("Allowed hosts").fill(`echo.test:${echoPort}`);
-  await expect(agentUse.getByRole("combobox", { name: "Send it as" })).toHaveText("Bearer token");
-  await agentUse.getByRole("combobox", { name: "Secret" }).click();
-  await member.getByRole("option", { name: "STRIPE_KEY", exact: true }).click();
-  await member.getByRole("button", { name: "Save" }).click();
-  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await setAgentUse(member, `echo.test:${echoPort}`, "STRIPE_KEY");
 
   await member.getByRole("button", { name: "Share", exact: true }).click();
   const agents = member.getByRole("dialog").getByRole("region", { name: "Agents" });
@@ -473,19 +469,19 @@ async function setReading(label: "With approval" | "Without approval") {
   expect((await saved).ok()).toBe(true);
 }
 
-test("18. reading without approval: the admin allows it, the member turns it on by typing the title; no sheet", async () => {
+test("18. reading without asking: the policy allows it, the member picks Without asking in the Agent use sheet; no approval sheet", async () => {
   await setReading("Without approval");
   await unlock(member);
   await openRecord(member, "Echo");
-  await member.getByRole("button", { name: "Edit", exact: true }).click();
-  const section = member.getByRole("region", { name: "Reading without approval" });
-  await expect(section).toContainText("The AI model can read these fields whenever it asks. Nobody is asked first.", { timeout: 30_000 });
-  await section.getByRole("button", { name: "Turn on…" }).click();
-  await section.getByRole("checkbox", { name: "Key ID" }).check();
-  await section.getByRole("textbox", { name: "Type the item's title to let My helper read without approval" }).fill("Echo");
-  await section.getByRole("switch", { name: "My helper reads without approval" }).check();
-  await member.getByRole("button", { name: "Save" }).click();
-  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+  await member.getByRole("button", { name: /^Agent use/ }).click();
+  const section = member.getByRole("dialog", { name: "Agent use: Echo" }).getByRole("region", { name: "Let the AI see this value" });
+  // Echo already lets My helper ask for Key ID (test 14), so this is not the item's first time: no dialog.
+  await section.getByRole("button", { name: "Change" }).click({ timeout: 30_000 });
+  await section.getByRole("radio", { name: /Without asking/ }).click();
+  await expect(section.getByRole("checkbox", { name: "Key ID" })).toBeChecked();
+  await section.getByRole("button", { name: "Save" }).click();
+  await expect(section.getByRole("listitem", { name: "My helper" })).toContainText("Reads without asking: Key ID", { timeout: 30_000 });
+  await member.keyboard.press("Escape");
 
   expect(await ask(["data.keyId"])).toEqual({ fields: { "data.keyId": KEY_ID } });
   await expect(revealSheet(member)).toHaveCount(0);

@@ -25,7 +25,10 @@ export interface GatewayClient {
   /** A personal agent's key: the wrapper (k2.) and the attestation are bound to the owner's current public key. */
   createPersonalAgentKey(ids: { agentId: string; ownerUserId: string; ownerPublicKey: string }): Promise<AgentKeyResult>;
   dropAgent(agentId: string): Promise<void>;
-  /** GATEWAY_REVEAL as the gateway reports it on /internal/health; absent → "off". */
+  /**
+   * GATEWAY_REVEAL as the gateway reports it on /internal/health. Absent → "off": a gateway that says nothing is one from
+   * before reveal, whatever a current gateway's own default is ("standing").
+   */
   revealMode(): Promise<"off" | "approval" | "standing">;
 }
 

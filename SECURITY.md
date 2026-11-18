@@ -53,8 +53,8 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 | Records never shared to an agent | ciphertext only (unchanged) | nothing (no key reaches it) | nothing |
 | Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
 | Personal items with *Can use* (a person's own agent) | ciphertext only | **plaintext at use time**; could decrypt any time while the agent is live | names, hosts, policy; responses with the secret scrubbed |
-| Personal items with *Can reveal*, approval mode | ciphertext only; a stub sealed to the agent; the field names | **only the approved fields, per approved request**; never the record key | **the approved fields, in full** |
-| Personal items on standing reveal (*Reading without approval*) | ciphertext only | as *Can use*: plaintext at use time, could decrypt any time while the agent is live | **the listed fields, in full, whenever it asks** |
+| Personal items with *Ask me each time* (*Can reveal*, approval mode) | ciphertext only; a stub sealed to the agent; the field names | **only the approved fields, per approved request**; never the record key | **the approved fields, in full** |
+| Personal items read without asking (*Let the AI see this value* → *Without asking*, the default once See is on) | ciphertext only | as *Can use*: plaintext at use time, could decrypt any time while the agent is live | **the listed fields, in full, whenever it asks** |
 | Deposits and agent updates (a personal agent's `save_secret`, `update_secret`, `capture`) | ciphertext, a gateway signature, the previous version of an updated item | **plaintext at write time**, even for an item the agent is never given to use | for `save_secret` and `update_secret`, the value it supplied; for `capture`, only the new item's handle |
 | Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
 | Who used what, where, when | metadata events | metadata log | its own calls |
@@ -67,13 +67,22 @@ in the file while the grant lives, though the policy lets it send only one. Its 
 
 Residual risks, which no mitigation in this release removes:
 
-- **Reveal: the model sees values.** With `GATEWAY_REVEAL` set by the operator and *Can reveal* chosen by the owner for an
-  item, a personal agent's `get_secret` returns the approved fields. The value is then in the model's context, the
-  provider's logs and retention and the conversation, for good; the scrubber can't help. Approval in the web app limits
-  when a value is released, not what happens to it next. See [docs/agents.md](docs/agents.md#letting-an-agent-read-a-value).
-- **Reading without approval has no person in the loop.** Where the operator (`GATEWAY_REVEAL=standing`), every
-  organisation's policy and the item's own encrypted setting all allow it, the model reads the listed fields whenever it
-  asks. Off by default at every level.
+- **Reveal: the model sees values.** Where the owner turned on *Let the AI see this value* for an item (the operator has
+  not set `GATEWAY_REVEAL=off`, and no organisation's policy says off), a personal agent's `get_secret` returns the chosen
+  fields. Nothing is readable until an owner turns it on for an item. The value is then in the model's context, the
+  provider's logs and retention and the conversation, for good; the scrubber can't help. Approval in the web app, where
+  it is chosen or required, limits when a value is released, not what happens to it next. See
+  [docs/agents.md](docs/agents.md#letting-an-agent-read-a-value).
+- **Reading without asking is the default once an owner turns See on, and it has no person in the loop.** Owner decision,
+  2026-11-18: an item's See setting is the consent. The gateway's default (`GATEWAY_REVEAL=standing`) and the
+  organisation policy's default (*Without approval*) both allow it, so the only switch that is off by default is the
+  item's own encrypted setting (`agentReveal`). Once an owner sets it, the model reads the listed fields whenever it asks:
+  a prompt-injected agent can read them and send them on with nobody asked, and the gateway holds the item's key while
+  the agent is live. What limits it: per item, per agent and per field; a rate limit (`GATEWAY_REVEAL_PER_HOUR`); every
+  read logged for the owner (`agent.reveal`, `standing: true`). An owner picks *Ask me each time*, an admin sets *Reading
+  values* to *With approval* or *Off*, and an operator sets `GATEWAY_REVEAL=approval` or `off`, to require approval or
+  stop reading. An organisation whose stored policies already carry a value keeps it; one that never stored a value now
+  reads as *Without approval*.
 - **An MCP client that auto-approves tools auto-approves `get_secret`.** The control is the owner's approval inside Clane
   Vault (each request signed by the gateway and checked against the pinned identity before the browser seals anything),
   not the MCP client's tool approval.
@@ -108,7 +117,7 @@ Residual risks, which no mitigation in this release removes:
   attested owner key (`unverified` otherwise) and keeps only the fields it asked for.
 - **An editor of a shared Personal item can turn on reading without approval for the owner's agent.** Standing reveal is
   read from the item's encrypted body, and anyone the owner shares the item with as editor can write that body, including
-  `agentReveal`. With `GATEWAY_REVEAL=standing`, every policy at `standing` and the owner's agent holding *Can use* on the
+  `agentReveal`. With `GATEWAY_REVEAL=standing` and every policy at `standing` (both the defaults now, so this is live unless an operator or an admin restricts it) and the owner's agent holding *Can use* on the
   item, such an editor can let that agent read the listed fields with no approval the owner gave. The editor already
   knows the values, and can already change the item's agent hosts (`agentPolicy`), which is worse; don't share as editor
   an item you give an agent unless you trust that person with the agent too.
