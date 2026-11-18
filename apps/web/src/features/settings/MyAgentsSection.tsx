@@ -115,7 +115,8 @@ function MyAgentRow({ agent, canConnect, on }: { agent: MyAgent; canConnect: boo
       {agent.status !== "revoked" && (
         <div className="flex flex-wrap gap-1.5">
           {agent.status === "awaiting_verification" && <Button size="sm" aria-label={`Verify ${agent.name}`} onClick={on.verify}>Verify</Button>}
-          {agent.status === "active" && !reEnrol && canConnect && <Button size="sm" variant="outline" aria-label={`Connect ${agent.name}`} onClick={on.connect}>Connect</Button>}
+          {/* Only once this browser checked the binding: what a connected agent saves is sealed to the owner key the server reports. */}
+          {agent.status === "active" && attest.data === true && canConnect && <Button size="sm" variant="outline" aria-label={`Connect ${agent.name}`} onClick={on.connect}>Connect</Button>}
           <Button size="sm" variant="ghost" aria-label={`Activity of ${agent.name}`} onClick={on.activity}>Activity</Button>
           <Button size="sm" variant="ghost" aria-label={`Edit ${agent.name}`} onClick={on.edit}>Edit</Button>
           <Button size="sm" variant="ghost" aria-label={`Revoke ${agent.name}`} onClick={on.revoke}>Revoke</Button>

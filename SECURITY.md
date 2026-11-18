@@ -79,8 +79,14 @@ Residual risks, which no mitigation in this release removes:
   without the owner's Keep, so the server can't plant one in a vault.
 - **A malicious server can substitute the key the agent holds for an item with *Agent can update* and read what the
   agent next writes to it.** The agent's copy of a record key is sealed to its public key, which anyone can seal to, and
-  the gateway can't tell a substituted one from the owner's. Unkept deposits are not affected: the gateway updates a
-  deposit only if it carries the gateway's own signature over that body.
+  the gateway can't tell a substituted one from the owner's. Unkept deposits are not affected by this substitution: the
+  gateway updates a deposit only if it carries the gateway's own signature over that body.
+- **A malicious server can bind a new personal agent to its own key instead of the owner's.** Only the owner's browser
+  checks the binding; `verifiedAt` is server state. The verify dialog shows the mismatch ("bound to a different account
+  key"), and an agent that failed it must not be connected, or everything it saves (`save_secret`, `capture`) is sealed
+  to the server's key and readable by the server. *Connect* in Settings → My agents appears only after this browser
+  checked the binding, but the OAuth consent page doesn't check it yet. Items given to the agent to use are not affected:
+  grants and Keep check the binding in the browser before sealing.
 - **The gateway sees what it writes.** It encrypts a saved or updated value itself, so it sees it even if the agent is
   never given that item to use. With `save_secret` and `update_secret` the model supplied the value, so it has seen it
   too; `capture` keeps a created credential away from the model.

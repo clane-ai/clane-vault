@@ -158,7 +158,18 @@ describe("Settings → My agents", () => {
     expect(within(bad).queryByRole("button", { name: "Connect My bot" })).not.toBeInTheDocument();
     const good = screen.getByRole("listitem", { name: "Good bot" });
     expect(within(good).getByText("Active")).toBeInTheDocument();
-    expect(within(good).getByRole("button", { name: "Connect Good bot" })).toBeInTheDocument();
+    expect(await within(good).findByRole("button", { name: "Connect Good bot" })).toBeInTheDocument();
+  });
+
+  it("no Connect until this browser has checked the agent's binding (no personal pin here, or locked)", async () => {
+    const gw = await newGateway();
+    gwIdentity = gw.identity;
+    const pub = await agentKey();
+    agents = [row({ publicKey: pub, attestation: await gw.attest(AGENT_ID, pub) })];
+    renderSection();
+    const r = await screen.findByRole("listitem", { name: "My bot" });
+    expect(within(r).getByRole("button", { name: "Edit My bot" })).toBeInTheDocument();
+    expect(within(r).queryByRole("button", { name: "Connect My bot" })).not.toBeInTheDocument();
   });
 
   it("the personal Connect sheet has the same instructions for the model and skill command", async () => {
