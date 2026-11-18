@@ -154,6 +154,15 @@ describe("PUT /agent/records/:id", () => {
     expect((await call(owner, "PATCH", `/records/${randomUUID()}/agent-grants/${agent.id}`, { write: true })).statusCode).toBe(404);
   });
 
+  it("PATCH write: true makes a grant's checks (a trashed item: in_trash); write: false is still allowed", async () => {
+    const { owner, agent } = await setup();
+    const r = await granted(owner, agent);
+    await t.prisma.record.update({ where: { id: r.id }, data: { deletedAt: new Date() } });
+    const on = await call(owner, "PATCH", `/records/${r.id}/agent-grants/${agent.id}`, { write: true });
+    expect([on.statusCode, on.json()]).toEqual([409, { error: "in_trash" }]);
+    expect((await call(owner, "PATCH", `/records/${r.id}/agent-grants/${agent.id}`, { write: false })).statusCode).toBe(200);
+  });
+
   it("not_writable under a write: false policy (and the sync's write is false), and after a move into a team folder", async () => {
     const { owner, agent, access } = await setup();
     const r = await granted(owner, agent, { write: true });
