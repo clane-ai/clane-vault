@@ -26,6 +26,8 @@ import { useSpacePaths } from "@/lib/space";
 import { planMessage, useLocked } from "@/features/admin/plan";
 import { agentsOff, useGateway } from "@/features/admin/agents";
 import { useMyAgents } from "@/features/settings/myAgents";
+import { grantStandingAgents, standingOn } from "./AgentRevealEditor";
+import { liveAgents } from "./RecordAgentsSection";
 
 type Editing = ({ mode: "create" } & NewRecordStart) | { mode: "edit"; id: string; newPassword?: string } | null;
 
@@ -55,6 +57,8 @@ export default function VaultScreen() {
   const migrateOrg = org ? (org.role !== "member" ? org : null) : orgs.find((o) => o.role !== "member") ?? null;
   const recordHint = team && !v.isLoading && !v.folders.some(canFileInto) ? "Create a shared folder first" : undefined;
   const current = editing?.mode === "edit" ? v.records.find((r) => r.id === editing.id) : undefined;
+  // Reading without approval: the owner's Personal items only, with the gateway and every policy at standing.
+  const standing = !org && standingOn(mine.data) && editing?.mode === "edit" && current?.permission === "owner" && !current.sharedBy && !!current.recordKey;
   // Files picked for a record that doesn't exist yet: uploaded right after its first save (docs/attachments.md).
   const [queue, setQueue] = useState<File[]>([]);
   const oapi = useOrgApi();
@@ -95,6 +99,8 @@ export default function VaultScreen() {
       }
       else if (current) {
         await v.updateRecord(current, body);
+        // Reading without approval needs the agent to hold the item's key, as Can use does.
+        if (standing) await grantStandingAgents(current, body, liveAgents(mine.data?.agents), v.grantAgent);
         // Moving re-wraps the record key for the target folder (team folders) or drops the folder wrap (private).
         if (folderId !== current.folderId && current.permission === "owner") await v.moveRecord(current, folderId);
         toast.success("Saved");
@@ -123,6 +129,7 @@ export default function VaultScreen() {
             <RecordEditor key={editing.mode === "edit" ? `${editing.id}-${current?.revision}` : "new"} TitleAs={SheetTitle}
               mode={editing.mode} type={editing.mode === "create" ? editing.type : (current?.body?.type ?? "login")}
               initial={editing.mode === "create" ? { type: editing.type, title: editing.title } : initial} folderId={editing.mode === "create" ? editing.folderId : current?.folderId ?? null} folders={v.folders} agentUse={(team ? !agentsOff(gw.error) : !!mine.data) && (editing.mode === "create" || current?.permission === "owner" || current?.permission === "edit")} pathsLocked={pathsLocked} canMove={editing.mode === "create" || current?.permission === "owner"} noFolder={!team}
+              standingReveal={standing ? { agents: liveAgents(mine.data?.agents) } : undefined}
               onSave={save} onCancel={closeEditor}
               files={!limits.enabled || offline ? undefined : editing.mode === "create" ? <QueuedFiles queue={queue} onChange={setQueue} /> : current?.body ? <EditorFiles record={current} /> : undefined} />
           )}

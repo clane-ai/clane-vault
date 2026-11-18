@@ -54,6 +54,7 @@ deliberate exception to zero-knowledge, limited to what is shared with an agent:
 | Records in folders, groups or shares an agent holds | ciphertext only | **plaintext at use time**, and *could* decrypt at any time while the agent is live (it holds the wrapped key and the KEK) | names, hosts, policy; responses with the secret scrubbed |
 | Personal items with *Can use* (a person's own agent) | ciphertext only | **plaintext at use time**; could decrypt any time while the agent is live | names, hosts, policy; responses with the secret scrubbed |
 | Personal items with *Can reveal*, approval mode | ciphertext only; a stub sealed to the agent; the field names | **only the approved fields, per approved request**; never the record key | **the approved fields, in full** |
+| Personal items on standing reveal (*Reading without approval*) | ciphertext only | as *Can use*: plaintext at use time, could decrypt any time while the agent is live | **the listed fields, in full, whenever it asks** |
 | Deposits and agent updates (a personal agent's `save_secret`, `update_secret`, `capture`) | ciphertext, a gateway signature, the previous version of an updated item | **plaintext at write time**, even for an item the agent is never given to use | for `save_secret` and `update_secret`, the value it supplied; for `capture`, only the new item's handle |
 | Agent private key | KMS-wrapped envelope only | plaintext in memory per call; wrapped at rest | never |
 | Who used what, where, when | metadata events | metadata log | its own calls |
@@ -66,6 +67,9 @@ Residual risks, which no mitigation in this release removes:
   item, a personal agent's `get_secret` returns the approved fields. The value is then in the model's context, the
   provider's logs and retention and the conversation, for good; the scrubber can't help. Approval in the web app limits
   when a value is released, not what happens to it next. See [docs/agents.md](docs/agents.md#letting-an-agent-read-a-value).
+- **Reading without approval has no person in the loop.** Where the operator (`GATEWAY_REVEAL=standing`), every
+  organisation's policy and the item's own encrypted setting all allow it, the model reads the listed fields whenever it
+  asks. Off by default at every level.
 - **An MCP client that auto-approves tools auto-approves `get_secret`.** The control is the owner's approval inside Clane
   Vault (each request signed by the gateway and checked against the pinned identity before the browser seals anything),
   not the MCP client's tool approval.

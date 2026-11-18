@@ -10,7 +10,8 @@ import { adminPage, newInvite, newOrg, newSharedFolder, saveRecoveryKit, setting
 // by policy; Phase B (§4): the agent saves a secret to the owner's inbox, which the owner keeps, updates one it may update
 // (the owner restores the previous value) and captures a credential an upstream creates; a move into a team folder takes the
 // item away; revoke ends it. Phase C (§5): the agent reads a value the owner allowed, after the owner approves it in the
-// web app (GATEWAY_REVEAL=approval).
+// web app; Phase D (§5.6): reading without approval once the admin's policy, the gateway (GATEWAY_REVEAL=standing) and
+// the item's own setting all allow it.
 test.describe.configure({ mode: "serial" });
 
 const PW = "an e2e master password";
@@ -341,7 +342,48 @@ test("13. with the vault locked nobody answers: get_secret says pending, with a 
   await expect(revealSheet(member)).toHaveCount(0, { timeout: 30_000 });
 });
 
-test("14. moved into a team folder the item leaves the agent; revoke ends it", async () => {
+async function setReading(label: "With approval" | "Without approval") {
+  await adminPage(admin, "Policies");
+  const block = admin.getByRole("region", { name: "Personal agents" });
+  await block.getByRole("combobox", { name: "Reading values" }).click();
+  await admin.getByRole("option", { name: label, exact: true }).click();
+  const saved = admin.waitForResponse((r) => r.url().endsWith("/admin/settings/policies/personal-agents") && r.request().method() === "PUT");
+  await block.getByRole("button", { name: "Save personal agents" }).click();
+  expect((await saved).ok()).toBe(true);
+}
+
+test("14. reading without approval: the admin allows it, the member turns it on by typing the title; no sheet", async () => {
+  await setReading("Without approval");
+  await unlock(member);
+  await openRecord(member, "Echo");
+  await member.getByRole("button", { name: "Edit", exact: true }).click();
+  const section = member.getByRole("region", { name: "Reading without approval" });
+  await expect(section).toContainText("The AI model can read these fields whenever it asks. Nobody is asked first.", { timeout: 30_000 });
+  await section.getByRole("button", { name: "Turn on…" }).click();
+  await section.getByRole("checkbox", { name: "Key ID" }).check();
+  await section.getByRole("textbox", { name: "Type the item's title to let My helper read without approval" }).fill("Echo");
+  await section.getByRole("switch", { name: "My helper reads without approval" }).check();
+  await member.getByRole("button", { name: "Save" }).click();
+  await expect(member.getByRole("button", { name: "Save" })).toHaveCount(0, { timeout: 30_000 });
+
+  expect(await ask(["data.keyId"])).toEqual({ fields: { "data.keyId": KEY_ID } });
+  await expect(revealSheet(member)).toHaveCount(0);
+  await settingsPage(member, "My agents");
+  await myAgentRow(member).getByRole("button", { name: "Activity of My helper" }).click();
+  const activity = member.getByRole("dialog", { name: "My helper: activity" });
+  await expect(activity.getByRole("listitem").filter({ hasText: /agent\.reveal(?!_)/ })).toHaveCount(2, { timeout: 30_000 });
+  await member.keyboard.press("Escape");
+});
+
+test("15. back to With approval: the same call opens the sheet again", async () => {
+  await setReading("With approval");
+  const pending = ask(["data.keyId"]);
+  const sheet = revealSheet(member);
+  await sheet.getByRole("button", { name: "Allow once" }).click({ timeout: 30_000 });
+  expect(await pending).toEqual({ fields: { "data.keyId": KEY_ID } });
+});
+
+test("16. moved into a team folder the item leaves the agent; revoke ends it", async () => {
   // A personal record reaches the organisation's space only while it is shared there: share it with the admin, then move it.
   await member.getByRole("link", { name: /^Vault/ }).click();
   await switchSpace(member, { firstOrg: true });

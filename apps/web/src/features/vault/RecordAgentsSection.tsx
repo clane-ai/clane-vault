@@ -113,6 +113,7 @@ export function RecordAgentsSection({ record, onGrant, onRevoke, onSetWrite, onS
                   {(revealOn || shown.has(a.id)) && <><SelectItem value="reveal">Can reveal</SelectItem><SelectItem value="both">Can use and reveal</SelectItem></>}
                 </SelectContent>
               </Select>
+              {record.body?.agentReveal?.agents.includes(a.id) && <span className="w-full pl-11 text-[12.5px] font-medium text-orange-ink">Reads without approval</span>}
               {shown.has(a.id) && picking?.agentId !== a.id && (
                 <p className="w-full pl-11 text-[12.5px] text-text-secondary">
                   Can read: {shown.get(a.id)!.map((f) => revealFieldLabel(record.body!, f)).join(", ")}

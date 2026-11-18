@@ -299,6 +299,8 @@ Agent access lets cloud AI agents (Claude, ChatGPT, the Claude and OpenAI APIs, 
 
 **Letting personal agents read values** is off: `get_secret` answers `reveal_off` until you set `GATEWAY_REVEAL=approval` in `.env` and restart the gateway. Then an owner can mark fields of a Personal item *Can reveal*, and each read waits for the owner to approve it in the web app. A value an agent reads is disclosed to the AI model and its provider for good (`docs/agents.md`, *Letting an agent read a value*; `SECURITY.md`), so decide whether your server offers it at all. `GATEWAY_REVEAL_PER_HOUR` (default 10) caps new requests per agent per hour.
 
+`GATEWAY_REVEAL=standing` also allows **reading without approval**: where every organisation's policy allows it and an owner turns it on for an item, the agent reads those fields whenever it asks, with nobody asked first. Only set it if your users need unattended agents and accept that the AI model then sees those values with no person in the loop.
+
 Rules the gateway checks at start:
 - `GATEWAY_PUBLIC_URL` on the API and the gateway's `PUBLIC_URL` must be **exactly** the same string (the compose file passes the one value to both). It is the token audience.
 - The gateway's `API_URL` must be https, or plain http to a private network name or address (as in the compose file). After changing the API's `PUBLIC_URL`, restart the gateway too (`docker compose restart gateway`): it checks the API's issuer, which is `PUBLIC_URL`.

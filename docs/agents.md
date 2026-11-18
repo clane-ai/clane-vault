@@ -213,6 +213,20 @@ Read refusal reasons: `reveal_off` (the operator, an organisation's policy or th
 
 Events, visible to the owner and in no organisation's log: `agent.item_reveal_on` and `agent.item_reveal_off`, then per request `agent.reveal_request`, `agent.reveal` (field names, never values), `agent.reveal_denied` or `agent.reveal_expired`. **Revoke** also lists the fields the agent was shown: *These fields were shown to the AI model. Change them.*
 
+### Reading without approval
+
+For an unattended agent, an owner can let it read chosen fields of one item **with nobody asked first**. This gives up "the model never sees plaintext" with no person in the loop: whenever the agent asks, the value goes to the model.
+
+It is off unless all three switches are on:
+
+1. the gateway's operator sets `GATEWAY_REVEAL=standing`. Whether a server offers this at all is the operator's decision, and by default it does not;
+2. every organisation the person belongs to sets *Reading values* to *Without approval* (`personalAgents.reveal: "standing"`, `docs/policies.md`);
+3. the item's own setting, inside its encrypted body, lists the agent and the fields.
+
+The setting is **Reading without approval** in the item's editor (the owner's Personal items only, shown only when the first two are on). Per verified agent there is a switch and the same field picker as *Can reveal*; turning a switch on needs the item's title typed exactly, under *"The AI model can read these fields whenever it asks. Nobody is asked first."* Saving writes `agentReveal: { v: 1, agents, fields }` into the item's encrypted body, so the server can neither add an agent nor widen the fields, and gives each listed agent the item's key (as *Can use* does, with the same attestation check). The share sheet then shows *Reads without approval* beside that agent. An app from before this setting drops it when it saves the item, so reading without approval stops (it fails closed); open the editor again to turn it back on.
+
+`get_secret` then returns the listed fields at once: the gateway decrypts the item, checks that its `agentReveal` names the agent and every asked field, and asks the API to log the read (`agent.reveal` with `standing: true`) before it releases anything. If any of the three switches is off, or a field isn't listed, the request goes the approval way instead (an item can have both). `list_secrets` shows `reveal.approval: false` for such an item.
+
 **Connecting a client.** **Connect** in My agents opens the same sheet: the URL, the snippets and **Create API token**. OAuth flows end on the consent page, which lists *Your agents*: you may allow your own agent there without being an admin.
 
 **What admins see and don't see.** The owner sees everything their agent did under **My agents → Activity** (`agent.use`, `agent.refused`, `agent.reflected`, with the item, host and method); those rows belong to no organisation. An admin sees, in their organisation's event log, lifecycle only, for members of that organisation: `personal_agent.create`, `personal_agent.verify`, `personal_agent.revoke`, `personal_agent.connect` (a token or OAuth grant was created) and `personal_agent.suspended`, each with the member as actor and the agent's id in `meta`. No agent name, item, title, host, count or mode. **Admin → Agents** has one line, *Personal agents: n across m members*, which opens a per-member count. An admin can't tell whether a member's agent holds one test key or two hundred passwords, and can't read, list or revoke it: an organisation that needs that control switches personal agents off and uses organisation agents. A row goes to each organisation the member belongs to, so a person in two organisations discloses "has a personal agent" to both.
@@ -271,7 +285,7 @@ On the **gateway**:
 | `GATEWAY_CACHE_TTL_SECONDS` | 60 | How long an agent's opened key and sync data stay in memory. `0`: a KMS call per request. |
 | `GATEWAY_AGENT_RATE_PER_MINUTE` | 60 | `http_request` calls per agent per minute. |
 | `GATEWAY_WRITE_PER_HOUR` | 20 | `save_secret`, `update_secret` and `http_request` with `capture`, together, per personal agent per hour. |
-| `GATEWAY_REVEAL` | off | `off`, `approval` or `standing`. Whether `get_secret` can return a value at all: `approval` lets owners allow reading values, each read approved in the web app; `standing` adds reading without approval (Phase D). Anything else stops the gateway with `config_error`. |
+| `GATEWAY_REVEAL` | off | `off`, `approval` or `standing`. Whether `get_secret` can return a value at all: `approval` lets owners allow reading values, each read approved in the web app; `standing` also allows reading without approval (see [Reading without approval](#reading-without-approval)). Anything else stops the gateway with `config_error`. |
 | `GATEWAY_REVEAL_PER_HOUR` | 10 | New `get_secret` requests per personal agent per hour. |
 | `GATEWAY_MAX_RESPONSE_BYTES` | 4194304 | Response cap, after decompression; longer responses are cut and marked `truncated`. |
 | `GATEWAY_UPSTREAM_TIMEOUT_MS` | 30000 | Total time for an outbound call, redirects included. |
