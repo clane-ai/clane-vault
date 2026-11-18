@@ -236,6 +236,15 @@ describe("record types in the list", () => {
     expect(recordSubtitle({ type: "softwareLicence", title: "x", data: { product: "Office", licenceKey: "K" } })).toBe("Office");
     expect(recordSubtitle({ type: "card", title: "x" })).toBe("Payment card");
   });
+  it("an env file: subtitle and search name keys, never a value", () => {
+    const env: RecordBody = { type: "envFile", title: "Billing", data: { project: "billing", content: "STRIPE_KEY=sk_live_1\nEMPTY=\n" } };
+    expect(recordSubtitle(env)).toBe("billing");
+    expect(recordSubtitle({ type: "envFile", title: "x", data: { project: "billing", environment: "production" } })).toBe("billing · production");
+    expect(recordSubtitle({ type: "envFile", title: "x", data: { fileName: ".env.local" } })).toBe(".env.local");
+    expect(recordSubtitle({ type: "envFile", title: "x" })).toBe(".env file");
+    expect(searchableText(env)).toContain("STRIPE_KEY");
+    expect(searchableText(env).some((t) => t.includes("sk_live_1"))).toBe(false);
+  });
 });
 
 describe("search and the type filter", () => {

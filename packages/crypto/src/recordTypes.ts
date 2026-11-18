@@ -8,7 +8,7 @@
  */
 
 export const RECORD_TYPES = [
-  "login", "note", "card", "bankAccount", "server", "database", "sshKey", "apiKey", "wifi", "softwareLicence", "identity", "address", "contact", "membership",
+  "login", "note", "card", "bankAccount", "server", "database", "sshKey", "apiKey", "wifi", "softwareLicence", "identity", "address", "contact", "membership", "envFile",
 ] as const;
 export type RecordType = (typeof RECORD_TYPES)[number];
 
@@ -72,6 +72,12 @@ const DEFS: readonly RecordTypeDef[] = [
     { key: "keyId", label: "Key ID", kind: "text", mono: true },
     { key: "secret", label: "Secret", kind: "secret", mono: true },
     { key: "endpoint", label: "Endpoint", kind: "url", placeholder: "https://api.example.com" },
+  ] },
+  { id: "envFile", label: ".env file", group: "access", fields: [
+    { key: "project",     label: "Project",     kind: "text" },
+    { key: "environment", label: "Environment", kind: "text", placeholder: "production" },
+    { key: "fileName",    label: "File name",   kind: "text", mono: true, placeholder: ".env" },
+    { key: "content",     label: "Contents",    kind: "hiddenMultiline", mono: true, placeholder: "KEY=value" },
   ] },
   { id: "wifi", label: "Wi-Fi", group: "access", fields: [
     { key: "ssid", label: "Network name (SSID)", kind: "text" },

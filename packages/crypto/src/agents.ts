@@ -1,4 +1,5 @@
 import { b64url, utf8 } from "./encoding.js";
+import { envKeys, envValue } from "./envFile.js";
 import { coreKeysOf, dataKeysOf, type RecordType } from "./recordTypes.js";
 import type { RecordBody } from "./records.js";
 import { openSealed, sealTo } from "./seal.js";
@@ -56,7 +57,7 @@ function cleanInject(i: unknown): AgentInject {
 }
 
 /** Throws Error with a readable message; returns the cleaned policy (hosts lower-cased). */
-export function validateAgentPolicy(p: unknown, body: Pick<RecordBody, "type" | "fields">): AgentPolicy {
+export function validateAgentPolicy(p: unknown, body: Pick<RecordBody, "type" | "fields" | "data">): AgentPolicy {
   if (!p || typeof p !== "object" || Array.isArray(p)) return fail("must be an object");
   const o = p as Record<string, unknown>;
   onlyKeys(o, ["v", "hosts", "inject", "secret", "methods", "paths", "approval"], "policy");
@@ -65,9 +66,11 @@ export function validateAgentPolicy(p: unknown, body: Pick<RecordBody, "type" | 
   const out: AgentPolicy = { v: 1, hosts: (o.hosts as unknown[]).map(cleanHost), inject: cleanInject(o.inject) };
   if (o.secret !== undefined) {
     const s = o.secret;
+    if (body.type === "envFile" && s === "data.content") fail("an env file is injected one entry at a time");
     const okRef = typeof s === "string" && (
       (s === "password" && (coreKeysOf(body.type) as string[]).includes("password")) ||
       (s.startsWith("data.") && dataKeysOf(body.type).includes(s.slice(5))) ||
+      (s.startsWith("env:") && body.type === "envFile" && envKeys(body.data?.content ?? "").includes(s.slice(4))) ||
       (s.startsWith("field:") && !!body.fields?.some((f) => f.id === s.slice(6))));
     if (!okRef) fail("secret names a field this record doesn't have");
     out.secret = s as string;
@@ -96,7 +99,7 @@ export function defaultSecretRef(type: RecordType): string | null {
 export function agentSecretOf(body: RecordBody): string | null {
   const ref = body.agentPolicy?.secret ?? defaultSecretRef(body.type);
   if (!ref) return null;
-  const v = ref === "password" ? body.password : ref.startsWith("data.") ? body.data?.[ref.slice(5)] : body.fields?.find((f) => f.id === ref.slice(6))?.value;
+  const v = ref === "password" ? body.password : ref.startsWith("env:") ? envValue(body.data?.content ?? "", ref.slice(4)) : ref.startsWith("data.") ? body.data?.[ref.slice(5)] : body.fields?.find((f) => f.id === ref.slice(6))?.value;
   return v ? v : null;
 }
 

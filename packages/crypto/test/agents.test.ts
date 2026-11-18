@@ -4,6 +4,7 @@ import {
   generateIdentityKeyPair, gatewayKeyId, signAgentKey, verifyAgentAttestation, b64url,
   personalAgentKeyMessage, personalAgentPrivateKeyAad, personalAgentRecordAad, signPersonalAgentKey, verifyPersonalAgentAttestation,
   verifyGatewayMessage, sealPersonalAgentRecordKey, openPersonalAgentRecordKey, generateKeyPair, randomBytes,
+  normalizeRecordBody, encryptRecordBody, decryptRecordBody, aeadEncrypt, utf8, type RecordBody,
   sha256B64, agentDepositOwnerAad, agentDepositMessage, agentUpdateMessage, sealDepositKeyToOwner, openDepositKey,
 } from "../src/index.js";
 
@@ -37,6 +38,34 @@ describe("agent policy", () => {
     expect(agentSecretOf({ v: 2, type: "apiKey", title: "S", agentPolicy })).toBeNull();
     expect(basicUsername({ v: 2, type: "apiKey", title: "S", data: { keyId: "kid" } })).toBe("kid");
     expect(basicUsername({ v: 2, type: "login", title: "S", username: "u" })).toBe("u");
+  });
+});
+
+describe("env file references", () => {
+  const body = { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\nEMPTY=\n" } };
+  const pol = (secret?: string) => ({ v: 1, hosts: ["api.stripe.com"], inject: { kind: "bearer" }, ...(secret ? { secret } : {}) });
+
+  it("validates env:<KEY> against the file's keys; no default, no whole file", () => {
+    expect(validateAgentPolicy(pol("env:STRIPE_KEY"), body).secret).toBe("env:STRIPE_KEY");
+    for (const bad of [pol(), pol("env:NOPE"), pol("data.content"), pol("env:")]) expect(() => validateAgentPolicy(bad, body)).toThrow();
+    expect(() => validateAgentPolicy(pol("env:STRIPE_KEY"), { type: "apiKey" })).toThrow();
+    expect(defaultSecretRef("envFile")).toBeNull();
+  });
+
+  it("reads the entry's value; an empty one is null", () => {
+    expect(agentSecretOf({ ...body, title: "T", agentPolicy: pol("env:STRIPE_KEY") as RecordBody["agentPolicy"] })).toBe("sk_live_1");
+    expect(agentSecretOf({ ...body, title: "T", agentPolicy: pol("env:EMPTY") as RecordBody["agentPolicy"] })).toBeNull();
+  });
+
+  it("a write that drops the policy's key is refused; a stored one reads without the policy", async () => {
+    const stale = { v: 2 as const, type: "envFile" as const, title: "T", data: { content: "OTHER=1" }, agentPolicy: pol("env:STRIPE_KEY") as RecordBody["agentPolicy"] };
+    expect(() => normalizeRecordBody(stale)).toThrow();
+    const ok = { ...stale, data: body.data };
+    const id = "r1", rk = randomBytes(32);
+    expect(await decryptRecordBody(id, await encryptRecordBody(id, ok, rk), rk)).toEqual({ ...ok, agentPolicy: pol("env:STRIPE_KEY") }); // normalize is a fixpoint
+    const enc = await aeadEncrypt(rk, utf8.encode(JSON.stringify(stale)), `record-body:${id}`);
+    const read = await decryptRecordBody(id, enc, rk);
+    expect(read).toEqual({ v: 2, type: "envFile", title: "T", data: { content: "OTHER=1" } });
   });
 });
 

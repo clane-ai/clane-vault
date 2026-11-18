@@ -1,6 +1,7 @@
 import { aeadDecrypt, aeadEncrypt } from "./aead.js";
 import { validateAgentPolicy, type AgentPolicy } from "./agents.js";
 import { randomBytes, utf8, CryptoError } from "./encoding.js";
+import { checkEnvContent } from "./envFile.js";
 import { CORE_KEYS, FIELD_KINDS, coreKeysOf, dataKeysOf, isRecordType, type CoreKey, type FieldKind, type RecordType } from "./recordTypes.js";
 
 export type { RecordType } from "./recordTypes.js";
@@ -106,6 +107,7 @@ function validateV2(body: RecordBody, lenient = false): RecordBody {
   if (clean.password && typeof body.passwordChangedAt === "string" && !Number.isNaN(Date.parse(body.passwordChangedAt))) clean.passwordChangedAt = body.passwordChangedAt;
   const data = cleanData(body.type, body.data);
   if (data) clean.data = data;
+  if (clean.type === "envFile" && data?.content !== undefined) checkEnvContent(data.content);
   const fields = cleanFields(body.fields);
   if (fields) clean.fields = fields;
   if (body.agentPolicy !== undefined) {

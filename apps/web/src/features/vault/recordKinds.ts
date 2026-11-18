@@ -1,15 +1,15 @@
 import {
-  Contact, CreditCard, Database, FileBadge, IdCard, KeyRound, KeySquare, Landmark, MapPin, Server, SquareTerminal, StickyNote, Ticket, Wifi, type LucideIcon,
+  Contact, CreditCard, Database, FileBadge, FileKey, IdCard, KeyRound, KeySquare, Landmark, MapPin, Server, SquareTerminal, StickyNote, Ticket, Wifi, type LucideIcon,
 } from "lucide-react";
 import {
-  CORE_KEYS, IDENTITY_DOCS, RECORD_TYPE_DEFS, isSecretKind, optionLabel, templateOf, typeLabel,
+  CORE_KEYS, IDENTITY_DOCS, RECORD_TYPE_DEFS, envKeys, isSecretKind, optionLabel, templateOf, typeLabel,
   type CustomField, type FieldKind, type LinkBody, type RecordBody, type RecordType, type TemplateField,
 } from "@clane-vault/crypto";
 
 /** A record type's icon (lucide), used in the picker, the list, the panel and the type filter. */
 export const TYPE_ICON: Record<RecordType, LucideIcon> = {
   login: KeyRound, note: StickyNote, card: CreditCard, bankAccount: Landmark, server: Server, database: Database, sshKey: SquareTerminal,
-  apiKey: KeySquare, wifi: Wifi, softwareLicence: FileBadge, identity: IdCard, address: MapPin, contact: Contact, membership: Ticket,
+  apiKey: KeySquare, wifi: Wifi, softwareLicence: FileBadge, identity: IdCard, address: MapPin, contact: Contact, membership: Ticket, envFile: FileKey,
 };
 
 /** "Payment card" → "payment card" (for "New payment card"); names like "SSH key" or "Wi-Fi" keep their case. */
@@ -95,6 +95,7 @@ export function recordSubtitle(b: RecordBody | null | undefined): string {
     case "address": return join(d.street1, d.city, d.country) || typeLabel("address");
     case "contact": return join(d.name, d.company) || d.email || typeLabel("contact");
     case "membership": return join(d.organisation, d.memberId) || typeLabel("membership");
+    case "envFile": return join(d.project, d.environment) || d.fileName || typeLabel("envFile");
     default: return "";
   }
 }
@@ -108,6 +109,7 @@ export function searchableText(b: RecordBody | null | undefined): string[] {
     out.push(f.value);
     if (f.options) out.push(displayValue(f));
   }
+  if (b.type === "envFile" && b.data?.content) out.push(...envKeys(b.data.content)); // key names only; content is a secret kind
   return out;
 }
 
@@ -127,5 +129,5 @@ export const KIND_LABEL: Record<FieldKind, string> = {
 export const PLACEHOLDER: Record<RecordType, string> = {
   login: "AWS root account", note: "VPN runbook", card: "Company Visa", bankAccount: "Operating account", server: "Build server", database: "Production Postgres",
   sshKey: "Deploy key", apiKey: "Stripe live key", wifi: "Office Wi-Fi", softwareLicence: "Adobe Acrobat", identity: "Passport", address: "Head office",
-  contact: "IT support desk", membership: "Gym membership",
+  contact: "IT support desk", membership: "Gym membership", envFile: "Billing API production",
 };
