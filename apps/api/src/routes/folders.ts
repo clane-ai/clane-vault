@@ -53,12 +53,15 @@ export const folderRoutes: FastifyPluginAsync = async (app) => {
 
   app.patch("/folders/:id", async (req, reply) => {
     const { id } = idParam.parse(req.params);
-    const b = z.object({ encName: envelope }).parse(req.body);
+    // `encAgents` (private folders only; null clears it): the personal agents the folder is given to, opaque here.
+    const b = z.object({ encName: envelope.optional(), encAgents: envelope.nullable().optional() })
+      .refine((x) => x.encName !== undefined || x.encAgents !== undefined).parse(req.body);
     const folder = await app.prisma.folder.findFirst({ where: ownedWhere(req, id), select: { kind: true } });
-    const n = folder ? await app.prisma.folder.updateMany({ where: ownedWhere(req, id), data: { encName: b.encName } }) : { count: 0 };
+    if (folder?.kind === "team" && b.encAgents !== undefined) return reply.code(400).send({ error: "invalid_request" });
+    const n = folder ? await app.prisma.folder.updateMany({ where: ownedWhere(req, id), data: { encName: b.encName, encAgents: b.encAgents } }) : { count: 0 };
     if (n.count === 0) return reply.code(404).send({ error: "not_found" });
     // A private folder is nobody's business in the org: its events carry no org (they'd show in the admin event log).
-    await logEvent(app.prisma, { orgId: folder!.kind === "team" ? req.org?.id : undefined, actorId: req.auth.userId, action: "folder.rename", folderId: id });
+    if (b.encName) await logEvent(app.prisma, { orgId: folder!.kind === "team" ? req.org?.id : undefined, actorId: req.auth.userId, action: "folder.rename", folderId: id });
     return { ok: true };
   });
 

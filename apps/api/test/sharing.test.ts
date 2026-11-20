@@ -189,7 +189,7 @@ describe("direct shares", () => {
     expect(sb.records[0].wrappedRecordKey.startsWith("s1.")).toBe(true);
     expect((await open(b, sb, sb.records[0])).title).toBe("Stripe");
     expect((await sync(c)).records).toHaveLength(0);
-    expect((await sync(a)).records[0].sharedWith).toEqual([{ userId: b.id, name: b.email.split("@")[0], permission: "view" }]);
+    expect((await sync(a)).records[0].sharedWith).toEqual([{ userId: b.id, name: b.email.split("@")[0], kind: "person", permission: "view" }]);
 
     const body2 = await encryptRecordBody(id, { type: "login", title: "Stripe 2" }, enc.recordKey);
     expect((await call(b, "PUT", `/records/${id}`, { encBody: body2, revision: 1 })).statusCode).toBe(403);

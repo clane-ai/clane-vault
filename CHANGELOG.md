@@ -2,6 +2,14 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## 1.9.5 — 2026-11-20
+
+Upgrading: one migration (`20261120000000_folder_agents`, a nullable column), applied on start. Upgrade the server and the web app together; the gateway is unchanged.
+
+- **Give a Personal folder to an agent.** A Personal folder's Options has **Give to agent…**: set one of your agents to *Can use* and every item in the folder gets the same per-item grant as from the share sheet, and so does each item you later save or move into it. *None* takes those grants away. The folder's agents are stored encrypted under your account key (`encAgents`), so the server can't add one. A folder never gives reading values: *See* stays per item. Organisation team folders already took agents as members; they show in the folder's people picker with *Use only*.
+- **An agent icon in the vault list**, *Shared with an agent*, on a record a personal agent can use or read, one shared directly with an organisation agent, or one in a folder an agent is in, and on such a folder.
+- Record panel: long field labels (for example AWS_SECRET_ACCESS_KEY) wrap instead of running into the value.
+
 ## 1.9.4 — 2026-11-20
 
 Upgrading: no migration. Upgrade the web app and the gateway together. **Items set to *Without asking* on 1.9.2 or 1.9.3 stop being read without asking until their owner turns it on again once** (Agent use → *Let the AI see this value* → **Change** → **Save**); until then the agent asks first where the item has an approval stub, or reads nothing.

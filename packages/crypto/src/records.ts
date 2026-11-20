@@ -169,3 +169,12 @@ export const encryptFolderName = (folderId: string, name: string, key: Uint8Arra
 };
 export const decryptFolderName = async (folderId: string, encName: string, key: Uint8Array) =>
   utf8.decode(await aeadDecrypt(key, encName, `folder-name:${folderId}`));
+
+/** A private folder given to personal agents: their ids, under the owner's user key (the server can't add one). */
+export const encryptFolderAgents = (folderId: string, agentIds: string[], key: Uint8Array) =>
+  aeadEncrypt(key, utf8.encode(JSON.stringify(agentIds)), `folder-agents:${folderId}`);
+export async function decryptFolderAgents(folderId: string, encAgents: string, key: Uint8Array): Promise<string[]> {
+  const ids: unknown = JSON.parse(utf8.decode(await aeadDecrypt(key, encAgents, `folder-agents:${folderId}`)));
+  if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string")) throw new CryptoError("bad_envelope");
+  return ids;
+}

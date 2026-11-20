@@ -28,6 +28,7 @@ import { FolderPeopleSheet } from "./FolderPeopleSheet";
 import { RecordActivity, WhoCanOpen } from "./RecordSharing";
 import { ShareSheet } from "./ShareSheet";
 import { GrantToAgentDialog } from "./GrantToAgentDialog";
+import { FolderAgentsDialog } from "./FolderAgentsDialog";
 import { AgentInbox } from "./AgentInbox";
 import { isPersonalAgentItem, liveAgents } from "./RecordAgentsSection";
 import { agentUseApplies } from "./AgentPolicyEditor";
@@ -87,6 +88,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   const myAgents = liveAgents(useMyAgents(!org && !offline && !v.isLoading && !v.privateLocked).data?.agents);
   const [giving, setGiving] = useState<VaultRecord[] | null>(null);
   const [given, setGiven] = useState(0);
+  const [agentsFolderId, setAgentsFolderId] = useState<string | null>(null);
   // Every page and section has its own URL (lib/paths): the view, the open folder and the selected record come from it.
   const location = useLocation();
   const navigate = useNavigate();
@@ -208,6 +210,7 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   const drop = useFileDrop({ canDrop: recordDrop.canDrop, title: selected?.body?.title, onFiles: recordDrop.onFiles, disabled: !selected || !recordDrop.enabled || offline || !selected.body });
   const folderName = (id: string | null) => folderOf(id)?.name ?? null;
   const managing = v.folders.find((f) => f.id === managingId) ?? null;
+  const agentsFolder = v.folders.find((f) => f.id === agentsFolderId && !f.deleted) ?? null;
   const currentFolder = v.folders.find((f) => f.id === currentFolderId && !f.deleted) ?? null;
   // Move To moves the selected record (folders don't nest, so they can't be moved); re-wrapping its key as the editor does.
   const moveTo = (r: VaultRecord, folderId: string | null) => {
@@ -215,7 +218,8 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
   };
   const options = !offline && onNew ? (folder: VaultFolder | null, trigger: React.ReactNode, open?: boolean, onOpenChange?: (o: boolean) => void) => (
     <FolderOptionsMenu folder={folder} record={selected} folders={v.folders} team={!!org} trigger={trigger} open={open} onOpenChange={onOpenChange}
-      onNew={onNew} onMove={moveTo} onDelete={setDeleting} onRename={setRenaming} onManage={(f) => setManagingId(f.id)} />
+      onNew={onNew} onMove={moveTo} onDelete={setDeleting} onRename={setRenaming} onManage={(f) => setManagingId(f.id)}
+      onAgents={!org && myAgents.length > 0 ? (f) => setAgentsFolderId(f.id) : undefined} />
   ) : null;
   // Lists that aren't records: Share links and From agents (no type filter, sort or search results heading).
   const pageView = listView === "links" || listView === "agents";
@@ -410,6 +414,8 @@ export default function VaultPage({ newButton, onEdit, onCreate, onNew, folderId
       </main>
       {giving && user && <GrantToAgentDialog records={giving} agents={myAgents} me={user.id} onGrant={(r, a) => v.grantAgent(r, a)} onClose={() => setGiving(null)}
         onDone={() => { setGiving(null); setGiven((n) => n + 1); }} />}
+      {agentsFolder && user && <FolderAgentsDialog folder={agentsFolder} records={v.records.filter((r) => r.folderId === agentsFolder.id)} agents={myAgents} me={user.id}
+        onGrant={(r, a) => v.grantAgent(r, a)} onRevoke={(rid, aid) => v.revokeAgentGrant(rid, aid)} onSave={(ids) => v.setFolderAgents(agentsFolder.id, ids)} onClose={() => setAgentsFolderId(null)} />}
       <FolderPeopleSheet folder={managing} onClose={() => setManagingId(null)} onAdd={(f, p, perm) => v.addMember(f, p, perm)} onGiveAccess={(f, m) => v.giveAccessAgain(f, m)}
         onUpdate={(fid, uid, perm) => v.updateMember(fid, uid, perm)} onRemove={(fid, uid) => v.removeMember(fid, uid)} />
       {renaming && (

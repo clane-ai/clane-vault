@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, KeyRound, MoreHorizontal, Paperclip, Plus, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Bot, Check, ChevronRight, KeyRound, MoreHorizontal, Paperclip, Plus, UserRound, Users, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { copySecret } from "@/lib/clipboard";
+import { isAgent } from "@/lib/orgKeys";
 import { cn } from "@/lib/utils";
 import { REASON_LABEL, type AttentionReason } from "./attention";
 import type { VaultView } from "./filter";
@@ -17,6 +18,17 @@ import { canFileInto, glyphFor, PERMISSION_LABEL, type VaultFolder, type VaultRe
 /** The 1 px line that ties a folder's records to it, hanging from the folder glyph's centre. */
 const GUIDE = "before:absolute before:inset-y-0 before:left-[45px] before:w-px before:bg-border-default max-[760px]:before:left-[43px]";
 const INSET = "pl-[58px] max-[760px]:pl-[54px]";
+
+/** An agent is in this folder: a team folder's agent member, or my personal agents a Personal folder is given to. */
+export const folderHasAgent = (f: VaultFolder | null | undefined) => !!f && (!!f.agentIds?.length || !!f.members?.some(isAgent));
+/** An agent holds this record: my personal agent's grant (use or reveal), a direct share with an agent, or its folder. */
+export const recordHasAgent = (r: VaultRecord, f: VaultFolder | null | undefined) =>
+  !!r.agentGrants?.some((g) => g.use || !!g.reveal?.length) || !!r.sharedWith?.some(isAgent) || folderHasAgent(f);
+const AGENT = "Shared with an agent";
+/** The list's agent mark: the Agent use button's Bot. */
+const AgentMark = () => (
+  <span title={AGENT} data-testid="agent-mark" className="flex"><Bot aria-hidden="true" className="size-3.5 text-text-secondary" /><span className="sr-only">{AGENT}</span></span>
+);
 
 /** A hover copy button on a record row (same behaviour as CopyButton: clipboard clears, toast, check for 1.5 s). */
 function RowCopy({ value, label, title, icon: Icon }: { value: string; label: string; title: string; icon: LucideIcon }) {
@@ -40,7 +52,7 @@ function RowCopy({ value, label, title, icon: Icon }: { value: string; label: st
 
 function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb, pick }: {
   r: VaultRecord; selected: boolean; inset?: boolean; onSelect: (id: string) => void; reasons?: AttentionReason[]; view: VaultView;
-  /** The record's folder (flat lists show it as a crumb). */ folder?: VaultFolder | null; crumb?: boolean;
+  /** The record's folder (flat lists show it as a crumb; an agent in it marks the row). */ folder?: VaultFolder | null; crumb?: boolean;
   /** Multi-select (Give to agent…): this row's checkbox. */ pick?: { checked: boolean; onChange: () => void };
 }) {
   const b = r.body;
@@ -76,6 +88,7 @@ function Row({ r, selected, inset, onSelect, reasons, view, folder, crumb, pick 
                 <span aria-hidden="true" className="size-1.5 rounded-full bg-amber-500" /><span className="sr-only">Needs attention</span>
               </span>}
           {shared && <span title={shared} className="flex"><Users aria-hidden="true" className="size-3.5 text-text-secondary" /><span className="sr-only">{shared}</span></span>}
+          {recordHasAgent(r, folder) && <AgentMark />}
           {/* Files on the record: a count from the sync metadata (nothing to decrypt). */}
           {!!r.attachments?.length && <span title={`${r.attachments.length} ${r.attachments.length === 1 ? "file" : "files"}`} data-testid="file-count" className="flex items-center gap-0.5 font-mono text-[11px] text-text-secondary">
             <Paperclip aria-hidden="true" className="size-3.5" />{r.attachments.length}<span className="sr-only"> {r.attachments.length === 1 ? "file" : "files"}</span>
@@ -195,6 +208,7 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
                   {g.folder?.name ?? noFolderLabel}{g.folder?.kind === "team" && <span className="sr-only">, shared folder</span>}
                 </span>
               </span>
+              {folderHasAgent(g.folder) && <AgentMark />}
               {members.length > 0 && (
                 <span className="flex shrink-0 items-center max-[760px]:hidden" title={members.map((m) => m.name).join(", ")}>
                   <AvatarStack people={members} max={3} ringClassName={current ? "ring-app" : "ring-card group-hover/folder:ring-app"} />
@@ -209,7 +223,7 @@ export function RecordList({ groups, flat, mode, selectedId, onSelect, folderMen
               menuFor === key, (o) => setMenuFor(o ? key : null))
               : <span className="ml-2 size-7 shrink-0" aria-hidden="true" />}
             </div>
-            {isOpen && g.records.map((r) => <Row key={r.id} r={r} view={view} inset selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} pick={pick(r)} />)}
+            {isOpen && g.records.map((r) => <Row key={r.id} r={r} view={view} inset folder={g.folder}selected={r.id === selectedId} onSelect={onSelect} reasons={reasons?.get(r.id)} pick={pick(r)} />)}
             {isOpen && n === 0 && g.folder && (
               <div className={cn("relative flex min-h-9 items-center gap-1 border-b border-border-subtle pr-2 text-[12.5px] text-text-secondary", INSET, GUIDE)}>
                 No records here yet

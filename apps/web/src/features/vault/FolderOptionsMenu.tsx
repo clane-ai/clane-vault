@@ -1,4 +1,4 @@
-import { FileLock2, FolderInput, FolderPlus, Pencil, Trash2, Users } from "lucide-react";
+import { Bot, FileLock2, FolderInput, FolderPlus, Pencil, Trash2, Users } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { FolderGlyph } from "./FolderGlyph";
 import { ItemHint, type NewKind } from "./NewMenu";
@@ -22,7 +22,7 @@ const subContent = "min-w-[220px] max-w-[300px] rounded-[12px] border border-bor
  * Keeper's folder "Options": acts on `folder` (the open folder in the list header, or the row's own folder; null: no
  * folder open, the vault itself). Move To moves the selected record (owner only); Delete is for the folder's owner.
  */
-export function FolderOptionsMenu({ folder, record, folders, team, trigger, open, onOpenChange, onNew, onMove, onDelete, onRename, onManage }: {
+export function FolderOptionsMenu({ folder, record, folders, team, trigger, open, onOpenChange, onNew, onMove, onDelete, onRename, onManage, onAgents }: {
   folder: VaultFolder | null; record: VaultRecord | null; folders: VaultFolder[];
   /**
    * The space: true in an organisation (shared folders only; its records don't go back to "No folder"), false in
@@ -31,6 +31,7 @@ export function FolderOptionsMenu({ folder, record, folders, team, trigger, open
   trigger: React.ReactNode; open?: boolean; onOpenChange?: (o: boolean) => void;
   onNew: (k: NewKind, folderId: string | null) => void; onMove: (r: VaultRecord, folderId: string | null) => void;
   onDelete: (f: VaultFolder) => void; onRename?: (f: VaultFolder) => void; onManage?: (f: VaultFolder) => void;
+  /** Personal space with personal agents: Give to agent… on a private folder. */ onAgents?: (f: VaultFolder) => void;
 }) {
   const id = folder?.id ?? "vault";
   const owner = !!folder && ownsFolder(folder);
@@ -72,6 +73,7 @@ export function FolderOptionsMenu({ folder, record, folders, team, trigger, open
         )}
         {folder && (onRename || onManage) && (owner || folder.kind === "team") && <DropdownMenuSeparator />}
         {folder?.kind === "team" && onManage && <DropdownMenuItem onSelect={() => onManage(folder)}><Users />{owner ? "Manage people" : "People"}</DropdownMenuItem>}
+        {folder?.kind === "private" && onAgents && <DropdownMenuItem onSelect={() => onAgents(folder)}><Bot />Give to agent…</DropdownMenuItem>}
         {folder && owner && onRename && <DropdownMenuItem onSelect={() => onRename(folder)}><Pencil />Rename</DropdownMenuItem>}
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" disabled={!!deleteHint} aria-label="Delete" aria-describedby={deleteHint ? `${id}-delete-hint` : undefined} onSelect={() => folder && owner && onDelete(folder)}>

@@ -126,4 +126,28 @@ describe("RecordList", () => {
     render(<RecordList groups={[]} flat={[{ ...shared, deleted: true }]} mode="flat" view="trash" reasons={reasons} selectedId={null} onSelect={vi.fn()} />);
     expect(screen.getByRole("button", { name: /AWS/ })).not.toHaveTextContent("Needs attention");
   });
+
+  it("marks records and folders an agent holds with the Bot icon", async () => {
+    const bot = { userId: "a1", name: "Deploy bot", email: "a1@agents.invalid", publicKey: "", permission: "use" as const, kind: "agent" as const };
+    const withBot: VaultFolder = { ...team, id: "tb", name: "Ops", members: [...team.members!, bot] };
+    const given: VaultFolder = { ...priv, id: "pg", name: "Given", agentIds: ["a1"] };
+    const groups = [
+      { folder: priv, records: [r("1", "Plain", "f"), r("2", "Granted", "f", { agentGrants: [{ agentId: "a1", use: true, write: false }] }),
+        r("3", "Seen", "f", { agentGrants: [{ agentId: "a1", use: false, write: false, reveal: ["username"] }] }),
+        r("4", "Revoked", "f", { agentGrants: [{ agentId: "a1", use: false, write: false }] }),
+        r("5", "Direct", "f", { sharedWith: [{ userId: "a1", name: "Deploy bot", permission: "use", kind: "agent" }] }),
+        r("6", "Person", "f", { sharedWith: [{ userId: "u9", name: "Pat", permission: "view", kind: "person" }] })] },
+      { folder: team, records: [] }, { folder: withBot, records: [r("7", "InOps", "tb")] }, { folder: given, records: [r("8", "InGiven", "pg")] },
+    ];
+    render(<RecordList groups={groups} flat={[]} mode="folders" selectedId={null} onSelect={vi.fn()} />);
+    const marked = (name: RegExp) => !!within(screen.getByRole("button", { name })).queryByTestId("agent-mark");
+    expect(marked(/^Infrastructure/)).toBe(false);
+    expect(marked(/^Marketing/)).toBe(false);
+    expect(marked(/^Ops/)).toBe(true);
+    expect(marked(/^Given/)).toBe(true);
+    expect(within(screen.getByRole("button", { name: /^Ops/ })).getByTitle("Shared with an agent")).toHaveTextContent("Shared with an agent");
+    for (const f of [/^Infrastructure/, /^Ops/, /^Given/]) await userEvent.click(screen.getByRole("button", { name: f }));
+    expect(["Plain", "Granted", "Seen", "Revoked", "Direct", "Person", "InOps", "InGiven"].map((t) => marked(new RegExp(`^${t}`))))
+      .toEqual([false, true, true, false, true, false, true, true]);
+  });
 });

@@ -1,5 +1,5 @@
 import {
-  decryptFolderName, decryptRecordBody, openFolderKey, openRecordKey, openSharedRecordKeyInOrg, openTeamFolderKey, unlockMembershipKeys,
+  decryptFolderAgents, decryptFolderName, decryptRecordBody, openFolderKey, openRecordKey, openSharedRecordKeyInOrg, openTeamFolderKey, unlockMembershipKeys,
   type MembershipKeys, type UnlockedKeys,
 } from "@clane-vault/crypto";
 import type { SyncResponse, VaultFolder, VaultRecord } from "./types";
@@ -25,7 +25,9 @@ export async function decryptSync(sync: SyncResponse, keys: UnlockedKeys, myId?:
     const folderKeys = new Map<string, Uint8Array>();
     const folders = await Promise.all(sync.folders.map(async (f): Promise<VaultFolder> => {
       const base = { id: f.id, kind: f.kind, deleted: f.deletedAt !== null, ownerId: f.ownerId };
-      if (f.kind !== "team") return { ...base, myPermission: "owner", name: await decryptFolderName(f.id, f.encName, keys.userKey).catch(() => "Can't open this folder") };
+      // shortcut: encAgents isn't re-encrypted after an account key change, so it stops opening and the folder reads as given to no agent (its agents need enrolling again then anyway).
+      if (f.kind !== "team") return { ...base, myPermission: "owner", name: await decryptFolderName(f.id, f.encName, keys.userKey).catch(() => "Can't open this folder"),
+        ...(f.encAgents ? { agentIds: await decryptFolderAgents(f.id, f.encAgents, keys.userKey).catch(() => []) } : {}) };
       // Without an org (old callers), only copies sealed to my account key can open.
       const folderKey = !f.wrappedFolderKey ? null
         : orgId ? await openTeamFolderKey({ orgId, folderId: f.id, wrappedFolderKey: f.wrappedFolderKey, sealedTo: f.sealedTo ?? null }, keys, ring).catch(() => null)
