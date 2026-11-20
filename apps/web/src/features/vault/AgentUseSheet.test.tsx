@@ -14,6 +14,8 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 const policy = { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const }, secret: "data.secret", methods: ["GET" as const] };
 const bare: RecordBody = { type: "apiKey", title: "Stripe", data: { secret: "sk_x" } };
 const stored: RecordBody = { ...bare, agentPolicy: policy };
+/** The summary only checks a tag is there (the See section and the gateway verify it). */
+const TAG = "A".repeat(43);
 const record = (body: RecordBody | null, o: Partial<VaultRecord> = {}): VaultRecord =>
   ({ id: "r1", folderId: null, type: "item", revision: 1, updatedAt: "2026-11-18T09:00:00Z", deleted: false, permission: "owner", recordKey: new Uint8Array(32), body, ...o });
 
@@ -48,8 +50,10 @@ describe("the Agent use button in the record panel", () => {
     expect(agentUseStatus(record(stored, see))).toBe("Use + See");
     // A use grant alone is not See; reading without asking is.
     expect(agentUseStatus(record(stored, { agentGrants: [{ agentId: "a1", use: true, write: false }] }))).toBe("Use");
-    const without = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const without = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"], auth: { a1: TAG } } };
     expect(agentUseStatus(record(without))).toBe("Use + See");
+    // Listed without the owner's tag (1.9.2, or an editor): not reading without asking.
+    expect(agentUseStatus(record({ ...stored, agentReveal: { v: 1, agents: ["a1"], fields: ["username"] } }))).toBe("Use");
     // "asks first" marks an item where every agent that may read asks first; one that reads without asking takes it away.
     expect(agentAsksFirst(record(stored, see))).toBe(true);
     expect(agentAsksFirst(record(without))).toBe(false);
@@ -65,7 +69,7 @@ describe("the Agent use button in the record panel", () => {
   });
 
   it("the summary says how each agent reads: without asking (the item's own setting) or asking first", () => {
-    const body = { ...stored, username: "sara", agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const body = { ...stored, username: "sara", agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"], auth: { a1: TAG } } };
     const r = record(body, { agentGrants: [{ agentId: "a1", use: true, write: false }, { agentId: "a2", use: false, write: false, reveal: ["username"] }] });
     const access = agentAccess(r, { myAgents: [{ id: "a1", name: "My bot" }, { id: "a2", name: "Other bot" }] as never, teamFolder: null });
     expect(access.map((x) => [x.name, x.see, x.standing])).toEqual([["My bot", ["Username"], true], ["Other bot", ["Username"], false]]);

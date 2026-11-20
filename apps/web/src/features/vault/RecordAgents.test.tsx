@@ -434,7 +434,11 @@ describe("the Agent use sheet on a Personal item", () => {
     agents = [...agents, row({ id: SECOND, name: "Second bot", publicKey: b64url.encode(kp.publicKey), attestation: await gw.attest(b64url.encode(kp.publicKey)) })];
     const { id } = await serveRecord({ standing: ["username"], untagged: true, agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
     calls();
-    const section = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    // The header and the summary don't count it as reading without asking: it holds the key (Use) and nothing more.
+    const sheet = await openAgentUse("Use");
+    const status = within(sheet).getByRole("region", { name: "Status" });
+    expect(await within(status).findByRole("listitem", { name: "My bot" })).not.toHaveTextContent("Without asking");
+    const section = await within(sheet).findByRole("region", { name: SEE });
     const mine = within(section).getByRole("listitem", { name: "My bot" });
     await waitFor(() => expect(mine).toHaveTextContent("Turn this on again to keep reading without asking."));
     // Adding another agent doesn't tag the untagged one.
@@ -446,7 +450,7 @@ describe("the Agent use sheet on a Personal item", () => {
     cleanup();
     // Saving it again for that agent is the owner's consent: now it is tagged.
     const again = await serveRecord({ standing: ["username"], untagged: true, agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
-    const s2 = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    const s2 = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
     await userEvent.click(within(within(s2).getByRole("listitem", { name: "My bot" })).getByRole("button", { name: "Change" }));
     await userEvent.click(within(s2).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(savedBodies).toHaveLength(1));
