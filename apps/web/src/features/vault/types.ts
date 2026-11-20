@@ -14,7 +14,7 @@ export interface FolderMember {
 }
 /** A group a team folder is shared with (docs/groups.md). */
 export interface FolderGroupGrant { id: string; name: string; permission: Grant; memberIds: string[] }
-export interface ShareInfo { userId: string; name: string; permission: Permission; needsAccess?: boolean }
+export interface ShareInfo { userId: string; name: string; permission: Permission; needsAccess?: boolean; kind?: "person" | "agent" }
 /** `membershipKey`: their membership key in the active org (docs/design/2026-10-08-per-org-keypairs.md). */
 export interface Person {
   id: string; name: string; email: string; publicKey: string; membershipKey?: string | null;
@@ -25,6 +25,7 @@ export interface SyncFolder {
   id: string; kind: "private" | "team"; encName: string; ownerId?: string; deletedAt: string | null;
   /** Team folders only. */ wrappedFolderKey?: string; myPermission?: Permission; members?: FolderMember[]; groups?: FolderGroupGrant[];
   /** The key my copy is sealed to: null = my account key, else a membership public key (or "acct:…" after a reset). */ sealedTo?: string | null;
+  /** Private folders: the personal agents it is given to, encrypted under my user key (encryptFolderAgents). */ encAgents?: string | null;
 }
 /**
  * The coarse type the server keeps (docs/record-types.md): "login" or "item"; "note" on rows from before record types.
@@ -63,6 +64,7 @@ export interface VaultFolder {
   id: string; name: string; kind: "private" | "team"; deleted: boolean;
   ownerId?: string; myPermission?: Permission; members?: FolderMember[]; groups?: FolderGroupGrant[];
   /** Team folder key, held only while unlocked (wiped on lock). */ folderKey?: Uint8Array | null;
+  /** Private folders: my personal agents it is given to (Can use on every item in it, new ones too). */ agentIds?: string[];
 }
 export interface VaultRecord {
   id: string; folderId: string | null; /** Server metadata only: use body.type. */ type: ServerRecordKind; body: RecordBody | null; revision: number; updatedAt: string; deleted: boolean;

@@ -94,7 +94,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
       org: { memberships: { some: { userId, status: "active" } } } }, select: { recordId: true, orgId: true }, distinct: ["recordId", "orgId"] });
     for (const x of rows) if (x.orgId) sharedIn.set(x.recordId, [...(sharedIn.get(x.recordId) ?? []), x.orgId]);
   }
-  const shareUsers = new Map((await db.user.findMany({ where: { id: { in: [...new Set(shares.map((s) => s.holderId))] } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+  const shareUsers = new Map((await db.user.findMany({ where: { id: { in: [...new Set(shares.map((s) => s.holderId))] } }, select: { id: true, name: true, kind: true } })).map((u) => [u.id, u]));
 
   // Files on every record in the response: ciphertext metadata only (docs/design/2026-10-12-attachments.md §6.1).
   const files = await readyAttachments(db, attachmentConfig(cfg).enabled ? records.map((r) => r.id) : []);
@@ -150,7 +150,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
         ...(holder.holderType === "user" && holder.permission !== "owner" ? { sealedTo: holder.sealedTo } : {}),
         ownerId: r.ownerId, ownerName: r.owner.name,
         ...(isOwner && !orgId ? { agentGrants: agentGrantsOf(r.id) } : {}),
-        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId) ?? "", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
+        ...(isOwner ? { sharedWith: shares.filter((s) => s.recordId === r.id && !personalAgentIds.has(s.holderId)).map((s) => ({ userId: s.holderId, name: shareUsers.get(s.holderId)?.name ?? "", kind: shareUsers.get(s.holderId)?.kind ?? "person", permission: s.permission, ...(needsAccess(s.sealedTo, shareLive) ? { needsAccess: true } : {}) })) } : {}),
         ...(sharedIn.has(r.id) ? { sharedIn: sharedIn.get(r.id) } : {}),
         ...(personal && r.createdByAgentId ? { createdByAgent: { id: r.createdByAgentId, name: creators.get(r.createdByAgentId) ?? "", at: r.createdAt.toISOString() } } : {}),
         ...(agentChange.has(r.id) ? { agentChange: agentChange.get(r.id)! } : {}),
