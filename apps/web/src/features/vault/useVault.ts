@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  agentUpdateMessage, b64url, CryptoError, decryptRecordBody, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, sealRevealStub, serverRecordType,
+  agentUpdateMessage, b64url, CryptoError, decryptRecordBody, encryptFolderAgents, encryptFolderName, encryptNewRecord, encryptRecordBody, randomBytes, sealPersonalAgentRecordKey, sealRevealStub, serverRecordType,
   sha256B64, verifyGatewayMessage, wrapKey,
   type RecordBody, type UnlockedKeys,
 } from "@clane-vault/crypto";
+import { toast } from "sonner";
 import { ApiError, forOrg } from "@/lib/api";
 import { useSession, type Org } from "@/lib/session";
 import { useOrgApi, useScope, useScopeOrg } from "@/lib/scope";
@@ -110,6 +111,7 @@ export function useVault() {
         } else {
           assertOpen();
           await oapi.post("/records", { id, folderId: input.folderId, type: serverRecordType(input.body), encBody: enc.encBody, wrappedRecordKey: enc.wrappedRecordKey });
+          await grantFolderAgents(input.folderId, { id, recordKey: enc.recordKey });
         }
         input.onCreated?.(id, enc.recordKey);
       } finally { enc.recordKey.fill(0); }
@@ -145,7 +147,8 @@ export function useVault() {
         withSecret(target.folderKey, "folder", async (fk) => { const w = await wrapKey(rk, fk, `record-key:${v.r.id}`); assertOpen(); return w; }));
       return oapi.put(`/records/${v.r.id}/folder`, { folderId: v.folderId, folderWrappedRecordKey, ownerWrappedRecordKey });
     }
-    return oapi.put(`/records/${v.r.id}/folder`, { folderId: v.folderId, ownerWrappedRecordKey });
+    await oapi.put(`/records/${v.r.id}/folder`, { folderId: v.folderId, ownerWrappedRecordKey });
+    await grantFolderAgents(v.folderId, v.r);
   }, ...after });
 
   const useSimple = <V,>(fn: (v: V) => Promise<unknown>) => useMutation({ mutationFn: fn, ...after });
@@ -292,21 +295,40 @@ export function useVault() {
    * Personal space: gives one of my records to one of my personal agents ("use"). Nothing is sealed unless the agent's key
    * is attested by the pinned gateway and bound to my current account key, and it is the key this device pinned for it.
    */
-  const grantAgent = useMutation({ mutationFn: async (v: { r: VaultRecord; agent: MyAgent }) => {
+  async function sealGrant(r: Pick<VaultRecord, "id" | "recordKey">, a: MyAgent) {
     if (!user) throw new Error("Not signed in");
-    const a = v.agent;
     if (pinStatus(user.id, PERSONAL_SLOT, a.id, a.publicKey).status === "changed") throw new KeyChangedError(a.id);
     const pinned = await ensureGatewayPinned(oapi, user.id, PERSONAL_SLOT, "/me/agents/gateway");
-    const wrappedRecordKey = await withKey((k) => withSecret(v.r.recordKey, "record", async (rk, assertOpen) => {
+    const wrappedRecordKey = await withKey((k) => withSecret(r.recordKey, "record", async (rk, assertOpen) => {
       await verifyPersonalAgentKey(user.id, a, a.owner, k.privateKey);
-      const sealed = await sealPersonalAgentRecordKey(rk, { ownerUserId: user.id, agentId: a.id, recordId: v.r.id }, b64url.decode(a.publicKey));
+      const sealed = await sealPersonalAgentRecordKey(rk, { ownerUserId: user.id, agentId: a.id, recordId: r.id }, b64url.decode(a.publicKey));
       assertOpen();
       return sealed;
     }));
-    await oapi.post(`/records/${v.r.id}/agent-grants`, { agentId: a.id, wrappedRecordKey });
+    await oapi.post(`/records/${r.id}/agent-grants`, { agentId: a.id, wrappedRecordKey });
     pinKey(user.id, PERSONAL_SLOT, a.id, a.publicKey);
     return pinned; // pinnedNow: the caller shows the gateway's fingerprint (trust on first use)
-  }, ...after });
+  }
+  const grantAgent = useMutation({ mutationFn: (v: { r: VaultRecord; agent: MyAgent }) => sealGrant(v.r, v.agent), ...after });
+  /**
+   * A record saved into a Personal folder given to agents (Give to agent… on the folder): each of them gets Can use, as a
+   * single grant. The save already went through, so a grant that fails is reported, not thrown.
+   */
+  async function grantFolderAgents(folderId: string | null, r: Pick<VaultRecord, "id" | "recordKey" | "agentGrants">) {
+    const ids = org ? [] : folderById(folderId)?.agentIds ?? [];
+    const mine = ids.length && user ? qc.getQueryData<MyAgents>(["my-agents", user.id])?.agents ?? [] : [];
+    for (const id of ids) {
+      const a = mine.find((x) => x.id === id && x.status === "active");
+      if (!a || r.agentGrants?.some((g) => g.agentId === id && g.use)) continue;
+      await sealGrant(r, a).catch(() => toast.error(`Saved, but couldn't give it to ${a.name}. Give it from Share.`));
+    }
+  }
+  /** Personal folders: the agents it is given to, sealed under my user key (none: cleared). */
+  const setFolderAgents = useMutation({ mutationFn: (v: { folderId: string; agentIds: string[] }) => withKey(async (k, assertOpen) => {
+    const encAgents = v.agentIds.length ? await encryptFolderAgents(v.folderId, v.agentIds, k.userKey) : null;
+    assertOpen();
+    return oapi.patch(`/folders/${v.folderId}`, { encAgents });
+  }), ...after });
   /** *Can reveal*: { title, type, fields } sealed to the agent (its key checked as for a grant); the agent gets no record key. */
   async function sealStub(recordId: string, body: RecordBody, a: MyAgent, fields: string[]) {
     if (!user) throw new Error("Not signed in");
@@ -367,6 +389,7 @@ export function useVault() {
     updateShare: (recordId: string, userId: string, permission: Grant) => updateShare.mutateAsync({ recordId, userId, permission }),
     unshare: (recordId: string, userId: string) => unshare.mutateAsync({ recordId, userId }),
     grantAgent: (record: VaultRecord, agent: MyAgent) => grantAgent.mutateAsync({ r: record, agent }),
+    setFolderAgents: (folderId: string, agentIds: string[]) => setFolderAgents.mutateAsync({ folderId, agentIds }),
     revokeAgentGrant: (recordId: string, agentId: string) => revokeAgentGrant.mutateAsync({ recordId, agentId }),
     setAgentWrite: (recordId: string, agentId: string, write: boolean) => setAgentWrite.mutateAsync({ recordId, agentId, write }),
     setAgentReveal: (record: VaultRecord, agent: MyAgent, fields: string[]) => setAgentReveal.mutateAsync({ r: record, agent, fields }),

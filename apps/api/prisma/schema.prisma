@@ -311,6 +311,8 @@ model Folder {
   ownerId   String     @db.Uuid
   owner     User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   encName   String
+  /// Private folders: the personal agents it is given to, encrypted under the owner's user key (the server can't read or add one).
+  encAgents String?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
   deletedAt DateTime?

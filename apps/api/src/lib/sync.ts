@@ -121,6 +121,7 @@ export async function syncFor(db: PrismaClient, cfg: Config, o: { userId: string
     ...(orgId ? { orgId, membershipKeys: myKeys } : {}),
     folders: folders.map((f) => ({
       id: f.id, kind: f.kind, encName: f.encName, ownerId: f.ownerId, deletedAt: f.deletedAt?.toISOString() ?? null,
+      ...(f.kind === "private" && f.encAgents ? { encAgents: f.encAgents } : {}),
       ...(f.kind === "team" ? {
         wrappedFolderKey: memberships.find((m) => m.folderId === f.id)!.wrappedFolderKey,
         sealedTo: memberships.find((m) => m.folderId === f.id)!.sealedTo,

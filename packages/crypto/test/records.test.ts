@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  encryptNewRecord, decryptRecord, encryptRecordBody, decryptRecordBody, normalizeRecordBody, encryptFolderName, decryptFolderName, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8, validateAgentReveal,
+  encryptNewRecord, decryptRecord, encryptRecordBody, decryptRecordBody, normalizeRecordBody, encryptFolderName, decryptFolderName, encryptFolderAgents, decryptFolderAgents, randomBytes, type RecordBody, aeadDecrypt, aeadEncrypt, utf8, validateAgentReveal,
 } from "../src/index.js";
 
 const body: RecordBody = { type: "login", title: "AWS root", username: "ops@clane.ai", password: "Tg7#qL2v!Rm9zW4x", url: "console.aws.amazon.com", notes: "Rotate 90d" };
@@ -40,6 +40,16 @@ describe("records", () => {
     const fid = crypto.randomUUID();
     const enc = await encryptFolderName(fid, "Infrastructure", userKey);
     expect(await decryptFolderName(fid, enc, userKey)).toBe("Infrastructure");
+  });
+
+  it("a folder's agents round-trip, bound to the folder; a folder name or a non-list never opens as one", async () => {
+    const fid = crypto.randomUUID();
+    const enc = await encryptFolderAgents(fid, ["a1", "a2"], userKey);
+    expect(await decryptFolderAgents(fid, enc, userKey)).toEqual(["a1", "a2"]);
+    await expect(decryptFolderAgents(crypto.randomUUID(), enc, userKey)).rejects.toMatchObject({ code: "decrypt_failed" });
+    await expect(decryptFolderAgents(fid, await encryptFolderName(fid, "Ops", userKey), userKey)).rejects.toMatchObject({ code: "decrypt_failed" });
+    const notList = await aeadEncrypt(userKey, utf8.encode('{"a":1}'), `folder-agents:${fid}`);
+    await expect(decryptFolderAgents(fid, notList, userKey)).rejects.toMatchObject({ code: "bad_envelope" });
   });
 
   it("rejects record body encrypted for different record id", async () => {

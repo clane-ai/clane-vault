@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { encryptNewRecord, encryptRecordBody, encryptFolderName, decryptRecord } from "@clane-vault/crypto";
+import { encryptNewRecord, encryptRecordBody, encryptFolderName, encryptFolderAgents, decryptFolderAgents, decryptRecord } from "@clane-vault/crypto";
 import { makeTestApp, resetDb, createActiveUser, orgHeader } from "./helpers.js";
 
 const t = await makeTestApp();
@@ -120,6 +120,23 @@ describe("records", () => {
     const r = (await call(u, "GET", "/sync")).json().records[0];
     expect(r.folderId).toBeNull();
     expect(r.deletedAt).toBeNull();
+  });
+
+  it("a private folder keeps the owner's encrypted agent list (encAgents) apart from its name; null clears it; others can't set it", async () => {
+    const a = await createActiveUser(t), b = await createActiveUser(t);
+    const fid = crypto.randomUUID();
+    const encName = await encryptFolderName(fid, "Ops", a.keys.userKey);
+    await call(a, "POST", "/folders", { id: fid, encName });
+    expect((await call(a, "GET", "/sync")).json().folders[0]).not.toHaveProperty("encAgents");
+    const encAgents = await encryptFolderAgents(fid, ["agent-1"], a.keys.userKey);
+    expect((await call(a, "PATCH", `/folders/${fid}`, { encAgents })).statusCode).toBe(200);
+    expect((await call(b, "PATCH", `/folders/${fid}`, { encAgents: "v1.AAAA" })).statusCode).toBe(404);
+    expect((await call(a, "PATCH", `/folders/${fid}`, {})).statusCode).toBe(400);
+    const f = (await call(a, "GET", "/sync")).json().folders[0];
+    expect(f).toMatchObject({ encName, encAgents });
+    expect(await decryptFolderAgents(fid, f.encAgents, a.keys.userKey)).toEqual(["agent-1"]);
+    expect((await call(a, "PATCH", `/folders/${fid}`, { encAgents: null })).statusCode).toBe(200);
+    expect((await call(a, "GET", "/sync")).json().folders[0]).not.toHaveProperty("encAgents");
   });
 
   it("stops other users renaming or deleting my folder", async () => {

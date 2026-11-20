@@ -8,7 +8,7 @@ import { grantErrorText, type GrantResult } from "./RecordAgentsSection";
 import type { VaultRecord } from "./types";
 
 /** Refusals that mean "this one can't be given" rather than "stop": counted as skipped. */
-const SKIP = new Set(["already_shared", "team_record", "in_trash", "not_found"]);
+export const SKIP = new Set(["already_shared", "team_record", "in_trash", "not_found"]);
 
 /**
  * The list's multi-select → Give to agent…: one agent, the warning, then the items one by one. Items already given to it,
