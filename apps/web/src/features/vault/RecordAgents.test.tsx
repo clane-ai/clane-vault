@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import {
   agentUpdateMessage, b64url, decryptRecordBody, encryptNewRecord, encryptRecordBody, gatewayKeyId, generateIdentityKeyPair, generateKeyPair, openPersonalAgentRecordKey, randomBytes,
-  openRevealStub, sha256B64, type RecordBody, signGatewayMessage, signPersonalAgentKey,
+  openRevealStub, sha256B64, type RecordBody, signGatewayMessage, signPersonalAgentKey, standingRevealTag, verifyStandingRevealTag,
 } from "@clane-vault/crypto";
 import { server } from "@/test/server";
 import * as sessionModule from "@/lib/session";
@@ -55,9 +55,14 @@ beforeEach(async () => {
   );
 });
 
-async function serveRecord(o: { /** A login with a 2FA secret. */ totp?: boolean; /** The first agent reads these fields without asking (agentReveal). */ standing?: string[]; agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
+/** The owner's tag (I2) for one agent, as the gateway checks it: the agent's private key with the owner's public key. */
+const tagged = (recordId: string, b: RecordBody | undefined, agentId: string, privateKey = agentKeys.privateKey) =>
+  verifyStandingRevealTag(b?.agentReveal?.auth?.[agentId], privateKey, me.publicKey, { recordId, agentId, fields: b?.agentReveal?.fields ?? [] });
+
+async function serveRecord(o: { /** A login with a 2FA secret. */ totp?: boolean; /** The first agent reads these fields without asking (agentReveal), with the owner's tag unless `untagged` (an item set on 1.9.2). */ standing?: string[]; untagged?: boolean; agentGrants?: unknown[]; agentPolicy?: boolean; agentChange?: "signed" | "unsigned"; createdByAgent?: boolean; envFile?: boolean } = {}) {
   const id = crypto.randomUUID();
-  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw", ...(o.totp ? { totpSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" } : {}) }), title: "Stripe", ...(o.standing ? { agentReveal: { v: 1 as const, agents: [AGENT_ID], fields: o.standing } } : {}), ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
+  const auth = o.standing && !o.untagged ? { auth: { [AGENT_ID]: await standingRevealTag(me.privateKey, agentKeys.publicKey, { recordId: id, agentId: AGENT_ID, fields: o.standing }) } } : {};
+  const body = { ...(o.envFile ? { type: "envFile" as const, data: { content: "STRIPE_KEY=sk_live_1\n" } } : { type: "login" as const, username: "sara", password: "pw", ...(o.totp ? { totpSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" } : {}) }), title: "Stripe", ...(o.standing ? { agentReveal: { v: 1 as const, agents: [AGENT_ID], fields: o.standing, ...auth } } : {}), ...(o.agentPolicy === false ? {} : { agentPolicy: { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const } } }) };
   const enc = await encryptNewRecord(id, body, me.userKey);
   const revision = o.agentChange ? 2 : 1;
   // "unsigned": signed for another revision, so the signature doesn't cover the current body.
@@ -345,7 +350,7 @@ describe("the Agent use sheet on a Personal item", () => {
 
   it("turning See on is the consent: Without asking by default, one dialog the first time, then the item's encrypted setting and the key", async () => {
     reveal = everywhere;
-    await serveRecord({ totp: true });
+    const { id } = await serveRecord({ totp: true });
     const seen = calls();
     const section = await within(await openAgentUse("Use")).findByRole("region", { name: SEE });
     expect(section).toHaveTextContent("Off until you turn it on. Turning it on is your consent");
@@ -373,7 +378,9 @@ describe("the Agent use sheet on a Personal item", () => {
     await waitFor(() => expect(seen.granted).toEqual([AGENT_ID]));
     // The setting is in the record's body (the editor's save); the agent gets the item's key; no approval stub.
     expect(savedBodies).toHaveLength(1);
-    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID], fields: ["totp", "username"] });
+    expect(savedBodies[0]!.agentReveal).toMatchObject({ v: 1, agents: [AGENT_ID], fields: ["totp", "username"] });
+    // With the owner's tag for that agent, so the gateway knows the owner turned it on (I2).
+    expect(await tagged(id, savedBodies[0], AGENT_ID)).toBe(true);
     expect(savedBodies[0]).toMatchObject({ title: "Stripe", username: "sara", password: "pw", agentPolicy: { hosts: ["api.stripe.com"] } });
     // The same fields as an approval stub too, so a later approval rule makes the agent ask instead of reading nothing.
     await waitFor(() => expect(seen.stub?.body.fields).toEqual(["totp", "username"]));
@@ -405,7 +412,7 @@ describe("the Agent use sheet on a Personal item", () => {
     const pub = b64url.encode(kp.publicKey);
     // The fixture's attestation names the first agent's id, so the second one's key is refused: the body is saved first.
     agents = [...agents, row({ id: SECOND, name: "Second bot", publicKey: pub, attestation: await gw.attest(pub) })];
-    await serveRecord({ standing: ["username"], agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const { id } = await serveRecord({ standing: ["username"], agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
     calls();
     const section = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
     expect(within(section).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["Let My bot see values from this item", "Let Second bot see values from this item"]);
@@ -415,7 +422,35 @@ describe("the Agent use sheet on a Personal item", () => {
     await userEvent.click(within(section).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(savedBodies).toHaveLength(1));
     expect(screen.queryByRole("dialog", { name: /^Let .* see this\?$/ })).toBeNull();
-    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID, SECOND], fields: ["username"] });
+    expect(savedBodies[0]!.agentReveal).toMatchObject({ v: 1, agents: [AGENT_ID, SECOND], fields: ["username"] });
+    expect(await tagged(id, savedBodies[0], AGENT_ID)).toBe(true);
+    expect(await tagged(id, savedBodies[0], SECOND, kp.privateKey)).toBe(true);
+  });
+
+  it("an item set to Without asking with no owner's tag (1.9.2, or listed by an editor) asks to be turned on again, and only the owner's save tags it (I2)", async () => {
+    reveal = everywhere;
+    const SECOND = "cccccccc-0000-4000-8000-000000000003";
+    const kp = await generateKeyPair();
+    agents = [...agents, row({ id: SECOND, name: "Second bot", publicKey: b64url.encode(kp.publicKey), attestation: await gw.attest(b64url.encode(kp.publicKey)) })];
+    const { id } = await serveRecord({ standing: ["username"], untagged: true, agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    calls();
+    const section = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    const mine = within(section).getByRole("listitem", { name: "My bot" });
+    await waitFor(() => expect(mine).toHaveTextContent("Turn this on again to keep reading without asking."));
+    // Adding another agent doesn't tag the untagged one.
+    await userEvent.click(toggleOf(section, "Second bot"));
+    await userEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    expect(await tagged(id, savedBodies[0], SECOND, kp.privateKey)).toBe(true);
+    expect(await tagged(id, savedBodies[0], AGENT_ID)).toBe(false);
+    cleanup();
+    // Saving it again for that agent is the owner's consent: now it is tagged.
+    const again = await serveRecord({ standing: ["username"], untagged: true, agentGrants: [{ agentId: AGENT_ID, use: true, write: false }] });
+    const s2 = await within(await openAgentUse("Use + See")).findByRole("region", { name: SEE });
+    await userEvent.click(within(within(s2).getByRole("listitem", { name: "My bot" })).getByRole("button", { name: "Change" }));
+    await userEvent.click(within(s2).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    expect(await tagged(again.id, savedBodies[0], AGENT_ID)).toBe(true);
   });
 
   it("an organisation that requires approval overrides the item: Without asking can't be chosen, and the section says why", async () => {
@@ -487,7 +522,7 @@ describe("the Agent use sheet on a Personal item", () => {
     await userEvent.click(within(section).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(seen.stub?.body.fields).toEqual(["username"]));
     expect(seen.unrevealed).toEqual([]);
-    expect(savedBodies[0]!.agentReveal).toEqual({ v: 1, agents: [AGENT_ID], fields: ["username"] });
+    expect(savedBodies[0]!.agentReveal).toMatchObject({ v: 1, agents: [AGENT_ID], fields: ["username"] });
     expect(seen.granted).toEqual([AGENT_ID]);
   });
 });

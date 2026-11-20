@@ -1,5 +1,5 @@
 import {
-  CryptoError, agentSecretOf, basicUsername, decryptFolderName, envKeys, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, openRevealStub, unwrapKey,
+  CryptoError, agentSecretOf, b64url, basicUsername, verifyStandingRevealTag, decryptFolderName, envKeys, decryptRecordBody, openOrgFolderKey, openOrgRecordShare, openPersonalAgentRecordKey, openRevealStub, unwrapKey,
   type AgentInject, type AgentMethod, type AgentPolicy, type MembershipKeys, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import { isPersonal, type AgentSync, type OrgAgentSync, type PersonalAgentSync } from "./apiClient.js";
@@ -142,7 +142,7 @@ async function summarize(sync: AgentSync, keys: MembershipKeys, log?: Logger, on
       const p = body.agentPolicy; // only summary fields are kept; the body is dropped here
       const st = isPersonal(sync) && !r.deposit ? await openStub(r.id) : null;
       // F19: standing reveal is read from the body; it applies to kept records whose agentReveal lists this agent.
-      const sr = standing && isPersonal(sync) && !r.deposit && body.agentReveal?.agents.includes(sync.agentId) ? body.agentReveal.fields : null;
+      const sr = standing && isPersonal(sync) && !r.deposit ? await standingFields(sync, keys, r.id, body) : null;
       out.push({ handle, recordId: r.id, title: body.title, type: body.type, hosts: p?.hosts ?? [], inject: p?.inject ?? { kind: "none" }, approval: p?.approval ?? false,
         ...(p?.methods ? { methods: p.methods } : {}), ...(p?.paths ? { paths: p.paths } : {}),
         ...(body.type === "envFile" ? { env_keys: envKeys(body.data?.content ?? "") } : {}),
@@ -176,8 +176,17 @@ export async function standingBody(sync: PersonalAgentSync, keys: MembershipKeys
   const o = opener(sync, keys);
   let body: RecordBody;
   try { body = await o.body(r); } catch { return null; } finally { o.close(); }
+  const sf = await standingFields(sync, keys, r.id, body);
+  return sf && fields.every((f) => sf.includes(f)) ? { recordId: r.id, body } : null;
+}
+
+/** I2: the item's agentReveal fields for this agent only when the owner's tag for it verifies; anyone who can edit could have listed it. */
+async function standingFields(sync: PersonalAgentSync, keys: MembershipKeys, recordId: string, body: RecordBody): Promise<string[] | null> {
   const ar = body.agentReveal;
-  return ar && ar.agents.includes(sync.agentId) && fields.every((f) => ar.fields.includes(f)) ? { recordId: r.id, body } : null;
+  if (!ar?.agents.includes(sync.agentId)) return null;
+  // sync.owner.publicKey is the one the agent's k2 key is bound to: it unwrapped under that AAD.
+  return await verifyStandingRevealTag(ar.auth?.[sync.agentId], keys.privateKey, b64url.decode(sync.owner.publicKey), { recordId, agentId: sync.agentId, fields: ar.fields })
+    ? ar.fields : null;
 }
 
 /** `item` is a handle or a record id (a deposit's too). */

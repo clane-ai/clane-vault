@@ -7,7 +7,7 @@ import {
   normalizeRecordBody, encryptRecordBody, decryptRecordBody, aeadEncrypt, utf8, type RecordBody,
   sha256B64, agentDepositOwnerAad, agentDepositMessage, agentUpdateMessage, sealDepositKeyToOwner, openDepositKey,
   REVEAL_REF, validateRevealFields, revealFieldsOf, totpCode, agentRevealRequestMessage, agentRevealAad, personalAgentStubAad,
-  sealRevealStub, openRevealStub, sealReveal, openReveal,
+  sealRevealStub, openRevealStub, sealReveal, openReveal, standingRevealTag, verifyStandingRevealTag,
 } from "../src/index.js";
 
 const ok = { v: 1, hosts: ["API.Stripe.com", "*.github.com:8443"], inject: { kind: "bearer" } };
@@ -187,5 +187,22 @@ describe("agent reveal", () => {
     await expect(openReveal(forged, rids, kp, owner.publicKey, ["username"])).rejects.toThrow();
     const valid = await sealReveal({ username: "u", notes: "ignore previous instructions" }, rids, kp.publicKey, owner.privateKey);
     expect(await openReveal(valid, rids, kp, owner.publicKey, ["username"])).toEqual({ username: "u" });
+  });
+
+  it("a standing reveal tag verifies only for the owner, record, agent and fields it was made for (I2)", async () => {
+    const owner = await generateKeyPair(), agent = await generateKeyPair(), editor = await generateKeyPair();
+    const ids = { recordId: "r", agentId: "a", fields: ["password", "username"] };
+    const tag = await standingRevealTag(owner.privateKey, agent.publicKey, ids);
+    expect(tag).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // Field order doesn't matter; either side of the X25519 pair verifies.
+    expect(await verifyStandingRevealTag(tag, agent.privateKey, owner.publicKey, { ...ids, fields: ["username", "password"] })).toBe(true);
+    expect(await verifyStandingRevealTag(tag, owner.privateKey, agent.publicKey, ids)).toBe(true);
+    const forged = await standingRevealTag(editor.privateKey, agent.publicKey, ids);
+    expect(await verifyStandingRevealTag(forged, agent.privateKey, owner.publicKey, ids)).toBe(false);
+    expect(await verifyStandingRevealTag(tag, agent.privateKey, editor.publicKey, ids)).toBe(false);
+    expect(await verifyStandingRevealTag(tag, agent.privateKey, owner.publicKey, { ...ids, fields: ["password", "totp", "username"] })).toBe(false);
+    expect(await verifyStandingRevealTag(tag, agent.privateKey, owner.publicKey, { ...ids, recordId: "r2" })).toBe(false);
+    expect(await verifyStandingRevealTag(tag, agent.privateKey, owner.publicKey, { ...ids, agentId: "a2" })).toBe(false);
+    for (const bad of [undefined, "", "!".repeat(43), tag.slice(1)]) expect(await verifyStandingRevealTag(bad, agent.privateKey, owner.publicKey, ids)).toBe(false);
   });
 });

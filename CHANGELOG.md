@@ -2,6 +2,12 @@
 
 Images: `ghcr.io/clane-ai/clane-vault:<version>` and, from 1.8.0, the optional `ghcr.io/clane-ai/clane-vault-agent-gateway:<version>` (public; also `sha-<commit>`). Up to 1.1.1 they were only on a private registry. Pin `CLANE_VAULT_VERSION` in the client `.env`.
 
+## 1.9.4 — 2026-11-20
+
+Upgrading: no migration. Upgrade the web app and the gateway together. **Items set to *Without asking* on 1.9.2 or 1.9.3 stop being read without asking until their owner turns it on again once** (Agent use → *Let the AI see this value* → **Change** → **Save**); until then the agent asks first where the item has an approval stub, or reads nothing.
+
+- **Security: only the owner can turn on reading without asking.** Someone an owner shared a Personal item with as editor could write the item's `agentReveal` and let the owner's agent read its fields with no consent from the owner. The owner's browser now adds a tag for each agent it turns on (an HMAC under a key from X25519 of the owner's account key and the agent's key, over the record, the agent and the fields), and the gateway reads without asking only where that tag verifies against the owner key the agent is bound to. An editor's save keeps the tags as they are; one that changes the agents or the fields leaves them failing. The See section marks an agent without a valid tag: *Turn this on again to keep reading without asking.* (`docs/agents.md`, *Reading without asking*; `SECURITY.md`.)
+
 ## 1.9.3 — 2026-11-18
 
 Upgrading: no migration. Web app only; the server and gateway are unchanged from 1.9.2 (one image tag for both, as always).
