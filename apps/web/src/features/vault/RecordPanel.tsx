@@ -62,7 +62,7 @@ function AgentChangeBanner({ change, onRestore, onAck, envContent, previousBody 
 function Row({ label, children, actions }: { label: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <div className="grid min-h-[48px] grid-cols-[104px_minmax(0,1fr)_auto] items-center gap-x-3 border-b border-border-default px-4 py-2 last:border-b-0 max-[760px]:grid-cols-[minmax(0,1fr)_auto] max-[760px]:gap-y-0.5 max-[760px]:py-2.5">
-      <span className="text-[13px] text-text-secondary max-[760px]:col-span-2 max-[760px]:text-[12px]">{label}</span>
+      <span className="min-w-0 text-[13px] [overflow-wrap:anywhere] text-text-secondary max-[760px]:col-span-2 max-[760px]:text-[12px]">{label}</span>
       <div className="min-w-0">{children}</div>
       <span className="-mr-2 flex items-center gap-0.5">{actions}</span>
     </div>
