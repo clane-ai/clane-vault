@@ -16,14 +16,16 @@ const alertBox = "rounded-[9px] border border-[var(--red-tint-border)] bg-red-ti
 
 /** What the header button shows: Use is a policy on the item, See is an agent that may read some of its fields. */
 export type AgentUseStatus = "Off" | "Use" | "See" | "Use + See";
+/** Agents listed to read without asking that carry an owner tag. shortcut: checks the tag is there, not that it verifies (the See section and the gateway verify); an editor's garbage tag shows here as on but reads nothing. */
+export const standingAgents = (body: VaultRecord["body"]) => (body?.agentReveal?.agents ?? []).filter((a) => !!body?.agentReveal?.auth?.[a]);
 export function agentUseStatus(record: Pick<VaultRecord, "body" | "agentGrants">): AgentUseStatus {
   const use = !!record.body?.agentPolicy;
-  const see = !!record.agentGrants?.some((g) => g.reveal?.length) || !!record.body?.agentReveal?.agents.length;
+  const see = !!record.agentGrants?.some((g) => g.reveal?.length) || standingAgents(record.body).length > 0;
   return use ? (see ? "Use + See" : "Use") : see ? "See" : "Off";
 }
 /** See is on, and every agent that may read asks first (*Ask me each time*): none reads without asking. The header marks it. */
 export const agentAsksFirst = (record: Pick<VaultRecord, "body" | "agentGrants">) =>
-  !!record.agentGrants?.some((g) => g.reveal?.length) && !record.body?.agentReveal?.agents.length;
+  !!record.agentGrants?.some((g) => g.reveal?.length) && !standingAgents(record.body).length;
 /** The dot beside the status: green while values stay sealed, orange once an AI model may read one. */
 export const statusDot = (s: AgentUseStatus) => (s === "Off" ? "bg-border-strong" : s === "Use" ? "bg-green-600" : "bg-orange-500");
 
@@ -36,7 +38,7 @@ export interface AgentAccess { id: string; name: string; use: boolean; /** Label
 export function agentAccess(record: VaultRecord, o: { myAgents: MyAgent[]; people?: Person[]; teamFolder: VaultFolder | null }): AgentAccess[] {
   const body = record.body;
   const mine = (record.agentGrants ?? []).filter((g) => g.use || g.reveal?.length).map((g) => {
-    const standing = !!body?.agentReveal?.agents.includes(g.agentId);
+    const standing = standingAgents(body).includes(g.agentId);
     return { id: g.agentId, name: o.myAgents.find((a) => a.id === g.agentId)?.name ?? "An agent", use: g.use, write: g.write, standing,
       see: (standing ? body!.agentReveal!.fields : g.reveal ?? []).map((f) => (body ? revealFieldLabel(body, f) : f)) };
   });

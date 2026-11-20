@@ -128,6 +128,15 @@ describe("record agentReveal (standing reveal)", () => {
     expect(validateAgentReveal({ v: 1, agents: [agent], fields: ["username", "password"] }, login)).toEqual({ v: 1, agents: [agent], fields: ["password", "username"] });
   });
 
+  it("keeps the owner's tags (auth) and refuses one for an agent not listed or a malformed one", async () => {
+    const t = "A".repeat(43);
+    const withAuth: RecordBody = { ...login, agentReveal: { v: 1, agents: [agent], fields: ["username"], auth: { [agent]: t } } };
+    const enc = await encryptNewRecord(rid, withAuth, key);
+    expect((await decryptRecord(rid, enc.encBody, enc.wrappedRecordKey, key)).body).toEqual(withAuth);
+    for (const auth of [{ "cccccccc-0000-4000-8000-000000000003": t }, { [agent]: "short" }, [t], null])
+      expect(() => normalizeRecordBody({ ...login, agentReveal: { v: 1, agents: [agent], fields: ["username"], auth } as never })).toThrow(/agent reveal: auth/);
+  });
+
   it("refuses a seed, an extra key, no agents, a non-UUID agent, a field the body lacks", () => {
     for (const r of [{ v: 1, agents: [agent], fields: ["totpSecret"] }, { v: 1, agents: [agent], fields: ["username"], x: 1 }, { v: 1, agents: [], fields: ["username"] },
       { v: 1, agents: ["nope"], fields: ["username"] }, { v: 1, agents: [agent, agent], fields: ["username"] }, { v: 2, agents: [agent], fields: ["username"] },

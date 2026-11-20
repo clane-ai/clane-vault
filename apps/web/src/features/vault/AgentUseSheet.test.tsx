@@ -1,10 +1,10 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { RecordBody } from "@clane-vault/crypto";
+import { b64url, generateKeyPair, normalizeRecordBody, standingRevealTag, verifyStandingRevealTag, type RecordBody } from "@clane-vault/crypto";
 import { requestPreview } from "./AgentPolicyEditor";
 import type { MyAgent, MyAgents } from "@/features/settings/myAgents";
-import { grantStandingAgents, readingLimit, standingOn } from "./AgentSeeSection";
+import { confirmedAgents, grantStandingAgents, readingLimit, standingOn, withStanding } from "./AgentSeeSection";
 import { agentAccess, agentAsksFirst, AgentUseSheet, agentUseStatus } from "./AgentUseSheet";
 import { RecordPanel } from "./RecordPanel";
 import type { VaultRecord } from "./types";
@@ -14,6 +14,8 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 const policy = { v: 1 as const, hosts: ["api.stripe.com"], inject: { kind: "bearer" as const }, secret: "data.secret", methods: ["GET" as const] };
 const bare: RecordBody = { type: "apiKey", title: "Stripe", data: { secret: "sk_x" } };
 const stored: RecordBody = { ...bare, agentPolicy: policy };
+/** The summary only checks a tag is there (the See section and the gateway verify it). */
+const TAG = "A".repeat(43);
 const record = (body: RecordBody | null, o: Partial<VaultRecord> = {}): VaultRecord =>
   ({ id: "r1", folderId: null, type: "item", revision: 1, updatedAt: "2026-11-18T09:00:00Z", deleted: false, permission: "owner", recordKey: new Uint8Array(32), body, ...o });
 
@@ -48,8 +50,10 @@ describe("the Agent use button in the record panel", () => {
     expect(agentUseStatus(record(stored, see))).toBe("Use + See");
     // A use grant alone is not See; reading without asking is.
     expect(agentUseStatus(record(stored, { agentGrants: [{ agentId: "a1", use: true, write: false }] }))).toBe("Use");
-    const without = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const without = { ...stored, agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"], auth: { a1: TAG } } };
     expect(agentUseStatus(record(without))).toBe("Use + See");
+    // Listed without the owner's tag (1.9.2, or an editor): not reading without asking.
+    expect(agentUseStatus(record({ ...stored, agentReveal: { v: 1, agents: ["a1"], fields: ["username"] } }))).toBe("Use");
     // "asks first" marks an item where every agent that may read asks first; one that reads without asking takes it away.
     expect(agentAsksFirst(record(stored, see))).toBe(true);
     expect(agentAsksFirst(record(without))).toBe(false);
@@ -65,7 +69,7 @@ describe("the Agent use button in the record panel", () => {
   });
 
   it("the summary says how each agent reads: without asking (the item's own setting) or asking first", () => {
-    const body = { ...stored, username: "sara", agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"] } };
+    const body = { ...stored, username: "sara", agentReveal: { v: 1 as const, agents: ["a1"], fields: ["username"], auth: { a1: TAG } } };
     const r = record(body, { agentGrants: [{ agentId: "a1", use: true, write: false }, { agentId: "a2", use: false, write: false, reveal: ["username"] }] });
     const access = agentAccess(r, { myAgents: [{ id: "a1", name: "My bot" }, { id: "a2", name: "Other bot" }] as never, teamFolder: null });
     expect(access.map((x) => [x.name, x.see, x.standing])).toEqual([["My bot", ["Username"], true], ["Other bot", ["Username"], false]]);
@@ -94,6 +98,29 @@ describe("the Agent use button in the record panel", () => {
     grant.mockClear();
     await grantStandingAgents(record(saved, { agentGrants: [{ agentId: "a1", use: true, write: false }] }), saved, [agent], grant);
     expect(grant).not.toHaveBeenCalled();
+  });
+
+  it("saving Without asking tags each agent the owner turned on; an editor's tag or none (1.9.2) isn't confirmed or re-tagged (I2)", async () => {
+    const owner = await generateKeyPair(), editor = await generateKeyPair(), k1 = await generateKeyPair(), k2 = await generateKeyPair();
+    const a1 = { id: "aaaaaaaa-0000-4000-8000-000000000001", publicKey: b64url.encode(k1.publicKey) };
+    const a2 = { id: "aaaaaaaa-0000-4000-8000-000000000002", publicKey: b64url.encode(k2.publicKey) };
+    const body: RecordBody = { v: 2, type: "login", title: "Wifi", username: "u", password: "p" };
+    const next = await withStanding(body, "r1", [a1.id], ["username", "password"], [a1], owner.privateKey);
+    expect(next.agentReveal).toMatchObject({ v: 1, agents: [a1.id], fields: ["password", "username"] });
+    // What the gateway checks: the agent's private key with the owner's public key.
+    expect(await verifyStandingRevealTag(next.agentReveal!.auth![a1.id], k1.privateKey, owner.publicKey, { recordId: "r1", agentId: a1.id, fields: ["password", "username"] })).toBe(true);
+    expect(await confirmedAgents(next.agentReveal, "r1", [a1, a2], owner.privateKey)).toEqual([a1.id]);
+    expect(await confirmedAgents(next.agentReveal, "r2", [a1, a2], owner.privateKey)).toEqual([]);
+    // An editor lists a2 with a tag of its own making, and a 1.9.2 item has none: neither is confirmed.
+    const forged = { ...next.agentReveal!, agents: [a1.id, a2.id], auth: { ...next.agentReveal!.auth, [a2.id]: await standingRevealTag(editor.privateKey, k2.publicKey, { recordId: "r1", agentId: a2.id, fields: ["password", "username"] }) } };
+    expect(await confirmedAgents(forged, "r1", [a1, a2], owner.privateKey)).toEqual([a1.id]);
+    expect(await confirmedAgents({ v: 1, agents: [a1.id], fields: ["username"] }, "r1", [a1], owner.privateKey)).toEqual([]);
+    // Changing the fields re-tags only the agents given; the other stays listed and untagged.
+    const changed = await withStanding(body, "r1", [a1.id, a2.id], ["username"], [a1], owner.privateKey);
+    expect(Object.keys(changed.agentReveal!.auth!)).toEqual([a1.id]);
+    expect(await confirmedAgents(changed.agentReveal, "r1", [a1, a2], owner.privateKey)).toEqual([a1.id]);
+    expect(normalizeRecordBody(changed).agentReveal).toEqual(changed.agentReveal); // the validator keeps the tags
+    expect((await withStanding(next, "r1", [], ["username"], [a1], owner.privateKey)).agentReveal).toBeUndefined();
   });
 
   it("is for people who can edit, where agents are on (onAgentUse given)", () => {

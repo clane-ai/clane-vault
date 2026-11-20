@@ -177,10 +177,10 @@ describe("PendingReveals", () => {
 
 describe("standing reveal (Phase D)", () => {
   const standingBody = (agents: string[], fields = ["username"]): RecordBody => ({ ...login, title: "Wifi", agentReveal: { v: 1, agents, fields } });
-  async function standing(over: Partial<GatewayConfig> = {}, o: { agents?: string[]; policy?: "approval" | "standing"; fields?: string[] } = {}) {
+  async function standing(over: Partial<GatewayConfig> = {}, o: { agents?: string[]; policy?: "approval" | "standing"; fields?: string[]; tagBy?: "owner" | "editor" | null } = {}) {
     const s = await setup({ reveal: "standing", ...over });
     s.api.personal.setPolicyReveal(o.policy ?? "standing");
-    await s.api.personal.addRecord(standingBody(o.agents ?? [s.api.personal.agentId], o.fields), undefined, true);
+    await s.api.personal.addRecord(standingBody(o.agents ?? [s.api.personal.agentId], o.fields), undefined, true, false, o.tagBy === null ? undefined : o.tagBy ?? "owner");
     const ask = { item: "personal/wifi", fields: ["username"], reason: "join" };
     const paths = () => s.api.personal.writes.map((w) => w.path).filter((x) => x.startsWith("/agent/reveals"));
     return { ...s, ask, paths };
@@ -204,6 +204,21 @@ describe("standing reveal (Phase D)", () => {
     const f = await standing();
     expect(await f.tool("get_secret", { ...f.ask, fields: ["password"] })).toEqual({ error: "refused", reason: "reveal_off" });
     expect(f.paths()).toEqual([]);
+  });
+
+  it("agentReveal the owner didn't tag (a 1.9.2 item, or an editor's forged tag) is not standing: reveal_off, no value, no API call (I2)", async () => {
+    for (const c of [await standing({}, { tagBy: null }), await standing({}, { tagBy: "editor" })]) {
+      expect(await c.tool("get_secret", c.ask)).toEqual({ error: "refused", reason: "reveal_off" });
+      expect(c.paths()).toEqual([]);
+      const { secrets } = await c.tool("list_secrets") as { secrets: Record<string, unknown>[] };
+      expect(secrets.find((x) => x.handle === "personal/wifi")).not.toHaveProperty("reveal");
+    }
+    // With an approval stub too, it asks the owner instead of reading.
+    const s = await standing({}, { tagBy: "editor" });
+    await s.api.personal.addStub(["username"], { recordId: s.api.personal.records.at(-1)!.id, title: "Wifi" });
+    s.api.personal.onReveal((r) => s.api.personal.approveReveal(r.id, { username: "u" }));
+    expect(await s.tool("get_secret", s.ask)).toEqual({ fields: { username: "u" } });
+    expect(s.paths()).toEqual(["/agent/reveals"]);
   });
 
   it("the API refusing: reveal_off and no value", async () => {

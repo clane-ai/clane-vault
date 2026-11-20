@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { RadioGroup } from "radix-ui";
-import { validateAgentReveal, validateRevealFields, type AgentReveal, type RecordBody } from "@clane-vault/crypto";
+import { b64url, standingRevealTag, validateAgentReveal, validateRevealFields, verifyStandingRevealTag, type AgentReveal, type RecordBody } from "@clane-vault/crypto";
+import { useSession } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
@@ -33,6 +34,31 @@ export async function grantStandingAgents(record: VaultRecord, body: RecordBody,
     const a = agents.find((x) => x.id === id);
     if (a && !record.agentGrants?.some((g) => g.agentId === id && g.use)) await grant(record, a);
   }
+}
+
+type Tagged = Pick<MyAgent, "id" | "publicKey">;
+/** I2: the listed agents whose tag the owner made. An editor's tag, or none (an item set on 1.9.2 or 1.9.3), doesn't count. */
+// eslint-disable-next-line react-refresh/only-export-components
+export async function confirmedAgents(r: AgentReveal | undefined, recordId: string, agents: Tagged[], ownerPrivateKey: Uint8Array): Promise<string[]> {
+  const out: string[] = [];
+  for (const id of r?.agents ?? []) {
+    const a = agents.find((x) => x.id === id);
+    if (a && await verifyStandingRevealTag(r!.auth?.[id], ownerPrivateKey, b64url.decode(a.publicKey), { recordId, agentId: id, fields: r!.fields })) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The body with `ids` reading `fields` without asking. The owner's tag goes on each of `tag` that is listed, so only what the
+ * owner chose is read without asking (another listed agent stays untagged). Nobody left takes the setting away.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export async function withStanding(body: RecordBody, recordId: string, ids: string[], fields: string[], tag: Tagged[], ownerPrivateKey: Uint8Array): Promise<RecordBody> {
+  const { agentReveal: _dropped, ...rest } = body;
+  if (!ids.length) return rest;
+  const sorted = [...fields].sort(), auth: Record<string, string> = {};
+  for (const a of tag) if (ids.includes(a.id)) auth[a.id] = await standingRevealTag(ownerPrivateKey, b64url.decode(a.publicKey), { recordId, agentId: a.id, fields: sorted });
+  return { ...rest, agentReveal: { v: 1, agents: ids, fields: sorted, ...(Object.keys(auth).length ? { auth } : {}) } };
 }
 
 /** Why an agent can't read without asking here, or at all: an organisation's policy, the server's setting, or neither (null). */
@@ -69,12 +95,28 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
   /** Ask me each time: the fields, as a stub sealed to the agent. */ onSetReveal: (agent: MyAgent, fields: string[]) => Promise<GrantResult>; onUnreveal: (agentId: string) => Promise<unknown>;
 }) {
   const q = useMyAgents();
+  const { keys } = useSession();
   const [picking, setPicking] = useState<{ agentId: string; mode: Mode; fields: string[] } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newGateway, setNewGateway] = useState<string | null>(null);
   const body = record.body;
+  const [confirmed, setConfirmed] = useState<string[] | null>(null);
+  // A copy of the account key for each use, zeroed after (as for Allow once).
+  const withKey = async <T,>(fn: (k: Uint8Array) => Promise<T>): Promise<T> => {
+    if (!keys) throw new SaveFailed("Vault locked");
+    const k = keys.privateKey.slice();
+    try { return await fn(k); } finally { k.fill(0); }
+  };
+  const reveal = body?.agentReveal, agentList = q.data?.agents;
+  useEffect(() => {
+    let live = true;
+    setConfirmed(null);
+    if (reveal && agentList && keys) void withKey((k) => confirmedAgents(reveal, record.id, agentList, k)).then((c) => { if (live) setConfirmed(c); }, () => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal, agentList, keys, record.id]);
   if (!q.data || !body || !record.recordKey) return null;
   const offered = revealOffered(q.data);
   const standingOk = standingOn(q.data);
@@ -88,11 +130,11 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
   const agents = liveAgents(q.data.agents).filter((a) => offered || modeOf(a.id));
   const labels = (fields: string[]) => fields.map((f) => revealFieldLabel(body, f));
   const pinned = (r: GrantResult) => { if (r?.pinnedNow) setNewGateway(r.identity.publicKey); };
-  /** The body with `agents` reading `fields` without asking; nobody left takes the setting away. */
-  const withStanding = (ids: string[], fields: string[]): RecordBody => {
-    const { agentReveal: _dropped, ...rest } = body;
-    return ids.length ? { ...rest, agentReveal: { v: 1, agents: ids, fields: [...fields].sort() } } : rest;
-  };
+  /** The owner's tags go on the agents already confirmed and on `also` (the one being turned on), never on one an editor listed. */
+  const standingBody = (ids: string[], fields: string[], also?: MyAgent) => withKey(async (k) => {
+    const ok = await confirmedAgents(stored, record.id, q.data!.agents, k);
+    return withStanding(body, record.id, ids, fields, [...q.data!.agents.filter((x) => ok.includes(x.id)), ...(also ? [also] : [])], k);
+  });
   const run = async (fn: () => Promise<unknown>) => {
     setError(null); setBusy(true);
     try { await fn(); setPicking(null); }
@@ -105,7 +147,7 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
     validateRevealFields(fields, body);
     const was = modeOf(a.id);
     if (mode === "standing") {
-      const next = withStanding([...new Set([...(stored?.agents ?? []), a.id])], fields);
+      const next = await standingBody([...new Set([...(stored?.agents ?? []), a.id])], fields, a);
       await saveBody(next);
       await grantStandingAgents(record, next, [a], (_r, x) => onGrant(x).then(pinned));
       // The same fields as an approval stub too: where an organisation or the server requires approval, the agent asks
@@ -113,12 +155,12 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
       pinned(await onSetReveal(a, fields));
     } else {
       pinned(await onSetReveal(a, fields));
-      if (was === "standing") await saveBody(withStanding(stored!.agents.filter((x) => x !== a.id), stored!.fields));
+      if (was === "standing") await saveBody(await standingBody(stored!.agents.filter((x) => x !== a.id), stored!.fields));
     }
   });
   const turnOff = (a: MyAgent) => run(async () => {
     if (modeOf(a.id) === "standing") {
-      await saveBody(withStanding(stored!.agents.filter((x) => x !== a.id), stored!.fields));
+      await saveBody(await standingBody(stored!.agents.filter((x) => x !== a.id), stored!.fields));
       // The key was only there for reading: an item with no Agent use settings can't be used in requests anyway.
       const g = record.agentGrants?.find((x) => x.agentId === a.id);
       if (g?.use && !g.write && !body.agentPolicy) await onRevoke(a.id);
@@ -160,6 +202,8 @@ export function AgentSeeSection({ record, onSaveBody, onGrant, onRevoke, onSetRe
                     {/* Approval required here: it asks for the fields its approval stub names, or reads nothing without one. */}
                     {mode === "standing" && !standingOk && <span className="text-orange-ink"> ({offered && asks.has(a.id) ? "asks first for now" : "paused"})</span>}
                     {offered && <> · <button type="button" className="font-medium text-[var(--link)] hover:underline" disabled={busy} onClick={() => open(a)}>Change</button></>}
+                    {/* I2: listed without the owner's tag (set on 1.9.2/1.9.3, or by an editor); the gateway doesn't honour it. */}
+                    {mode === "standing" && confirmed && !confirmed.includes(a.id) && <span className="block text-orange-ink">Turn this on again to keep reading without asking.</span>}
                   </p>
                 )}
                 {p && <>

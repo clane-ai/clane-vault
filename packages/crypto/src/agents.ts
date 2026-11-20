@@ -245,18 +245,41 @@ export async function openReveal(sealed: string, ids: RevealIds, keys: SealKeys,
   return Object.fromEntries(Object.entries(o as Record<string, string>).filter(([k]) => requested.includes(k)));
 }
 
-/** Standing reveal (spec §5.6), inside the encrypted body: which agents may read which fields without asking. */
-export interface AgentReveal { v: 1; agents: string[]; fields: string[] }
+/**
+ * Standing reveal (spec §5.6), inside the encrypted body: which agents may read which fields without asking. `auth[agentId]`:
+ * the owner's tag (standingRevealTag) for that agent. Anyone who can edit the record can change the list; only the owner can tag it.
+ */
+export interface AgentReveal { v: 1; agents: string[]; fields: string[]; auth?: Record<string, string> }
+type StandingIds = { recordId: string; agentId: string; fields: string[] };
+const TAG = /^[A-Za-z0-9_-]{43}$/;
+const standingRevealMessage = (i: StandingIds) => utf8.encode(JSON.stringify(["agent-reveal-standing", 1, i.recordId, i.agentId, [...i.fields].sort()]));
+/** HMAC key from X25519(owner, agent): the owner computes it with its private key, the gateway with the agent's. */
+const standingKey = async (privateKey: Uint8Array, publicKey: Uint8Array, usage: KeyUsage) =>
+  crypto.subtle.importKey("raw", await hkdf(await shared(privateKey, publicKey), new Uint8Array(0), "clane-vault/agent-reveal-standing", 32) as BufferSource,
+    { name: "HMAC", hash: "SHA-256" }, false, [usage]);
+/** The owner's consent for one agent to read `fields` of `recordId` without asking (I2). */
+export const standingRevealTag = async (ownerPrivateKey: Uint8Array, agentPublicKey: Uint8Array, ids: StandingIds) =>
+  b64url.encode(new Uint8Array(await crypto.subtle.sign("HMAC", await standingKey(ownerPrivateKey, agentPublicKey, "sign"), standingRevealMessage(ids) as BufferSource)));
+/** Constant time; false (never a throw) for a missing, malformed or wrong tag. Either side's private key with the other's public key. */
+export async function verifyStandingRevealTag(tag: string | undefined, privateKey: Uint8Array, publicKey: Uint8Array, ids: StandingIds): Promise<boolean> {
+  if (typeof tag !== "string" || !TAG.test(tag)) return false;
+  try { return await crypto.subtle.verify("HMAC", await standingKey(privateKey, publicKey, "verify"), b64url.decode(tag) as BufferSource, standingRevealMessage(ids) as BufferSource); }
+  catch { return false; }
+}
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Unknown keys refused; `agents` 1–20 unique lower-case UUIDs; `fields` through validateRevealFields (returned sorted). */
 export function validateAgentReveal(p: unknown, body: Pick<RecordBody, "type" | "fields" | "totpSecret" | "data">): AgentReveal {
   const bad = (m: string): never => { throw new Error(`agent reveal: ${m}`); };
   if (!p || typeof p !== "object" || Array.isArray(p)) return bad("must be an object");
   const o = p as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!["v", "agents", "fields"].includes(k)) bad(`unknown key "${k}"`);
+  for (const k of Object.keys(o)) if (!["v", "agents", "fields", "auth"].includes(k)) bad(`unknown key "${k}"`);
   if (o.v !== 1) bad("unknown version");
   const agents = o.agents;
   if (!Array.isArray(agents) || agents.length < 1 || agents.length > 20 || agents.some((a) => typeof a !== "string" || !AGENT_ID.test(a)) || new Set(agents).size !== agents.length)
     bad("1 to 20 different agents are required");
-  return { v: 1, agents: [...(agents as string[])], fields: validateRevealFields(o.fields, body) };
+  const auth = o.auth;
+  if (auth !== undefined && (!auth || typeof auth !== "object" || Array.isArray(auth)
+    || Object.entries(auth).some(([k, t]) => !(agents as string[]).includes(k) || typeof t !== "string" || !TAG.test(t))))
+    bad("auth is invalid");
+  return { v: 1, agents: [...(agents as string[])], fields: validateRevealFields(o.fields, body), ...(auth ? { auth: { ...(auth as Record<string, string>) } } : {}) };
 }

@@ -153,7 +153,7 @@ describe("no plaintext anywhere", () => {
     expect(captured.pop()).toContain(REVEALED); // that response, and only it, leaves the check
     tool.api.personal.setPolicyReveal("standing");
     await tool.api.personal.addRecord({ v: 2, type: "wifi", title: "Office wifi", password: STANDING,
-      agentReveal: { v: 1, agents: [tool.api.personal.agentId], fields: ["password"] } });
+      agentReveal: { v: 1, agents: [tool.api.personal.agentId], fields: ["password"] } }, undefined, false, false, "owner");
     expect(JSON.parse(await mine("get_secret", { item: "personal/office-wifi", fields: ["password"], reason: "join the network" })))
       .toMatchObject({ structuredContent: { fields: { password: STANDING } } });
     expect(captured.pop()).toContain(STANDING);

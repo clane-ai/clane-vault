@@ -76,7 +76,9 @@ Residual risks, which no mitigation in this release removes:
 - **Reading without asking is the default once an owner turns See on, and it has no person in the loop.** Owner decision,
   2026-11-18: an item's See setting is the consent. The gateway's default (`GATEWAY_REVEAL=standing`) and the
   organisation policy's default (*Without approval*) both allow it, so the only switch that is off by default is the
-  item's own encrypted setting (`agentReveal`). Once an owner sets it, the model reads the listed fields whenever it asks:
+  item's own encrypted setting (`agentReveal`), which the gateway honours for an agent only with the owner's tag for it
+  (an HMAC under a key from X25519 of the owner's and the agent's keys, over the record, the agent and the fields), so an
+  editor of a shared item can't turn it on (1.9.4). Once an owner sets it, the model reads the listed fields whenever it asks:
   a prompt-injected agent can read them and send them on with nobody asked, and the gateway holds the item's key while
   the agent is live. What limits it: per item, per agent and per field; a rate limit (`GATEWAY_REVEAL_PER_HOUR`); every
   read logged for the owner (`agent.reveal`, `standing: true`). An owner picks *Ask me each time*, an admin sets *Reading
@@ -115,12 +117,6 @@ Residual risks, which no mitigation in this release removes:
   and must press *Allow once*; nothing is released without that. An approval itself can't be forged: the browser binds a
   tag derived from the owner's key and the request's one-time key into the seal, the gateway checks it against the
   attested owner key (`unverified` otherwise) and keeps only the fields it asked for.
-- **An editor of a shared Personal item can turn on reading without approval for the owner's agent.** Standing reveal is
-  read from the item's encrypted body, and anyone the owner shares the item with as editor can write that body, including
-  `agentReveal`. With `GATEWAY_REVEAL=standing` and every policy at `standing` (both the defaults now, so this is live unless an operator or an admin restricts it) and the owner's agent holding *Can use* on the
-  item, such an editor can let that agent read the listed fields with no approval the owner gave. The editor already
-  knows the values, and can already change the item's agent hosts (`agentPolicy`), which is worse; don't share as editor
-  an item you give an agent unless you trust that person with the agent too.
 - **More gateway code handles plaintext.** Writes, `capture` and reveal each handle values in the gateway (a reveal
   only the approved fields, in memory, held for log redaction until the result is written), which enlarges what an audit
   must cover.

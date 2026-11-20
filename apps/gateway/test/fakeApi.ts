@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import {
   aeadEncrypt, b64url, decryptRecordBody, encryptFolderName, encryptRecordBody, generateKeyPair as generateX25519, openDepositKey, sealOrgFolderKey, sealOrgRecordShare,
-  sealPersonalAgentRecordKey, sealReveal, sealRevealStub, serverRecordType, utf8, wrapKey, type RecordBody, type RecordType,
+  sealPersonalAgentRecordKey, sealReveal, sealRevealStub, serverRecordType, standingRevealTag, utf8, wrapKey, type RecordBody, type RecordType,
 } from "@clane-vault/crypto";
 import type { Kek } from "../src/kek.js";
 import { wrapAgentKey, wrapPersonalAgentKey } from "../src/envelope.js";
@@ -101,9 +101,17 @@ export async function startFakeApi(o: { kek: Kek; aud?: string; issuer?: string;
     records, wrappedPrivateKey, kekId: o.kek.id, expiresAt: null, entitlements: { approvals: false },
   });
 
-  /** `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). `raw`: encrypted as given, not normalised. */
-  async function addPersonalRecord(body: RecordBody, sealFor = personalId, write = false, raw = false): Promise<string> {
+  /**
+   * `sealFor`: the agent id in the seal's AAD (another one makes a record this agent can't open). `raw`: encrypted as given, not normalised.
+   * `tagBy`: agentReveal gets a tag for each listed agent, made with the owner's key or an editor's (one that isn't the owner's).
+   */
+  async function addPersonalRecord(body: RecordBody, sealFor = personalId, write = false, raw = false, tagBy?: "owner" | "editor"): Promise<string> {
     const id = randomUUID(), recordKey = new Uint8Array(randomBytes(32));
+    if (tagBy && body.agentReveal) {
+      const signer = tagBy === "owner" ? ownerKeys.privateKey : (await generateX25519()).privateKey, ar = body.agentReveal;
+      body = { ...body, agentReveal: { ...ar, auth: Object.fromEntries(await Promise.all(ar.agents.map(async (a) =>
+        [a, await standingRevealTag(signer, pkp.publicKey, { recordId: id, agentId: a, fields: ar.fields })] as const))) } };
+    }
     recordKeys.set(id, recordKey);
     const encBody = raw ? await aeadEncrypt(recordKey, utf8.encode(JSON.stringify(body)), `record-body:${id}`) : await encryptRecordBody(id, body, recordKey);
     personalRecords.push({ id, encBody, revision: 1, write, deletedAt: null,
